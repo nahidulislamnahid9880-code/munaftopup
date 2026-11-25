@@ -1112,3 +1112,49 @@ async function startServer(): Promise<void> {
 }
 
 void startServer();
+
+// Telegram Business Auto-Reply Bot
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+if (TG_TOKEN) {
+  let lastUpdateId = 0;
+
+  const pollTelegramUpdates = async () => {
+    try {
+      const res = await fetch(
+        `https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=25&allowed_updates=["business_message"]`
+      );
+      const data = await res.json();
+
+      if (data.ok && Array.isArray(data.result)) {
+        for (const update of data.result) {
+          lastUpdateId = update.update_id;
+          const msg = update.business_message;
+
+          if (msg && msg.text && !msg.from?.is_bot && msg.business_connection_id) {
+            const replyText =
+              "আসসালামু আলাইকুম! Munaf Topup-এ স্বাগতম।\n" +
+              "আপনার মেসেজটি আমরা পেয়েছি, খুব শীঘ্রই আমাদের অ্যাডমিন আপনার সাথে যোগাযোগ করবেন।";
+
+            await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chat_id: msg.chat.id,
+                text: replyText,
+                business_connection_id: msg.business_connection_id,
+              }),
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Telegram Bot Polling Error:", err);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    setImmediate(pollTelegramUpdates);
+  };
+
+  pollTelegramUpdates();
+  console.log("Telegram Business Bot started...");
+}
