@@ -82,11 +82,20 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
             email: firebaseUser.email || '',
             photoURL: firebaseUser.photoURL || '',
             phone: '',
+            walletBalance: 0,
             suspended: false,
             suspendedReason: '',
             createdAt: now,
             updatedAt: now,
           });
+        } else if (snap.exists() && !cancelled) {
+          const existingData = snap.data() as Partial<CustomerProfile>;
+          if (typeof existingData.walletBalance !== 'number') {
+            await updateDoc(custRef, {
+              walletBalance: 0,
+              updatedAt: serverTimestamp(),
+            });
+          }
         }
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `customers/${firebaseUser.uid}`);
@@ -99,7 +108,19 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
       custRef,
       (snap) => {
         if (snap.exists()) {
-          setCustomerProfile(snap.data() as CustomerProfile);
+          const raw = snap.data() as Partial<CustomerProfile>;
+          setCustomerProfile({
+            uid: raw.uid || firebaseUser.uid,
+            displayName: raw.displayName || firebaseUser.displayName || 'Customer',
+            email: raw.email || firebaseUser.email || '',
+            photoURL: raw.photoURL || firebaseUser.photoURL || '',
+            phone: raw.phone || '',
+            walletBalance: typeof raw.walletBalance === 'number' ? raw.walletBalance : 0,
+            suspended: Boolean(raw.suspended),
+            suspendedReason: raw.suspendedReason || '',
+            createdAt: raw.createdAt,
+            updatedAt: raw.updatedAt,
+          });
         }
       },
       (err) => {
@@ -179,7 +200,10 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
         }
         setAdminToken(data.token);
         setAdminUser(data.admin);
-        if (data.admin.role === 'super_admin' && auth.currentUser?.email?.toLowerCase() === data.admin.email.toLowerCase()) {
+        if (
+          data.admin.role === 'super_admin' &&
+          auth.currentUser?.email?.toLowerCase() === data.admin.email.toLowerCase()
+        ) {
           await initializeDefaultCatalogIfMissing(data.admin.email).catch(() => false);
         }
         return data.admin;

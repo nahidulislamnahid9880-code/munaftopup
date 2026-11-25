@@ -31,7 +31,7 @@ import {
   handleFirestoreError,
   timestampToMillis,
 } from '../../lib/firebase';
-import {initializeDefaultCatalogIfMissing} from '../../lib/seedData';
+import {initializeDefaultCatalogIfMissing, syncRecommendedCatalog} from '../../lib/seedData';
 import type {CustomerProfile, Order} from '../../types';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
@@ -155,6 +155,16 @@ export function DashboardOverview() {
     }
   };
 
+  const handleSyncCatalog = async () => {
+    if (!adminUser) return;
+    setSeeding(true);
+    try {
+      await syncRecommendedCatalog(adminUser.email);
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   const kpis = [
     {label: 'Total Revenue', value: formatCurrency(stats.totalRevenue), icon: DollarSign, color: 'text-emerald-600 dark:text-emerald-400'},
     {label: "Today's Sales", value: formatCurrency(stats.todaySales), icon: TrendingUp, color: 'text-blue-600 dark:text-blue-400'},
@@ -169,25 +179,41 @@ export function DashboardOverview() {
   return (
     <AdminLayout title="Dashboard Overview">
       <div className="space-y-6">
-        {!catalogInitialized && firebaseUser && (
-          <div className="rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                Initialize Default Storefront Catalog
-              </h2>
-              <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                Populate initial Free Fire Diamonds, Memberships, Vouchers, bKash/Nagad methods, and hero banners in Firestore so you can customize them immediately.
-              </p>
+        {firebaseUser && (
+          !catalogInitialized ? (
+            <div className="rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Initialize Default Storefront Catalog
+                </h2>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                  Populate initial Free Fire BD Server, Membership, Level Up Pass BD, Weekly Lite, Voucher, and PUBG UC categories/products in Firestore.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={seeding}
+                onClick={() => void handleSeedCatalog()}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50">
+                {seeding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {seeding ? 'Initializing...' : 'Initialize Catalog'}
+              </button>
             </div>
-            <button
-              type="button"
-              disabled={seeding}
-              onClick={() => void handleSeedCatalog()}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50">
-              {seeding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-              {seeding ? 'Initializing...' : 'Initialize Catalog'}
-            </button>
-          </div>
+          ) : adminUser?.role === 'super_admin' ? (
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                Sync recommended Free Fire &amp; PUBG 3-column storefront products and square assets anytime.
+              </p>
+              <button
+                type="button"
+                disabled={seeding}
+                onClick={() => void handleSyncCatalog()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50">
+                {seeding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-blue-600" />}
+                {seeding ? 'Syncing...' : 'Sync Default Catalog'}
+              </button>
+            </div>
+          ) : null
         )}
 
         {/* 8 KPI Cards */}

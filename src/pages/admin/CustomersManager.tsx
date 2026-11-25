@@ -182,6 +182,7 @@ export function CustomersManager() {
                     <tr>
                       <th className="px-4 py-3 font-medium">Customer</th>
                       <th className="px-4 py-3 font-medium">Phone</th>
+                      <th className="px-4 py-3 font-medium">Wallet</th>
                       <th className="px-4 py-3 font-medium">Orders</th>
                       <th className="px-4 py-3 font-medium">Total Spent</th>
                       <th className="px-4 py-3 font-medium">Status</th>
@@ -198,6 +199,9 @@ export function CustomersManager() {
                             <p className="text-xs text-slate-500">{c.email}</p>
                           </td>
                           <td className="px-4 py-3 font-mono text-xs">{c.phone || '—'}</td>
+                          <td className="px-4 py-3 font-semibold text-cyan-600 dark:text-cyan-400 tabular-nums">
+                            {formatCurrency(c.walletBalance || 0)}
+                          </td>
                           <td className="px-4 py-3 tabular-nums">{st.count}</td>
                           <td className="px-4 py-3 font-semibold tabular-nums">
                             {formatCurrency(st.spent)}

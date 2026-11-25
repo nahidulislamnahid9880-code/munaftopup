@@ -1,11 +1,14 @@
 import React, {useEffect, useState} from 'react';
-import {useSearchParams} from 'react-router-dom';
+import {Link, useSearchParams} from 'react-router-dom';
 import {
   Bell,
   Check,
+  ChevronRight,
+  KeyRound,
   LogOut,
   MessageSquare,
   Package,
+  PlusCircle,
   Send,
   User,
 } from 'lucide-react';
@@ -42,8 +45,9 @@ export function CustomerAccountPage() {
     updateCustomerPhone,
   } = useAuth();
 
-  const initialTab = (searchParams.get('tab') as 'orders' | 'notifications' | 'support' | 'profile') || 'orders';
-  const [tab, setTab] = useState<'orders' | 'notifications' | 'support' | 'profile'>(initialTab);
+  const initialTab =
+    (searchParams.get('tab') as 'overview' | 'notifications' | 'support' | 'profile') || 'overview';
+  const [tab, setTab] = useState<'overview' | 'notifications' | 'support' | 'profile'>(initialTab);
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [notifications, setNotifications] = useState<CustomerNotification[]>([]);
@@ -61,7 +65,7 @@ export function CustomerAccountPage() {
 
   useEffect(() => {
     const t = searchParams.get('tab');
-    if (t === 'orders' || t === 'notifications' || t === 'support' || t === 'profile') {
+    if (t === 'overview' || t === 'notifications' || t === 'support' || t === 'profile') {
       setTab(t);
     }
   }, [searchParams]);
@@ -192,7 +196,7 @@ export function CustomerAccountPage() {
   if (!authReady) {
     return (
       <StoreLayout>
-        <div className="max-w-5xl mx-auto px-4 py-16 text-center text-sm text-slate-500">
+        <div className="max-w-3xl mx-auto px-4 py-16 text-center text-sm text-slate-500">
           Loading account...
         </div>
       </StoreLayout>
@@ -203,18 +207,18 @@ export function CustomerAccountPage() {
     return (
       <StoreLayout>
         <div className="max-w-md mx-auto px-4 py-16">
-          <div className="rounded-xl bg-white border border-slate-200 p-8 text-center space-y-4">
-            <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
+          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-4 shadow-xs">
+            <div className="w-12 h-12 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center mx-auto">
               <User className="w-6 h-6" />
             </div>
-            <h1 className="text-xl font-bold text-slate-900 font-display">Customer Account</h1>
+            <h1 className="text-xl font-bold text-slate-900 font-display">My Profile</h1>
             <p className="text-sm text-slate-600">
-              Sign in with Google to view your top-up orders, live admin notifications, and support tickets.
+              Sign in with Google to view your wallet balance, top-up orders, delivered codes, and support tickets.
             </p>
             <button
               type="button"
               onClick={() => void signInCustomerWithGoogle()}
-              className="w-full px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold cursor-pointer transition-colors">
+              className="w-full px-5 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer transition-colors">
               Sign in with Google
             </button>
           </div>
@@ -224,119 +228,169 @@ export function CustomerAccountPage() {
   }
 
   const unreadCount = notifications.filter((n) => !n.read).length;
+  const completedCount = orders.filter((o) => o.orderStatus === 'completed').length;
+  const codeCount = orders.filter((o) => Boolean(o.voucherCode?.trim())).length;
+  const walletBalance = customerProfile?.walletBalance ?? 0;
 
   return (
     <StoreLayout>
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10 space-y-6">
-        <div className="rounded-xl bg-white border border-slate-200 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-bold text-slate-900 font-display">
-              {customerProfile?.displayName || firebaseUser.displayName || 'Customer Account'}
+      <div className="max-w-3xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5">
+        {/* User Profile Header */}
+        <div className="flex items-start justify-between gap-4 pb-3 border-b border-slate-200">
+          <div className="space-y-0.5 min-w-0">
+            <h1 className="text-2xl font-extrabold text-slate-900 font-display truncate">
+              {customerProfile?.displayName || firebaseUser.displayName || 'Customer'}
             </h1>
-            <p className="text-sm text-slate-500">
-              {firebaseUser.email}
-              {customerProfile?.suspended && (
-                <span className="ml-2 text-red-600 font-semibold">· Account Suspended</span>
-              )}
-            </p>
+            <p className="text-xs sm:text-sm text-slate-500 truncate">{firebaseUser.email}</p>
+            {customerProfile?.phone && (
+              <p className="text-xs text-slate-500 font-mono">{customerProfile.phone}</p>
+            )}
+            {customerProfile?.suspended && (
+              <span className="inline-block text-xs text-red-600 font-semibold pt-1">
+                Account Suspended: {customerProfile.suspendedReason}
+              </span>
+            )}
           </div>
           <button
             type="button"
             onClick={() => void signOutCustomer()}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-sm font-medium text-slate-700 cursor-pointer self-start sm:self-auto">
-            <LogOut className="w-4 h-4" /> Sign Out
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer shrink-0">
+            <LogOut className="w-3.5 h-3.5" /> Sign Out
           </button>
         </div>
 
-        {/* Navigation Tabs */}
-        <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl overflow-x-auto w-fit max-w-full">
+        {/* Current Wallet Balance Card (Matching Screenshot 4) */}
+        <div className="rounded-2xl bg-slate-100/90 border border-slate-200 p-5 text-center space-y-3">
+          <span className="text-xs sm:text-sm font-medium text-slate-600 block">
+            Current Balance
+          </span>
+          <div className="inline-flex items-center justify-center px-6 py-2.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
+            <span className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-display tabular-nums">
+              {formatCurrency(walletBalance)}
+            </span>
+          </div>
+          <div className="flex items-center justify-center gap-3 pt-1">
+            <Link
+              to="/add-money"
+              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-bold transition-colors">
+              <PlusCircle className="w-4 h-4" /> Add Money
+            </Link>
+            <Link
+              to="/orders"
+              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-bold transition-colors">
+              My Orders
+            </Link>
+          </div>
+        </div>
+
+        {/* Account Navigation Tabs */}
+        <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl overflow-x-auto">
           <button
             type="button"
-            onClick={() => switchTab('orders')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'orders' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            onClick={() => switchTab('overview')}
+            className={`px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
+              tab === 'overview' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}>
-            <Package className="w-3.5 h-3.5" /> Orders ({orders.length})
+            Account Menu
           </button>
           <button
             type="button"
             onClick={() => switchTab('notifications')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'notifications' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
+              tab === 'notifications' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}>
             <Bell className="w-3.5 h-3.5" /> Notifications ({unreadCount})
           </button>
           <button
             type="button"
             onClick={() => switchTab('support')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'support' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
+              tab === 'support' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}>
-            <MessageSquare className="w-3.5 h-3.5" /> Support Tickets ({tickets.length})
+            <MessageSquare className="w-3.5 h-3.5" /> Support ({tickets.length})
           </button>
           <button
             type="button"
             onClick={() => switchTab('profile')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'profile' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
+              tab === 'profile' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}>
-            <User className="w-3.5 h-3.5" /> Profile
+            <User className="w-3.5 h-3.5" /> Edit Profile
           </button>
         </div>
 
-        {/* Tab: Orders */}
-        {tab === 'orders' && (
-          <div className="rounded-xl bg-white border border-slate-200 overflow-hidden">
-            {orders.length === 0 ? (
-              <div className="p-10 text-center text-sm text-slate-500">
-                No orders placed yet.
+        {/* Overview List Cards matching Screenshot 4 */}
+        {tab === 'overview' && (
+          <div className="space-y-3">
+            <Link
+              to="/orders"
+              className="rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                  <Package className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-sm sm:text-base font-bold text-slate-900">Orders</p>
+                  <p className="text-xs text-slate-500">
+                    {completedCount} completed · {orders.length} total
+                  </p>
+                </div>
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3 font-medium">Order ID</th>
-                      <th className="px-4 py-3 font-medium">Product</th>
-                      <th className="px-4 py-3 font-medium">UID / TrxID</th>
-                      <th className="px-4 py-3 font-medium">Amount</th>
-                      <th className="px-4 py-3 font-medium">Payment</th>
-                      <th className="px-4 py-3 font-medium">Order Status</th>
-                      <th className="px-4 py-3 font-medium">Update</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {orders.map((order) => (
-                      <tr key={order.id}>
-                        <td className="px-4 py-3 font-mono font-semibold text-slate-900 tabular-nums">
-                          {order.orderNumber}
-                        </td>
-                        <td className="px-4 py-3">
-                          <p className="font-medium text-slate-900">{order.productName}</p>
-                          <p className="text-xs text-slate-500">{order.packageName}</p>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-600">
-                          <div>UID: {order.playerUid}</div>
-                          <div>Trx: {order.trxId}</div>
-                        </td>
-                        <td className="px-4 py-3 font-semibold tabular-nums">
-                          {formatCurrency(order.totalAmount)}
-                        </td>
-                        <td className="px-4 py-3 text-xs font-semibold capitalize">
-                          {order.paymentStatus}
-                        </td>
-                        <td className="px-4 py-3 text-xs font-semibold capitalize">
-                          {order.orderStatus}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-600 max-w-xs">
-                          {order.notificationMessage || '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </Link>
+
+            <Link
+              to="/codes"
+              className="rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-sm sm:text-base font-bold text-slate-900">Codes</p>
+                  <p className="text-xs text-slate-500">
+                    {codeCount > 0 ? `${codeCount} voucher codes available` : 'Voucher codes from your Orders'}
+                  </p>
+                </div>
               </div>
-            )}
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => switchTab('notifications')}
+              className="w-full text-left rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs cursor-pointer">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                  <Bell className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-sm sm:text-base font-bold text-slate-900">Notifications</p>
+                  <p className="text-xs text-slate-500">
+                    {unreadCount} unread order updates
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => switchTab('support')}
+              className="w-full text-left rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs cursor-pointer">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                  <MessageSquare className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-sm sm:text-base font-bold text-slate-900">Support Tickets</p>
+                  <p className="text-xs text-slate-500">
+                    Get help with UID orders or payments
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </button>
           </div>
         )}
 
@@ -344,19 +398,19 @@ export function CustomerAccountPage() {
         {tab === 'notifications' && (
           <div className="space-y-3">
             {notifications.length === 0 ? (
-              <div className="rounded-xl bg-white border border-slate-200 p-10 text-center text-sm text-slate-500">
+              <div className="rounded-2xl bg-white border border-slate-200 p-10 text-center text-sm text-slate-500">
                 No notifications yet.
               </div>
             ) : (
               notifications.map((n) => (
                 <div
                   key={n.id}
-                  className={`rounded-xl border p-4 flex items-start justify-between gap-4 ${
-                    n.read ? 'bg-white border-slate-200' : 'bg-blue-50/50 border-blue-200'
+                  className={`rounded-2xl border p-4 flex items-start justify-between gap-4 ${
+                    n.read ? 'bg-white border-slate-200' : 'bg-cyan-50/50 border-cyan-200'
                   }`}>
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2 text-xs text-slate-500">
-                      <span className="font-semibold text-slate-900">{n.title}</span>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                      <span className="font-bold text-slate-900">{n.title}</span>
                       {n.orderNumber && (
                         <>
                           <span>·</span>
@@ -375,7 +429,7 @@ export function CustomerAccountPage() {
                       type="button"
                       onClick={() => void handleMarkNotifRead(n)}
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 shrink-0 cursor-pointer">
-                      <Check className="w-3.5 h-3.5" /> Mark Read
+                      <Check className="w-3.5 h-3.5" /> Read
                     </button>
                   )}
                 </div>
@@ -386,49 +440,51 @@ export function CustomerAccountPage() {
 
         {/* Tab: Support Tickets */}
         {tab === 'support' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="space-y-5">
             <form
               onSubmit={handleCreateTicket}
-              className="lg:col-span-5 rounded-xl bg-white border border-slate-200 p-6 space-y-4">
+              className="rounded-2xl bg-white border border-slate-200 p-5 space-y-4 shadow-xs">
               <h2 className="text-base font-bold text-slate-900 font-display">
                 Open Support Ticket
               </h2>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Order Number (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={ticketOrder}
-                  onChange={(e) => setTicketOrder(e.target.value)}
-                  placeholder="SV-123456"
-                  className="w-full px-3 py-2 text-sm font-mono uppercase rounded-lg border border-slate-300"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Order Number (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={ticketOrder}
+                    onChange={(e) => setTicketOrder(e.target.value)}
+                    placeholder="SV-123456"
+                    className="w-full px-3 py-2 text-sm font-mono uppercase rounded-xl border border-slate-300"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Subject *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={ticketSubject}
+                    onChange={(e) => setTicketSubject(e.target.value)}
+                    placeholder="Describe your issue briefly"
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
+                  />
+                </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Subject *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={ticketSubject}
-                  onChange={(e) => setTicketSubject(e.target.value)}
-                  placeholder="Describe your issue briefly"
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Message *
                 </label>
                 <textarea
-                  rows={4}
+                  rows={3}
                   required
                   value={ticketMessage}
                   onChange={(e) => setTicketMessage(e.target.value)}
                   placeholder="Include your Player UID or TrxID if applicable..."
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
                 />
               </div>
               {ticketError && <p className="text-xs text-red-600">{ticketError}</p>}
@@ -439,19 +495,19 @@ export function CustomerAccountPage() {
               )}
               <button
                 type="submit"
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold cursor-pointer">
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
                 <Send className="w-4 h-4" /> Submit Ticket
               </button>
             </form>
 
-            <div className="lg:col-span-7 space-y-3">
+            <div className="space-y-3">
               {tickets.length === 0 ? (
-                <div className="rounded-xl bg-white border border-slate-200 p-8 text-center text-sm text-slate-500">
+                <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center text-sm text-slate-500">
                   No support tickets submitted.
                 </div>
               ) : (
                 tickets.map((t) => (
-                  <div key={t.id} className="rounded-xl bg-white border border-slate-200 p-5 space-y-3">
+                  <div key={t.id} className="rounded-2xl bg-white border border-slate-200 p-5 space-y-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-bold text-slate-900">{t.subject}</h3>
@@ -465,14 +521,14 @@ export function CustomerAccountPage() {
                           type="button"
                           onClick={() => void handleCloseTicket(t)}
                           className="px-3 py-1 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">
-                          Close Ticket
+                          Close
                         </button>
                       )}
                     </div>
                     <p className="text-sm text-slate-700 whitespace-pre-line">{t.message}</p>
                     {t.adminReply && (
-                      <div className="rounded-lg bg-slate-50 border border-slate-200 p-3.5 space-y-1">
-                        <span className="text-xs font-semibold text-blue-700 block">
+                      <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-1">
+                        <span className="text-xs font-semibold text-cyan-700 block">
                           Support Reply ({t.repliedBy || 'Admin'})
                         </span>
                         <p className="text-sm text-slate-800 whitespace-pre-line">{t.adminReply}</p>
@@ -489,31 +545,31 @@ export function CustomerAccountPage() {
         {tab === 'profile' && (
           <form
             onSubmit={handleSaveProfile}
-            className="max-w-lg rounded-xl bg-white border border-slate-200 p-6 space-y-4">
+            className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 space-y-4 shadow-xs">
             <h2 className="text-base font-bold text-slate-900 font-display">Profile Settings</h2>
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Display Name</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Display Name</label>
               <input
                 type="text"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
-                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300"
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Default Phone Number</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Default Phone Number</label>
               <input
                 type="tel"
                 value={editPhone}
                 onChange={(e) => setEditPhone(e.target.value)}
                 placeholder="01XXXXXXXXX"
-                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300"
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
               />
             </div>
             {profileMsg && <p className="text-xs text-emerald-700 font-medium">{profileMsg}</p>}
             <button
               type="submit"
-              className="px-5 py-2.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
+              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
               Save Profile
             </button>
           </form>

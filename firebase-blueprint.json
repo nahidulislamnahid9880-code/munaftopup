@@ -62,7 +62,7 @@
         "requiresServerId": { "type": "boolean" },
         "serverLabel": { "type": "string", "maxLength": 60 },
         "serverOptions": { "type": "array", "description": "Up to 20 server options" },
-        "packages": { "type": "array", "description": "Up to 30 selectable packages" },
+        "packages": { "type": "array", "description": "Up to 60 selectable packages" },
         "active": { "type": "boolean" },
         "featured": { "type": "boolean" },
         "displayOrder": { "type": "number" },
@@ -90,7 +90,7 @@
     },
     "Order": {
       "title": "Order",
-      "description": "Customer top-up order with player UID, selected package, and bKash/Nagad payment verification details.",
+      "description": "Customer top-up order with player UID, selected package, payment details, and optional voucher code.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
@@ -101,6 +101,7 @@
         "customerPhone": { "type": "string", "minLength": 5, "maxLength": 30 },
         "productId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "productName": { "type": "string", "maxLength": 120 },
+        "productImage": { "type": "string", "maxLength": 1000 },
         "packageId": { "type": "string", "maxLength": 128 },
         "packageName": { "type": "string", "maxLength": 120 },
         "quantityLabel": { "type": "string", "maxLength": 80 },
@@ -108,12 +109,14 @@
         "totalAmount": { "type": "number" },
         "playerUid": { "type": "string", "maxLength": 80 },
         "serverId": { "type": "string", "maxLength": 80 },
+        "paymentType": { "type": "string", "enum": ["manual", "wallet"] },
         "paymentMethodId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "paymentMethodName": { "type": "string", "maxLength": 60 },
-        "senderNumber": { "type": "string", "minLength": 5, "maxLength": 40 },
+        "senderNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
         "trxId": { "type": "string", "minLength": 4, "maxLength": 64 },
         "trxKey": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "screenshotUrl": { "type": "string", "maxLength": 1000 },
+        "voucherCode": { "type": "string", "maxLength": 500 },
         "paymentStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled"] },
         "adminNote": { "type": "string", "maxLength": 1000 },
@@ -123,6 +126,29 @@
         "completedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "orderNumber", "customerUid", "customerName", "customerPhone", "productId", "packageId", "totalAmount", "paymentMethodId", "senderNumber", "trxId", "trxKey", "paymentStatus", "orderStatus", "createdAt", "updatedAt"]
+    },
+    "WalletTopup": {
+      "title": "WalletTopup",
+      "description": "Customer Add Money wallet deposit request verified by Admin.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
+        "amount": { "type": "number" },
+        "paymentMethodId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "paymentMethodName": { "type": "string", "maxLength": 60 },
+        "senderNumber": { "type": "string", "minLength": 5, "maxLength": 40 },
+        "trxId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "trxKey": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "screenshotUrl": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "adminNote": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "customerUid", "amount", "paymentMethodId", "senderNumber", "trxId", "trxKey", "status", "createdAt", "updatedAt"]
     },
     "OrderTracking": {
       "title": "OrderTracking",
@@ -143,7 +169,7 @@
     },
     "TrxRegistry": {
       "title": "TrxRegistry",
-      "description": "Unique Transaction ID lock registry preventing duplicate TrxID usage across orders.",
+      "description": "Unique Transaction ID lock registry preventing duplicate TrxID usage across orders and wallet deposits.",
       "type": "object",
       "properties": {
         "trxKey": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
@@ -159,7 +185,7 @@
     },
     "Customer": {
       "title": "Customer",
-      "description": "Customer profile document with suspension status controlled exclusively by admins.",
+      "description": "Customer profile document with wallet balance and suspension state.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
@@ -167,12 +193,13 @@
         "email": { "type": "string", "maxLength": 160 },
         "photoURL": { "type": "string", "maxLength": 1000 },
         "phone": { "type": "string", "maxLength": 30 },
+        "walletBalance": { "type": "number" },
         "suspended": { "type": "boolean" },
         "suspendedReason": { "type": "string", "maxLength": 300 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["uid", "email", "suspended", "createdAt", "updatedAt"]
+      "required": ["uid", "email", "walletBalance", "suspended", "createdAt", "updatedAt"]
     },
     "SupportTicket": {
       "title": "SupportTicket",
@@ -284,6 +311,10 @@
       "schema": { "$ref": "#/entities/Order" },
       "description": "Customer orders containing PII, isolated to order owner and authorized staff."
     },
+    "/walletTopups/{topupId}": {
+      "schema": { "$ref": "#/entities/WalletTopup" },
+      "description": "Customer Add Money wallet top-up requests verified by Admin."
+    },
     "/orderTracking/{orderNumber}": {
       "schema": { "$ref": "#/entities/OrderTracking" },
       "description": "Non-PII public order tracking summaries keyed by orderNumber."
@@ -294,7 +325,7 @@
     },
     "/customers/{uid}": {
       "schema": { "$ref": "#/entities/Customer" },
-      "description": "Customer account profiles and suspension state."
+      "description": "Customer account profiles, wallet balance, and suspension state."
     },
     "/tickets/{ticketId}": {
       "schema": { "$ref": "#/entities/SupportTicket" },

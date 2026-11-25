@@ -1,14 +1,25 @@
 import React, {useEffect, useState} from 'react';
-import {Edit3, Plus, Save, Trash2, X} from 'lucide-react';
+import {
+  CheckCircle2,
+  Edit3,
+  Plus,
+  Save,
+  Trash2,
+  Wallet,
+  X,
+  XCircle,
+} from 'lucide-react';
 import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import {useAuth} from '../../contexts/AuthContext';
 import {useStore} from '../../contexts/StoreContext';
@@ -19,8 +30,14 @@ import {
   handleFirestoreError,
   timestampToMillis,
 } from '../../lib/firebase';
-import type {PaymentHistoryEntry, PaymentMethod} from '../../types';
+import type {
+  CustomerProfile,
+  PaymentHistoryEntry,
+  PaymentMethod,
+  WalletTopup,
+} from '../../types';
 import {ImageUploadField} from '../../components/ImageUploadField';
+import {ImageWithFallback} from '../../components/ImageWithFallback';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
 export function PaymentsManager() {
@@ -28,11 +45,14 @@ export function PaymentsManager() {
   const {paymentMethods} = useStore();
   const canEdit = adminUser?.role === 'super_admin' || adminUser?.permissions.payments;
 
-  const [tab, setTab] = useState<'methods' | 'history' | 'trx'>('methods');
+  const [tab, setTab] = useState<'topups' | 'methods' | 'history' | 'trx'>('topups');
   const [editing, setEditing] = useState<PaymentMethod | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [processingTopupId, setProcessingTopupId] = useState<string | null>(null);
+  const [topupNotes, setTopupNotes] = useState<Record<string, string>>({});
 
+  const [topups, setTopups] = useState<WalletTopup[]>([]);
   const [history, setHistory] = useState<PaymentHistoryEntry[]>([]);
   const [trxEntries, setTrxEntries] = useState<
     Array<{trxKey: string; trxId: string; orderId: string; amount: number; status: string; createdAt: unknown}>
@@ -40,6 +60,11 @@ export function PaymentsManager() {
 
   useEffect(() => {
     if (!firebaseUser || !canEdit) return;
+    const unsubTopups = onSnapshot(
+      query(collection(db, 'walletTopups'), orderBy('createdAt', 'desc')),
+      (snap) => setTopups(snap.docs.map((d) => d.data() as WalletTopup)),
+      (err) => handleFirestoreError(err, OperationType.LIST, 'walletTopups'),
+    );
     const unsubHist = onSnapshot(
       query(collection(db, 'paymentHistory'), orderBy('createdAt', 'desc')),
       (snap) => setHistory(snap.docs.map((d) => d.data() as PaymentHistoryEntry)),
@@ -64,6 +89,7 @@ export function PaymentsManager() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'trxRegistry'),
     );
     return () => {
+      unsubTopups();
       unsubHist();
       unsubTrx();
     };
@@ -109,6 +135,88 @@ export function PaymentsManager() {
     }
   };
 
+  const handleDecideTopup = async (topup: WalletTopup, decision: 'approved' | 'rejected') => {
+    if (!canEdit || !adminUser || topup.status !== 'pending') return;
+    setProcessingTopupId(topup.id);
+    try {
+      const note = (topupNotes[topup.id] || '').trim().slice(0, 500);
+      const now = serverTimestamp();
+      const batch = writeBatch(db);
+
+      if (decision === 'approved') {
+        const custRef = doc(db, 'customers', topup.customerUid);
+        const custSnap = await getDoc(custRef);
+        const currentBalance = custSnap.exists()
+          ? Number((custSnap.data() as Partial<CustomerProfile>).walletBalance || 0)
+          : 0;
+        const nextBalance = Number((currentBalance + topup.amount).toFixed(2));
+        batch.update(custRef, {
+          walletBalance: nextBalance,
+          updatedAt: now,
+        });
+      }
+
+      batch.update(doc(db, 'walletTopups', topup.id), {
+        status: decision,
+        adminNote: note,
+        updatedAt: now,
+      });
+
+      batch.update(doc(db, 'trxRegistry', topup.trxKey), {
+        status: decision === 'approved' ? 'verified' : 'rejected',
+      });
+
+      const shortRef = `TOPUP-${topup.id.slice(-6).toUpperCase()}`;
+      const histId = `ph_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      batch.set(doc(db, 'paymentHistory', histId), {
+        id: histId,
+        orderId: topup.id,
+        orderNumber: shortRef,
+        trxId: topup.trxId,
+        paymentMethodName: topup.paymentMethodName,
+        senderNumber: topup.senderNumber,
+        amount: topup.amount,
+        action: decision,
+        note: note || `Wallet Add Money ${decision}`,
+        adminEmail: adminUser.email,
+        createdAt: now,
+      });
+
+      const notifId = `ntf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      batch.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        customerUid: topup.customerUid,
+        orderId: topup.id,
+        orderNumber: shortRef,
+        title: decision === 'approved' ? 'Wallet Credited' : 'Deposit Rejected',
+        message:
+          decision === 'approved'
+            ? `${formatCurrency(topup.amount)} has been added to your wallet balance.`
+            : `Your wallet deposit request (${topup.trxId}) was rejected. ${note}`,
+        read: false,
+        createdAt: now,
+      });
+
+      const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      batch.set(doc(db, 'auditLogs', logId), {
+        id: logId,
+        actorEmail: adminUser.email,
+        actorRole: adminUser.role,
+        action: `WALLET_TOPUP_${decision.toUpperCase()}`,
+        targetType: 'walletTopup',
+        targetId: topup.id,
+        details: `${topup.customerEmail} · ${formatCurrency(topup.amount)} · TrxID ${topup.trxId}`,
+        createdAt: now,
+      });
+
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `walletTopups/${topup.id}`);
+    } finally {
+      setProcessingTopupId(null);
+    }
+  };
+
   if (!canEdit) {
     return (
       <AdminLayout title="Payment Management">
@@ -119,15 +227,27 @@ export function PaymentsManager() {
     );
   }
 
+  const pendingTopupsCount = topups.filter((t) => t.status === 'pending').length;
+
   return (
-    <AdminLayout title="Payment Management & TrxID Audit">
+    <AdminLayout title="Payment Management & Wallet Deposits">
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl">
+          <div className="flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setTab('topups')}
+              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap ${
+                tab === 'topups'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}>
+              <Wallet className="w-3.5 h-3.5" /> Wallet Top-Ups ({pendingTopupsCount} pending)
+            </button>
             <button
               type="button"
               onClick={() => setTab('methods')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
+              className={`px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap ${
                 tab === 'methods'
                   ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-400'
@@ -137,7 +257,7 @@ export function PaymentsManager() {
             <button
               type="button"
               onClick={() => setTab('history')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
+              className={`px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap ${
                 tab === 'history'
                   ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-400'
@@ -147,12 +267,12 @@ export function PaymentsManager() {
             <button
               type="button"
               onClick={() => setTab('trx')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
+              className={`px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap ${
                 tab === 'trx'
                   ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-400'
               }`}>
-              Duplicate TrxID Registry ({trxEntries.length})
+              TrxID Registry ({trxEntries.length})
             </button>
           </div>
 
@@ -177,6 +297,100 @@ export function PaymentsManager() {
             </button>
           )}
         </div>
+
+        {/* Tab: Wallet Top-Ups */}
+        {tab === 'topups' && (
+          <div className="space-y-4">
+            {topups.length === 0 ? (
+              <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-10 text-center text-sm text-slate-500">
+                No customer Add Money deposit requests yet.
+              </div>
+            ) : (
+              topups.map((t) => (
+                <div
+                  key={t.id}
+                  className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 space-y-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg font-extrabold font-display tabular-nums">
+                          {formatCurrency(t.amount)}
+                        </span>
+                        <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
+                          via {t.paymentMethodName}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {t.customerName} ({t.customerEmail}) ·{' '}
+                        {new Date(timestampToMillis(t.createdAt)).toLocaleString()}
+                      </p>
+                      <p className="text-xs font-mono mt-1">
+                        TrxID: <span className="font-bold">{t.trxId}</span> · Sender:{' '}
+                        <span>{t.senderNumber}</span>
+                      </p>
+                    </div>
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-xs font-bold capitalize ${
+                        t.status === 'approved'
+                          ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400'
+                          : t.status === 'rejected'
+                            ? 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-400'
+                            : 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400'
+                      }`}>
+                      {t.status}
+                    </span>
+                  </div>
+
+                  {t.screenshotUrl && (
+                    <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 max-h-56 bg-slate-950">
+                      <ImageWithFallback
+                        src={t.screenshotUrl}
+                        alt="Deposit screenshot"
+                        className="w-full h-full object-contain max-h-56"
+                      />
+                    </div>
+                  )}
+
+                  {t.status === 'pending' ? (
+                    <div className="flex flex-col sm:flex-row gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+                      <input
+                        type="text"
+                        value={topupNotes[t.id] || ''}
+                        onChange={(e) =>
+                          setTopupNotes((prev) => ({...prev, [t.id]: e.target.value}))
+                        }
+                        placeholder="Optional admin note..."
+                        className="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      />
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          disabled={processingTopupId === t.id}
+                          onClick={() => void handleDecideTopup(t, 'approved')}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-40">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Approve &amp; Credit
+                        </button>
+                        <button
+                          type="button"
+                          disabled={processingTopupId === t.id}
+                          onClick={() => void handleDecideTopup(t, 'rejected')}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-40">
+                          <XCircle className="w-3.5 h-3.5" /> Reject
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    t.adminNote && (
+                      <p className="text-xs text-slate-500 border-t border-slate-100 dark:border-slate-800 pt-2">
+                        Admin Note: {t.adminNote}
+                      </p>
+                    )
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        )}
 
         {/* Tab: Payment Methods */}
         {tab === 'methods' && (
@@ -350,7 +564,7 @@ export function PaymentsManager() {
                 <table className="w-full text-left text-sm">
                   <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-xs text-slate-500">
                     <tr>
-                      <th className="px-4 py-3 font-medium">Order</th>
+                      <th className="px-4 py-3 font-medium">Reference</th>
                       <th className="px-4 py-3 font-medium">Method / Sender</th>
                       <th className="px-4 py-3 font-medium">TrxID</th>
                       <th className="px-4 py-3 font-medium">Amount</th>
@@ -406,7 +620,7 @@ export function PaymentsManager() {
                     <tr>
                       <th className="px-4 py-3 font-medium">TrxID</th>
                       <th className="px-4 py-3 font-medium">Lock Key</th>
-                      <th className="px-4 py-3 font-medium">Order Ref</th>
+                      <th className="px-4 py-3 font-medium">Reference ID</th>
                       <th className="px-4 py-3 font-medium">Amount</th>
                       <th className="px-4 py-3 font-medium">Status</th>
                     </tr>

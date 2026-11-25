@@ -39,6 +39,7 @@ export function OrdersManager() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
   const [adminNote, setAdminNote] = useState('');
+  const [voucherCode, setVoucherCode] = useState('');
   const [notifText, setNotifText] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
@@ -77,6 +78,7 @@ export function OrdersManager() {
   const openOrder = (order: Order) => {
     setSelectedOrder(order);
     setAdminNote(order.adminNote || '');
+    setVoucherCode(order.voucherCode || '');
     setNotifText('');
     setFeedback('');
   };
@@ -188,6 +190,7 @@ export function OrdersManager() {
 
       const orderPatch: Record<string, unknown> = {
         orderStatus: nextStatus,
+        voucherCode: voucherCode.trim().slice(0, 500),
         adminNote: adminNote.slice(0, 1000),
         notificationMessage: msg.slice(0, 500),
         updatedAt: now,
@@ -248,6 +251,7 @@ export function OrdersManager() {
       const msg = notifText.trim() || order.notificationMessage || 'Order note updated by admin.';
 
       batch.update(doc(db, 'orders', order.id), {
+        voucherCode: voucherCode.trim().slice(0, 500),
         adminNote: adminNote.slice(0, 1000),
         notificationMessage: msg.slice(0, 500),
         updatedAt: now,
@@ -453,6 +457,18 @@ export function OrdersManager() {
             )}
 
             <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+              <div>
+                <label className="block text-xs font-medium mb-1">
+                  Deliver Voucher Code / Redeem PIN (Appears in customer My Codes)
+                </label>
+                <input
+                  type="text"
+                  value={voucherCode}
+                  onChange={(e) => setVoucherCode(e.target.value)}
+                  placeholder="Optional e.g. BDMB-Q-S-03861208..."
+                  className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+              </div>
               <div>
                 <label className="block text-xs font-medium mb-1">Admin Internal Note</label>
                 <input

@@ -5,6 +5,7 @@ import {
   Edit3,
   FolderPlus,
   Plus,
+  RefreshCw,
   Save,
   Trash2,
   X,
@@ -13,6 +14,7 @@ import {deleteDoc, doc, serverTimestamp, setDoc} from 'firebase/firestore';
 import {useAuth} from '../../contexts/AuthContext';
 import {useStore} from '../../contexts/StoreContext';
 import {OperationType, db, formatCurrency, handleFirestoreError} from '../../lib/firebase';
+import {syncRecommendedCatalog} from '../../lib/seedData';
 import type {Category, DiamondPackage, Product} from '../../types';
 import {ImageUploadField} from '../../components/ImageUploadField';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
@@ -38,7 +40,22 @@ export function ProductsManager() {
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [isNewCategory, setIsNewCategory] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState('');
+
+  const handleSyncCatalog = async () => {
+    if (!adminUser || !canEdit) return;
+    setSyncing(true);
+    setMessage('');
+    try {
+      await syncRecommendedCatalog(adminUser.email);
+      setMessage('All default products and packages have been synced to Firestore.');
+    } catch {
+      setMessage('Failed to sync default packages.');
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const logAction = async (action: string, targetType: string, targetId: string, details: string) => {
     if (!adminUser) return;
@@ -125,7 +142,7 @@ export function ProductsManager() {
         slug: slugify(editingProduct.slug || editingProduct.name),
         categoryName: cat?.name || editingProduct.categoryName || 'Top-Up',
         images: cleanImages.slice(0, 10),
-        packages: cleanPackages.slice(0, 30),
+        packages: cleanPackages.slice(0, 60),
         displayOrder: Number(editingProduct.displayOrder) || 1,
         createdAt: isNewProduct ? now : editingProduct.createdAt || now,
         updatedAt: now,
@@ -294,12 +311,22 @@ export function ProductsManager() {
           </div>
 
           {tab === 'products' ? (
-            <button
-              type="button"
-              onClick={openNewProduct}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">
-              <Plus className="w-4 h-4" /> Add Product
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSyncCatalog()}
+                disabled={syncing}
+                className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold cursor-pointer disabled:opacity-50">
+                <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? 'Syncing...' : 'Sync Default Packages'}
+              </button>
+              <button
+                type="button"
+                onClick={openNewProduct}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">
+                <Plus className="w-4 h-4" /> Add Product
+              </button>
+            </div>
           ) : (
             <button
               type="button"

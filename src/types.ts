@@ -135,6 +135,7 @@ export interface Order {
   customerPhone: string;
   productId: string;
   productName: string;
+  productImage?: string;
   packageId: string;
   packageName: string;
   quantityLabel: string;
@@ -142,12 +143,14 @@ export interface Order {
   totalAmount: number;
   playerUid: string;
   serverId: string;
+  paymentType?: 'manual' | 'wallet';
   paymentMethodId: string;
   paymentMethodName: string;
   senderNumber: string;
   trxId: string;
   trxKey: string;
   screenshotUrl: string;
+  voucherCode?: string;
   paymentStatus: PaymentStatus;
   orderStatus: OrderStatus;
   adminNote: string;
@@ -155,6 +158,24 @@ export interface Order {
   createdAt?: unknown;
   updatedAt?: unknown;
   completedAt?: unknown;
+}
+
+export interface WalletTopup {
+  id: string;
+  customerUid: string;
+  customerName: string;
+  customerEmail: string;
+  amount: number;
+  paymentMethodId: string;
+  paymentMethodName: string;
+  senderNumber: string;
+  trxId: string;
+  trxKey: string;
+  screenshotUrl: string;
+  status: 'pending' | 'approved' | 'rejected';
+  adminNote: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
 }
 
 export interface OrderTracking {
@@ -175,6 +196,7 @@ export interface CustomerProfile {
   email: string;
   photoURL: string;
   phone: string;
+  walletBalance: number;
   suspended: boolean;
   suspendedReason: string;
   createdAt?: unknown;

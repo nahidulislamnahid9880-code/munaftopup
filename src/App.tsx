@@ -11,10 +11,13 @@ import {DashboardOverview} from './pages/admin/DashboardOverview';
 import {OrdersManager} from './pages/admin/OrdersManager';
 import {PaymentsManager} from './pages/admin/PaymentsManager';
 import {ProductsManager} from './pages/admin/ProductsManager';
+import {AddMoneyPage} from './pages/store/AddMoneyPage';
 import {CheckoutPage} from './pages/store/CheckoutPage';
 import {CustomerAccountPage} from './pages/store/CustomerAccountPage';
 import {HomePage} from './pages/store/HomePage';
 import {LegalPage} from './pages/store/LegalPage';
+import {MyCodesPage} from './pages/store/MyCodesPage';
+import {MyOrdersPage} from './pages/store/MyOrdersPage';
 import {OrderTrackingPage} from './pages/store/OrderTrackingPage';
 import {ProductDetailPage} from './pages/store/ProductDetailPage';
 
@@ -30,6 +33,9 @@ export default function App() {
                 <Route path="/" element={<HomePage />} />
                 <Route path="/product/:slug" element={<ProductDetailPage />} />
                 <Route path="/checkout" element={<CheckoutPage />} />
+                <Route path="/add-money" element={<AddMoneyPage />} />
+                <Route path="/orders" element={<MyOrdersPage />} />
+                <Route path="/codes" element={<MyCodesPage />} />
                 <Route path="/track" element={<OrderTrackingPage />} />
                 <Route path="/account" element={<CustomerAccountPage />} />
                 <Route path="/terms" element={<LegalPage type="terms" />} />
