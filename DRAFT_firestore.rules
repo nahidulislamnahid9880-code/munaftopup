@@ -1,0 +1,574 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Core Primitives & Identity Helpers
+    // ---------------------------------------------------------
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && request.auth.token.email == 'nahidulislamnahid9880@gmail.com';
+    }
+
+    function emailToKey(email) {
+      return email.lower().replace('[^a-z0-9]', '_');
+    }
+
+    function staffPath() {
+      return /databases/$(database)/documents/staff/$(emailToKey(request.auth.token.email));
+    }
+
+    function isStaff() {
+      return isSuperAdmin() || (
+        isSignedIn() &&
+        request.auth.token.email is string &&
+        exists(staffPath()) &&
+        get(staffPath()).data.active == true
+      );
+    }
+
+    function hasPerm(perm) {
+      return isSuperAdmin() || (
+        isSignedIn() &&
+        request.auth.token.email is string &&
+        exists(staffPath()) &&
+        get(staffPath()).data.active == true &&
+        get(staffPath()).data.permissions[perm] == true
+      );
+    }
+
+    function isNotSuspended(uid) {
+      return !exists(/databases/$(database)/documents/customers/$(uid)) ||
+        get(/databases/$(database)/documents/customers/$(uid)).data.suspended == false;
+    }
+
+    // ---------------------------------------------------------
+    // Entity Validation Blueprints
+    // ---------------------------------------------------------
+    function isValidSiteSettings(data) {
+      return data.keys().hasAll([
+          'brandName', 'brandTagline', 'logoUrl', 'faviconUrl',
+          'noticeText', 'noticeActive', 'heroTitle', 'heroSubtitle',
+          'heroCtaText', 'heroCtaLink', 'banners', 'promos',
+          'homepageSections', 'contact', 'socials', 'footerText',
+          'termsContent', 'privacyContent', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'brandName', 'brandTagline', 'logoUrl', 'faviconUrl',
+          'noticeText', 'noticeActive', 'heroTitle', 'heroSubtitle',
+          'heroCtaText', 'heroCtaLink', 'banners', 'promos',
+          'homepageSections', 'contact', 'socials', 'footerText',
+          'termsContent', 'privacyContent', 'updatedAt'
+        ]) &&
+        data.brandName is string && data.brandName.size() >= 1 && data.brandName.size() <= 80 &&
+        data.brandTagline is string && data.brandTagline.size() <= 160 &&
+        data.logoUrl is string && data.logoUrl.size() <= 1000 &&
+        data.faviconUrl is string && data.faviconUrl.size() <= 1000 &&
+        data.noticeText is string && data.noticeText.size() <= 300 &&
+        data.noticeActive is bool &&
+        data.heroTitle is string && data.heroTitle.size() >= 1 && data.heroTitle.size() <= 140 &&
+        data.heroSubtitle is string && data.heroSubtitle.size() <= 300 &&
+        data.heroCtaText is string && data.heroCtaText.size() <= 50 &&
+        data.heroCtaLink is string && data.heroCtaLink.size() <= 200 &&
+        data.banners is list && data.banners.size() <= 10 &&
+        data.promos is list && data.promos.size() <= 10 &&
+        data.homepageSections is map &&
+        data.contact is map &&
+        data.socials is map &&
+        data.footerText is string && data.footerText.size() <= 300 &&
+        data.termsContent is string && data.termsContent.size() <= 20000 &&
+        data.privacyContent is string && data.privacyContent.size() <= 20000 &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'name', 'slug', 'description', 'imageUrl', 'displayOrder', 'active', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'slug', 'description', 'imageUrl', 'displayOrder', 'active', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 80 && data.slug.matches('^[a-z0-9\\-]+$') &&
+        data.description is string && data.description.size() <= 300 &&
+        data.imageUrl is string && data.imageUrl.size() <= 1000 &&
+        data.displayOrder is number && data.displayOrder >= 0 && data.displayOrder <= 10000 &&
+        data.active is bool &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'slug', 'categoryId', 'categoryName',
+          'shortDescription', 'description', 'instructions', 'images',
+          'requiresUid', 'uidLabel', 'requiresServerId', 'serverLabel',
+          'serverOptions', 'packages', 'active', 'featured',
+          'displayOrder', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'slug', 'categoryId', 'categoryName',
+          'shortDescription', 'description', 'instructions', 'images',
+          'requiresUid', 'uidLabel', 'requiresServerId', 'serverLabel',
+          'serverOptions', 'packages', 'active', 'featured',
+          'displayOrder', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 120 && data.slug.matches('^[a-z0-9\\-]+$') &&
+        isValidId(data.categoryId) &&
+        data.categoryName is string && data.categoryName.size() <= 80 &&
+        data.shortDescription is string && data.shortDescription.size() <= 240 &&
+        data.description is string && data.description.size() <= 4000 &&
+        data.instructions is string && data.instructions.size() <= 2000 &&
+        data.images is list && data.images.size() >= 1 && data.images.size() <= 10 && data.images[0] is string &&
+        data.requiresUid is bool &&
+        data.uidLabel is string && data.uidLabel.size() <= 60 &&
+        data.requiresServerId is bool &&
+        data.serverLabel is string && data.serverLabel.size() <= 60 &&
+        data.serverOptions is list && data.serverOptions.size() <= 20 &&
+        data.packages is list && data.packages.size() >= 1 && data.packages.size() <= 30 &&
+        data.active is bool &&
+        data.featured is bool &&
+        data.displayOrder is number && data.displayOrder >= 0 && data.displayOrder <= 10000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidPaymentMethod(data) {
+      return data.keys().hasAll(['id', 'name', 'accountNumber', 'accountType', 'instructions', 'logoUrl', 'active', 'displayOrder', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'accountNumber', 'accountType', 'instructions', 'logoUrl', 'active', 'displayOrder', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+        data.accountNumber is string && data.accountNumber.size() >= 3 && data.accountNumber.size() <= 40 &&
+        data.accountType in ['Personal', 'Merchant', 'Agent'] &&
+        data.instructions is string && data.instructions.size() <= 1500 &&
+        data.logoUrl is string && data.logoUrl.size() <= 1000 &&
+        data.active is bool &&
+        data.displayOrder is number && data.displayOrder >= 0 && data.displayOrder <= 10000 &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll([
+          'id', 'orderNumber', 'customerUid', 'customerName', 'customerEmail', 'customerPhone',
+          'productId', 'productName', 'packageId', 'packageName', 'quantityLabel',
+          'unitPrice', 'totalAmount', 'playerUid', 'serverId',
+          'paymentMethodId', 'paymentMethodName', 'senderNumber', 'trxId', 'trxKey',
+          'screenshotUrl', 'paymentStatus', 'orderStatus', 'adminNote', 'notificationMessage',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'orderNumber', 'customerUid', 'customerName', 'customerEmail', 'customerPhone',
+          'productId', 'productName', 'packageId', 'packageName', 'quantityLabel',
+          'unitPrice', 'totalAmount', 'playerUid', 'serverId',
+          'paymentMethodId', 'paymentMethodName', 'senderNumber', 'trxId', 'trxKey',
+          'screenshotUrl', 'paymentStatus', 'orderStatus', 'adminNote', 'notificationMessage',
+          'createdAt', 'updatedAt', 'completedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.orderNumber) &&
+        isValidId(data.customerUid) &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 100 &&
+        data.customerEmail is string && data.customerEmail.size() <= 160 &&
+        data.customerPhone is string && data.customerPhone.size() >= 5 && data.customerPhone.size() <= 30 &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 120 &&
+        data.packageId is string && data.packageId.size() >= 1 && data.packageId.size() <= 128 &&
+        data.packageName is string && data.packageName.size() >= 1 && data.packageName.size() <= 120 &&
+        data.quantityLabel is string && data.quantityLabel.size() <= 80 &&
+        data.unitPrice is number && data.unitPrice >= 0 &&
+        data.totalAmount is number && data.totalAmount >= 0 &&
+        data.playerUid is string && data.playerUid.size() <= 80 &&
+        data.serverId is string && data.serverId.size() <= 80 &&
+        isValidId(data.paymentMethodId) &&
+        data.paymentMethodName is string && data.paymentMethodName.size() >= 1 && data.paymentMethodName.size() <= 60 &&
+        data.senderNumber is string && data.senderNumber.size() >= 5 && data.senderNumber.size() <= 40 &&
+        data.trxId is string && data.trxId.size() >= 4 && data.trxId.size() <= 64 &&
+        isValidId(data.trxKey) &&
+        data.screenshotUrl is string && data.screenshotUrl.size() <= 1000 &&
+        data.paymentStatus in ['pending', 'verified', 'rejected'] &&
+        data.orderStatus in ['pending', 'processing', 'completed', 'cancelled'] &&
+        data.adminNote is string && data.adminNote.size() <= 1000 &&
+        data.notificationMessage is string && data.notificationMessage.size() <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time &&
+        (!('completedAt' in data) || data.completedAt is timestamp);
+    }
+
+    function isValidOrderTracking(data) {
+      return data.keys().hasAll([
+          'orderNumber', 'productName', 'packageName', 'playerUidMasked',
+          'paymentStatus', 'orderStatus', 'notificationMessage', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'orderNumber', 'productName', 'packageName', 'playerUidMasked',
+          'paymentStatus', 'orderStatus', 'notificationMessage', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.orderNumber) &&
+        data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 120 &&
+        data.packageName is string && data.packageName.size() >= 1 && data.packageName.size() <= 120 &&
+        data.playerUidMasked is string && data.playerUidMasked.size() <= 80 &&
+        data.paymentStatus in ['pending', 'verified', 'rejected'] &&
+        data.orderStatus in ['pending', 'processing', 'completed', 'cancelled'] &&
+        data.notificationMessage is string && data.notificationMessage.size() <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidTrxRegistry(data) {
+      return data.keys().hasAll(['trxKey', 'trxId', 'orderId', 'customerUid', 'paymentMethodId', 'amount', 'status', 'createdAt']) &&
+        data.keys().hasOnly(['trxKey', 'trxId', 'orderId', 'customerUid', 'paymentMethodId', 'amount', 'status', 'createdAt']) &&
+        isValidId(data.trxKey) &&
+        data.trxId is string && data.trxId.size() >= 4 && data.trxId.size() <= 64 &&
+        isValidId(data.orderId) &&
+        isValidId(data.customerUid) &&
+        isValidId(data.paymentMethodId) &&
+        data.amount is number && data.amount >= 0 &&
+        data.status in ['pending', 'verified', 'rejected'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'photoURL', 'phone', 'suspended', 'suspendedReason', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'phone', 'suspended', 'suspendedReason', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() <= 100 &&
+        data.email is string && data.email.size() <= 160 &&
+        data.photoURL is string && data.photoURL.size() <= 1000 &&
+        data.phone is string && data.phone.size() <= 30 &&
+        data.suspended is bool &&
+        data.suspendedReason is string && data.suspendedReason.size() <= 300 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidTicket(data) {
+      return data.keys().hasAll(['id', 'customerUid', 'customerName', 'customerEmail', 'orderNumber', 'subject', 'message', 'status', 'adminReply', 'repliedBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'customerUid', 'customerName', 'customerEmail', 'orderNumber', 'subject', 'message', 'status', 'adminReply', 'repliedBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.customerUid) &&
+        data.customerName is string && data.customerName.size() <= 100 &&
+        data.customerEmail is string && data.customerEmail.size() <= 160 &&
+        data.orderNumber is string && data.orderNumber.size() <= 32 &&
+        data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 140 &&
+        data.message is string && data.message.size() >= 5 && data.message.size() <= 2000 &&
+        data.status in ['open', 'replied', 'closed'] &&
+        data.adminReply is string && data.adminReply.size() <= 2000 &&
+        data.repliedBy is string && data.repliedBy.size() <= 160 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidPaymentHistory(data) {
+      return data.keys().hasAll(['id', 'orderId', 'orderNumber', 'trxId', 'paymentMethodName', 'senderNumber', 'amount', 'action', 'note', 'adminEmail', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'orderId', 'orderNumber', 'trxId', 'paymentMethodName', 'senderNumber', 'amount', 'action', 'note', 'adminEmail', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.orderId) &&
+        data.orderNumber is string && data.orderNumber.size() <= 32 &&
+        data.trxId is string && data.trxId.size() <= 64 &&
+        data.paymentMethodName is string && data.paymentMethodName.size() <= 60 &&
+        data.senderNumber is string && data.senderNumber.size() <= 40 &&
+        data.amount is number && data.amount >= 0 &&
+        data.action in ['approved', 'rejected'] &&
+        data.note is string && data.note.size() <= 500 &&
+        data.adminEmail is string && data.adminEmail.size() <= 160 &&
+        data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidStaffMember(data) {
+      return data.keys().hasAll(['id', 'email', 'name', 'role', 'active', 'permissions', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'email', 'name', 'role', 'active', 'permissions', 'createdBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.role in ['super_admin', 'admin', 'sub_admin'] &&
+        data.active is bool &&
+        data.permissions is map &&
+        data.permissions.keys().hasAll(['products', 'orders', 'payments', 'customers', 'customization', 'settings']) &&
+        data.permissions.keys().hasOnly(['products', 'orders', 'payments', 'customers', 'customization', 'settings']) &&
+        data.permissions.products is bool &&
+        data.permissions.orders is bool &&
+        data.permissions.payments is bool &&
+        data.permissions.customers is bool &&
+        data.permissions.customization is bool &&
+        data.permissions.settings is bool &&
+        data.createdBy is string && data.createdBy.size() <= 160 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'actorEmail', 'actorRole', 'action', 'targetType', 'targetId', 'details', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'actorEmail', 'actorRole', 'action', 'targetType', 'targetId', 'details', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.actorEmail is string && data.actorEmail.size() >= 3 && data.actorEmail.size() <= 160 &&
+        data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 40 &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 100 &&
+        data.targetType is string && data.targetType.size() >= 1 && data.targetType.size() <= 60 &&
+        data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
+        data.details is string && data.details.size() <= 1000 &&
+        data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'customerUid', 'orderId', 'orderNumber', 'title', 'message', 'read', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'customerUid', 'orderId', 'orderNumber', 'title', 'message', 'read', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.customerUid) &&
+        data.orderId is string && data.orderId.size() <= 128 &&
+        data.orderNumber is string && data.orderNumber.size() <= 32 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+        data.read is bool &&
+        data.createdAt is timestamp;
+    }
+
+    // ---------------------------------------------------------
+    // Collection Rules
+    // ---------------------------------------------------------
+
+    // Connection test check
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+    }
+
+    // Public Storefront Configuration (Admin-controlled)
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if false;
+      allow create: if isValidId(settingId) && hasPerm('customization') && isValidSiteSettings(incoming());
+      allow update: if isValidId(settingId) && hasPerm('customization') && isValidSiteSettings(incoming());
+      allow delete: if false;
+    }
+
+    match /categories/{categoryId} {
+      allow get: if isValidId(categoryId);
+      allow list: if true;
+      allow create: if isValidId(categoryId) && (hasPerm('products') || hasPerm('customization')) &&
+        isValidCategory(incoming()) && incoming().id == categoryId;
+      allow update: if isValidId(categoryId) && (hasPerm('products') || hasPerm('customization')) &&
+        isValidCategory(incoming()) && incoming().id == existing().id;
+      allow delete: if isValidId(categoryId) && (hasPerm('products') || hasPerm('customization'));
+    }
+
+    match /products/{productId} {
+      allow get: if isValidId(productId);
+      allow list: if true;
+      allow create: if isValidId(productId) && hasPerm('products') &&
+        isValidProduct(incoming()) &&
+        incoming().id == productId &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/categories/$(incoming().categoryId));
+      allow update: if isValidId(productId) && hasPerm('products') &&
+        isValidProduct(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(productId) && hasPerm('products');
+    }
+
+    match /paymentMethods/{methodId} {
+      allow get: if isValidId(methodId);
+      allow list: if true;
+      allow create: if isValidId(methodId) && hasPerm('payments') &&
+        isValidPaymentMethod(incoming()) && incoming().id == methodId;
+      allow update: if isValidId(methodId) && hasPerm('payments') &&
+        isValidPaymentMethod(incoming()) && incoming().id == existing().id;
+      allow delete: if isValidId(methodId) && hasPerm('payments');
+    }
+
+    // Orders (PII-isolated)
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isSignedIn() && (existing().customerUid == request.auth.uid || isStaff());
+      allow list: if isSignedIn() && (resource.data.customerUid == request.auth.uid || isStaff());
+      allow create: if isValidId(orderId) && isSignedIn() && isNotSuspended(request.auth.uid) &&
+        isValidOrder(incoming()) &&
+        incoming().id == orderId &&
+        incoming().customerUid == request.auth.uid &&
+        incoming().paymentStatus == 'pending' &&
+        incoming().orderStatus == 'pending' &&
+        incoming().adminNote == '' &&
+        incoming().createdAt == request.time &&
+        !('completedAt' in incoming()) &&
+        exists(/databases/$(database)/documents/products/$(incoming().productId)) &&
+        exists(/databases/$(database)/documents/paymentMethods/$(incoming().paymentMethodId)) &&
+        existsAfter(/databases/$(database)/documents/trxRegistry/$(incoming().trxKey)) &&
+        existsAfter(/databases/$(database)/documents/orderTracking/$(incoming().orderNumber));
+      allow update: if isValidId(orderId) && isSignedIn() && (hasPerm('orders') || hasPerm('payments')) &&
+        isValidOrder(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().orderNumber == existing().orderNumber &&
+        incoming().customerUid == existing().customerUid &&
+        incoming().trxKey == existing().trxKey &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'paymentStatus', 'orderStatus', 'adminNote', 'notificationMessage', 'updatedAt', 'completedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // Non-PII public order tracking lookup by exact Order Number
+    match /orderTracking/{orderNumber} {
+      allow get: if isValidId(orderNumber);
+      allow list: if false;
+      allow create: if isValidId(orderNumber) && isSignedIn() && isNotSuspended(request.auth.uid) &&
+        isValidOrderTracking(incoming()) &&
+        incoming().orderNumber == orderNumber &&
+        incoming().paymentStatus == 'pending' &&
+        incoming().orderStatus == 'pending' &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(orderNumber) && isSignedIn() && (hasPerm('orders') || hasPerm('payments')) &&
+        isValidOrderTracking(incoming()) &&
+        incoming().orderNumber == existing().orderNumber &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'paymentStatus', 'orderStatus', 'notificationMessage', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // Unique TrxID lock registry
+    match /trxRegistry/{trxKey} {
+      allow get: if isValidId(trxKey) && isSignedIn() && (existing().customerUid == request.auth.uid || isStaff());
+      allow list: if isStaff();
+      allow create: if isValidId(trxKey) && isSignedIn() && isNotSuspended(request.auth.uid) &&
+        isValidTrxRegistry(incoming()) &&
+        incoming().trxKey == trxKey &&
+        incoming().customerUid == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        existsAfter(/databases/$(database)/documents/orders/$(incoming().orderId));
+      allow update: if isValidId(trxKey) && isSignedIn() && hasPerm('payments') &&
+        isValidTrxRegistry(incoming()) &&
+        incoming().trxKey == existing().trxKey &&
+        incoming().orderId == existing().orderId &&
+        incoming().customerUid == existing().customerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+      allow delete: if false;
+    }
+
+    // Customer Profiles (PII-isolated)
+    match /customers/{uid} {
+      allow get: if isValidId(uid) && isSignedIn() && (request.auth.uid == uid || isStaff());
+      allow list: if isStaff();
+      allow create: if isValidId(uid) && isSignedIn() && request.auth.uid == uid &&
+        isValidCustomer(incoming()) &&
+        incoming().uid == uid &&
+        incoming().suspended == false &&
+        incoming().suspendedReason == '' &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(uid) && isSignedIn() && isValidCustomer(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt && (
+          (request.auth.uid == uid &&
+           incoming().suspended == existing().suspended &&
+           incoming().suspendedReason == existing().suspendedReason &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'phone', 'updatedAt'])) ||
+          (hasPerm('customers') &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['suspended', 'suspendedReason', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // Support Tickets
+    match /tickets/{ticketId} {
+      allow get: if isValidId(ticketId) && isSignedIn() && (existing().customerUid == request.auth.uid || isStaff());
+      allow list: if isSignedIn() && (resource.data.customerUid == request.auth.uid || isStaff());
+      allow create: if isValidId(ticketId) && isSignedIn() && isNotSuspended(request.auth.uid) &&
+        isValidTicket(incoming()) &&
+        incoming().id == ticketId &&
+        incoming().customerUid == request.auth.uid &&
+        incoming().status == 'open' &&
+        incoming().adminReply == '' &&
+        incoming().repliedBy == '' &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(ticketId) && isSignedIn() && isValidTicket(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().customerUid == existing().customerUid &&
+        incoming().createdAt == existing().createdAt && (
+          (hasPerm('customers') &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminReply', 'repliedBy', 'updatedAt'])) ||
+          (existing().customerUid == request.auth.uid &&
+           existing().status != 'closed' &&
+           incoming().status == 'closed' &&
+           incoming().adminReply == existing().adminReply &&
+           incoming().repliedBy == existing().repliedBy &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // Payment Verification History (Immutable)
+    match /paymentHistory/{historyId} {
+      allow get: if isValidId(historyId) && isStaff();
+      allow list: if isStaff();
+      allow create: if isValidId(historyId) && hasPerm('payments') &&
+        isValidPaymentHistory(incoming()) &&
+        incoming().id == historyId;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Staff & Sub-Admin Access Control
+    match /staff/{staffId} {
+      allow get: if isValidId(staffId) && isSignedIn() && (isSuperAdmin() || staffId == emailToKey(request.auth.token.email));
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(staffId) && isSuperAdmin() &&
+        isValidStaffMember(incoming()) &&
+        incoming().id == staffId &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(staffId) && isSuperAdmin() &&
+        isValidStaffMember(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(staffId) && isSuperAdmin();
+    }
+
+    // Audit Logs (Append-only)
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isStaff();
+      allow list: if isStaff();
+      allow create: if isValidId(logId) && isStaff() &&
+        isValidAuditLog(incoming()) &&
+        incoming().id == logId;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Customer Notifications
+    match /notifications/{notifId} {
+      allow get: if isValidId(notifId) && isSignedIn() && (existing().customerUid == request.auth.uid || isStaff());
+      allow list: if isSignedIn() && (resource.data.customerUid == request.auth.uid || isStaff());
+      allow create: if isValidId(notifId) && (hasPerm('orders') || hasPerm('customers')) &&
+        isValidNotification(incoming()) &&
+        incoming().id == notifId &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(notifId) && isSignedIn() &&
+        existing().customerUid == request.auth.uid &&
+        isValidNotification(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().customerUid == existing().customerUid &&
+        incoming().read == true &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if false;
+    }
+  }
+}

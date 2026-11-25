@@ -1,0 +1,320 @@
+{
+  "entities": {
+    "SiteSettings": {
+      "title": "SiteSettings",
+      "description": "Global storefront branding, hero, banners, promos, notices, contact info, social links, footer, and legal pages.",
+      "type": "object",
+      "properties": {
+        "brandName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "brandTagline": { "type": "string", "maxLength": 160 },
+        "logoUrl": { "type": "string", "maxLength": 1000 },
+        "faviconUrl": { "type": "string", "maxLength": 1000 },
+        "noticeText": { "type": "string", "maxLength": 300 },
+        "noticeActive": { "type": "boolean" },
+        "heroTitle": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "heroSubtitle": { "type": "string", "maxLength": 300 },
+        "heroCtaText": { "type": "string", "maxLength": 50 },
+        "heroCtaLink": { "type": "string", "maxLength": 200 },
+        "banners": { "type": "array", "description": "Up to 10 homepage slider banners" },
+        "promos": { "type": "array", "description": "Up to 10 promotional offer blocks" },
+        "homepageSections": { "type": "object" },
+        "contact": { "type": "object" },
+        "socials": { "type": "object" },
+        "footerText": { "type": "string", "maxLength": 300 },
+        "termsContent": { "type": "string", "maxLength": 20000 },
+        "privacyContent": { "type": "string", "maxLength": 20000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["brandName", "heroTitle", "updatedAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product category for digital top-ups and game vouchers.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "slug": { "type": "string", "pattern": "^[a-z0-9\\-]+$", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 300 },
+        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "displayOrder": { "type": "number" },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "slug", "displayOrder", "active", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Digital top-up product with multiple images, UID/Server requirements, and nested diamond/voucher packages.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "slug": { "type": "string", "pattern": "^[a-z0-9\\-]+$", "maxLength": 120 },
+        "categoryId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "categoryName": { "type": "string", "maxLength": 80 },
+        "shortDescription": { "type": "string", "maxLength": 240 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "instructions": { "type": "string", "maxLength": 2000 },
+        "images": { "type": "array", "description": "Up to 10 product image URLs" },
+        "requiresUid": { "type": "boolean" },
+        "uidLabel": { "type": "string", "maxLength": 60 },
+        "requiresServerId": { "type": "boolean" },
+        "serverLabel": { "type": "string", "maxLength": 60 },
+        "serverOptions": { "type": "array", "description": "Up to 20 server options" },
+        "packages": { "type": "array", "description": "Up to 30 selectable packages" },
+        "active": { "type": "boolean" },
+        "featured": { "type": "boolean" },
+        "displayOrder": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "slug", "categoryId", "images", "packages", "active", "displayOrder", "createdAt", "updatedAt"]
+    },
+    "PaymentMethod": {
+      "title": "PaymentMethod",
+      "description": "Mobile banking or wallet payment method (e.g. bKash, Nagad) configured by Admin.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "accountNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "accountType": { "type": "string", "enum": ["Personal", "Merchant", "Agent"] },
+        "instructions": { "type": "string", "maxLength": 1500 },
+        "logoUrl": { "type": "string", "maxLength": 1000 },
+        "active": { "type": "boolean" },
+        "displayOrder": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "accountNumber", "accountType", "active", "displayOrder", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer top-up order with player UID, selected package, and bKash/Nagad payment verification details.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "orderNumber": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 32 },
+        "customerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
+        "customerPhone": { "type": "string", "minLength": 5, "maxLength": 30 },
+        "productId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 120 },
+        "packageId": { "type": "string", "maxLength": 128 },
+        "packageName": { "type": "string", "maxLength": 120 },
+        "quantityLabel": { "type": "string", "maxLength": 80 },
+        "unitPrice": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "playerUid": { "type": "string", "maxLength": 80 },
+        "serverId": { "type": "string", "maxLength": 80 },
+        "paymentMethodId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "paymentMethodName": { "type": "string", "maxLength": 60 },
+        "senderNumber": { "type": "string", "minLength": 5, "maxLength": 40 },
+        "trxId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "trxKey": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "screenshotUrl": { "type": "string", "maxLength": 1000 },
+        "paymentStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled"] },
+        "adminNote": { "type": "string", "maxLength": 1000 },
+        "notificationMessage": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderNumber", "customerUid", "customerName", "customerPhone", "productId", "packageId", "totalAmount", "paymentMethodId", "senderNumber", "trxId", "trxKey", "paymentStatus", "orderStatus", "createdAt", "updatedAt"]
+    },
+    "OrderTracking": {
+      "title": "OrderTracking",
+      "description": "Non-PII public order tracking summary keyed by Order Number.",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 32 },
+        "productName": { "type": "string", "maxLength": 120 },
+        "packageName": { "type": "string", "maxLength": 120 },
+        "playerUidMasked": { "type": "string", "maxLength": 80 },
+        "paymentStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled"] },
+        "notificationMessage": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderNumber", "productName", "packageName", "paymentStatus", "orderStatus", "createdAt", "updatedAt"]
+    },
+    "TrxRegistry": {
+      "title": "TrxRegistry",
+      "description": "Unique Transaction ID lock registry preventing duplicate TrxID usage across orders.",
+      "type": "object",
+      "properties": {
+        "trxKey": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "trxId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "orderId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "paymentMethodId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trxKey", "trxId", "orderId", "customerUid", "paymentMethodId", "amount", "status", "createdAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer profile document with suspension status controlled exclusively by admins.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 160 },
+        "photoURL": { "type": "string", "maxLength": 1000 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "suspended": { "type": "boolean" },
+        "suspendedReason": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "suspended", "createdAt", "updatedAt"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Customer support ticket or complaint with admin reply.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "message": { "type": "string", "minLength": 5, "maxLength": 2000 },
+        "status": { "type": "string", "enum": ["open", "replied", "closed"] },
+        "adminReply": { "type": "string", "maxLength": 2000 },
+        "repliedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "customerUid", "subject", "message", "status", "createdAt", "updatedAt"]
+    },
+    "PaymentHistory": {
+      "title": "PaymentHistory",
+      "description": "Immutable ledger of admin payment verification decisions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "orderId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "trxId": { "type": "string", "maxLength": 64 },
+        "paymentMethodName": { "type": "string", "maxLength": 60 },
+        "senderNumber": { "type": "string", "maxLength": 40 },
+        "amount": { "type": "number" },
+        "action": { "type": "string", "enum": ["approved", "rejected"] },
+        "note": { "type": "string", "maxLength": 500 },
+        "adminEmail": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderId", "orderNumber", "trxId", "action", "adminEmail", "createdAt"]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Admin and Sub-Admin role & granular permission assignments.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 160 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["super_admin", "admin", "sub_admin"] },
+        "active": { "type": "boolean" },
+        "permissions": { "type": "object" },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "name", "role", "active", "permissions", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable administrative action log.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 160 },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "action": { "type": "string", "maxLength": 100 },
+        "targetType": { "type": "string", "maxLength": 60 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "actorEmail", "actorRole", "action", "targetType", "targetId", "createdAt"]
+    },
+    "CustomerNotification": {
+      "title": "CustomerNotification",
+      "description": "In-app order notification sent by admin to a customer.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "title": { "type": "string", "maxLength": 120 },
+        "message": { "type": "string", "maxLength": 500 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "customerUid", "title", "message", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/SiteSettings" },
+      "description": "Global storefront customization and dynamic site configuration."
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Product categories."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Digital top-up products and diamond/voucher packages."
+    },
+    "/paymentMethods/{methodId}": {
+      "schema": { "$ref": "#/entities/PaymentMethod" },
+      "description": "Configured bKash, Nagad, and other payment numbers and instructions."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders containing PII, isolated to order owner and authorized staff."
+    },
+    "/orderTracking/{orderNumber}": {
+      "schema": { "$ref": "#/entities/OrderTracking" },
+      "description": "Non-PII public order tracking summaries keyed by orderNumber."
+    },
+    "/trxRegistry/{trxKey}": {
+      "schema": { "$ref": "#/entities/TrxRegistry" },
+      "description": "Unique TrxID lock registry preventing duplicate transaction submissions."
+    },
+    "/customers/{uid}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Customer account profiles and suspension state."
+    },
+    "/tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Customer support tickets and admin replies."
+    },
+    "/paymentHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/PaymentHistory" },
+      "description": "Immutable payment verification history log."
+    },
+    "/staff/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Authorized admin and sub-admin accounts and permissions."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable admin audit trail."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/CustomerNotification" },
+      "description": "Customer order notifications."
+    }
+  }
+}

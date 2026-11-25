@@ -1,0 +1,6 @@
+{
+  "name": "StrikeVault",
+  "description": "Instant Free Fire Diamonds, game memberships, and digital voucher top-ups with live order tracking and full admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
