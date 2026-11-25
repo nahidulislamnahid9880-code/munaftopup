@@ -151,6 +151,7 @@ export interface Order {
   trxKey: string;
   screenshotUrl: string;
   voucherCode?: string;
+  walletRefunded?: boolean;
   paymentStatus: PaymentStatus;
   orderStatus: OrderStatus;
   adminNote: string;

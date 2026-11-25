@@ -131,7 +131,7 @@ export function HomePage() {
                 }
               }}
               className="block relative group">
-              <div className="w-full aspect-[1200/450] min-h-[168px] overflow-hidden bg-slate-950">
+              <div className="w-full h-[225px] sm:h-[340px] md:h-[420px] lg:h-[480px] overflow-hidden bg-slate-950">
                 <ImageWithFallback
                   src={currentBanner.imageUrl}
                   alt={currentBanner.title}

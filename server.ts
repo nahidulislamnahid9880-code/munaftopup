@@ -64,6 +64,7 @@ interface SystemSettingsStore {
 interface AdminStoreData {
   primaryAdminName: string;
   primaryPasswordHash: string | null;
+  sessionSecret?: string;
   staff: Record<string, StoredStaff>;
   systemSettings: SystemSettingsStore;
   serverLogs: Array<{
@@ -113,9 +114,29 @@ if (firebaseProjectId) {
   void adminApp;
 }
 
-const SESSION_SECRET =
-  process.env.ADMIN_SESSION_SECRET ||
-  crypto.randomBytes(32).toString('hex');
+let cachedSessionSecret: string | null = null;
+
+function getSessionSecret(): string {
+  const envSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  if (envSecret) return envSecret;
+  if (cachedSessionSecret) return cachedSessionSecret;
+
+  const store = readStore();
+  if (store.sessionSecret && store.sessionSecret.length >= 32) {
+    cachedSessionSecret = store.sessionSecret;
+    return cachedSessionSecret;
+  }
+
+  const generated = crypto.randomBytes(32).toString('hex');
+  store.sessionSecret = generated;
+  try {
+    writeStore(store);
+  } catch {
+    // ignore write error if read-only
+  }
+  cachedSessionSecret = generated;
+  return generated;
+}
 
 function defaultStore(): AdminStoreData {
   const now = new Date().toISOString();
@@ -208,13 +229,15 @@ function verifyPassword(password: string, storedHash: string): boolean {
   return crypto.timingSafeEqual(derivedBuf, originalBuf);
 }
 
+const ADMIN_SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
 function signSessionToken(payload: Omit<SessionPayload, 'exp'>): string {
   const fullPayload: SessionPayload = {
     ...payload,
-    exp: Date.now() + 12 * 60 * 60 * 1000,
+    exp: Date.now() + ADMIN_SESSION_TTL_MS,
   };
   const encoded = Buffer.from(JSON.stringify(fullPayload), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
+  const sig = crypto.createHmac('sha256', getSessionSecret()).update(encoded).digest('base64url');
   return `${encoded}.${sig}`;
 }
 
@@ -222,7 +245,7 @@ function verifySessionToken(token: string): SessionPayload | null {
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [encoded, sig] = parts;
-  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
+  const expectedSig = crypto.createHmac('sha256', getSessionSecret()).update(encoded).digest('base64url');
   const sigBuf = Buffer.from(sig);
   const expBuf = Buffer.from(expectedSig);
   if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {

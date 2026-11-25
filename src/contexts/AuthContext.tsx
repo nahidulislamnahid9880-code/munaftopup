@@ -44,14 +44,52 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const ADMIN_TOKEN_STORAGE_KEY = 'sv_admin_token';
+const ADMIN_USER_STORAGE_KEY = 'sv_admin_user';
+
+function readStoredAdminSession(): {token: string | null; user: AdminSessionUser | null} {
+  try {
+    const token = window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+    const rawUser = window.localStorage.getItem(ADMIN_USER_STORAGE_KEY);
+    if (!token || !rawUser) return {token: null, user: null};
+    const parsedUser = JSON.parse(rawUser) as AdminSessionUser;
+    if (!parsedUser?.email || !parsedUser?.role) return {token: null, user: null};
+    return {token, user: parsedUser};
+  } catch {
+    return {token: null, user: null};
+  }
+}
+
 export function AuthProvider({children}: {children: React.ReactNode}) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [customerProfile, setCustomerProfile] = useState<CustomerProfile | null>(null);
 
-  const [adminToken, setAdminToken] = useState<string | null>(null);
-  const [adminUser, setAdminUser] = useState<AdminSessionUser | null>(null);
+  const [adminToken, setAdminToken] = useState<string | null>(() => readStoredAdminSession().token);
+  const [adminUser, setAdminUser] = useState<AdminSessionUser | null>(() => readStoredAdminSession().user);
   const [adminAuthLoading, setAdminAuthLoading] = useState(false);
+
+  const persistAdminSession = useCallback((token: string, user: AdminSessionUser) => {
+    setAdminToken(token);
+    setAdminUser(user);
+    try {
+      window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+      window.localStorage.setItem(ADMIN_USER_STORAGE_KEY, JSON.stringify(user));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, []);
+
+  const clearAdminSession = useCallback(() => {
+    setAdminToken(null);
+    setAdminUser(null);
+    try {
+      window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+      window.localStorage.removeItem(ADMIN_USER_STORAGE_KEY);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -60,6 +98,59 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
     });
     return () => unsub();
   }, []);
+
+  // Validate persisted admin session on startup and silently refresh via Firebase Google if needed
+  useEffect(() => {
+    if (!authReady || !adminToken) return;
+    let cancelled = false;
+
+    const verifyStoredSession = async () => {
+      try {
+        const res = await fetch('/api/admin/auth/me', {
+          headers: {Authorization: `Bearer ${adminToken}`},
+        });
+        if (res.ok) {
+          const data = (await res.json()) as {admin?: AdminSessionUser};
+          if (!cancelled && data.admin) {
+            persistAdminSession(adminToken, data.admin);
+          }
+          return;
+        }
+
+        if (res.status === 401 || res.status === 403) {
+          if (auth.currentUser) {
+            try {
+              const idToken = await auth.currentUser.getIdToken();
+              const fbRes = await fetch('/api/admin/auth/firebase', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({idToken}),
+              });
+              if (fbRes.ok) {
+                const fbData = (await fbRes.json()) as {token?: string; admin?: AdminSessionUser};
+                if (!cancelled && fbData.token && fbData.admin) {
+                  persistAdminSession(fbData.token, fbData.admin);
+                  return;
+                }
+              }
+            } catch {
+              // ignore silent refresh network error
+            }
+          }
+          if (!cancelled) {
+            clearAdminSession();
+          }
+        }
+      } catch {
+        // Keep persisted admin session on transient network failure
+      }
+    };
+
+    void verifyStoredSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, adminToken, persistAdminSession, clearAdminSession]);
 
   // Keep customer profile synced when signed in
   useEffect(() => {
@@ -176,6 +267,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
       }
       setAdminToken(data.token);
       setAdminUser(data.admin);
+      persistAdminSession(data.token, data.admin);
       if (data.admin.role === 'super_admin') {
         await initializeDefaultCatalogIfMissing(data.admin.email).catch(() => false);
       }
@@ -183,7 +275,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
     } finally {
       setAdminAuthLoading(false);
     }
-  }, []);
+  }, [persistAdminSession]);
 
   const adminLoginWithPassword = useCallback(
     async (email: string, password: string): Promise<AdminSessionUser> => {
@@ -198,8 +290,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
         if (!res.ok || !data.token || !data.admin) {
           throw new Error(data.error || 'Invalid credentials');
         }
-        setAdminToken(data.token);
-        setAdminUser(data.admin);
+        persistAdminSession(data.token, data.admin);
         if (
           data.admin.role === 'super_admin' &&
           auth.currentUser?.email?.toLowerCase() === data.admin.email.toLowerCase()
@@ -211,7 +302,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
         setAdminAuthLoading(false);
       }
     },
-    [],
+    [persistAdminSession],
   );
 
   const adminClaimPassword = useCallback(
@@ -227,14 +318,13 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
         if (!res.ok || !data.token || !data.admin) {
           throw new Error(data.error || 'Unable to claim admin password');
         }
-        setAdminToken(data.token);
-        setAdminUser(data.admin);
+        persistAdminSession(data.token, data.admin);
         return data.admin;
       } finally {
         setAdminAuthLoading(false);
       }
     },
-    [],
+    [persistAdminSession],
   );
 
   const adminLinkGoogleForSync = useCallback(async () => {
@@ -249,20 +339,18 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
     if (!res.ok || !data.token || !data.admin) {
       throw new Error(data.error || 'Google account is not authorized for admin sync.');
     }
-    setAdminToken(data.token);
-    setAdminUser(data.admin);
+    persistAdminSession(data.token, data.admin);
     if (data.admin.role === 'super_admin') {
       await initializeDefaultCatalogIfMissing(data.admin.email).catch(() => false);
     }
-  }, []);
+  }, [persistAdminSession]);
 
   const adminLogout = useCallback(async () => {
-    setAdminToken(null);
-    setAdminUser(null);
+    clearAdminSession();
     if (auth.currentUser) {
       await signOut(auth);
     }
-  }, []);
+  }, [clearAdminSession]);
 
   const adminFetch = useCallback(
     async (url: string, init: RequestInit = {}): Promise<Response> => {
@@ -273,9 +361,30 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
         const idToken = await auth.currentUser.getIdToken();
         headers.set('Authorization', `Bearer ${idToken}`);
       }
-      return fetch(url, {...init, headers});
+      let res = await fetch(url, {...init, headers});
+      if (res.status === 401 && auth.currentUser) {
+        try {
+          const idToken = await auth.currentUser.getIdToken();
+          const fbRes = await fetch('/api/admin/auth/firebase', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({idToken}),
+          });
+          if (fbRes.ok) {
+            const fbData = (await fbRes.json()) as {token?: string; admin?: AdminSessionUser};
+            if (fbData.token && fbData.admin) {
+              persistAdminSession(fbData.token, fbData.admin);
+              headers.set('Authorization', `Bearer ${fbData.token}`);
+              res = await fetch(url, {...init, headers});
+            }
+          }
+        } catch {
+          // ignore refresh failure
+        }
+      }
+      return res;
     },
-    [adminToken],
+    [adminToken, persistAdminSession],
   );
 
   return (

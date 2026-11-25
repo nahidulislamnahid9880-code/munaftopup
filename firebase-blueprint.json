@@ -117,6 +117,7 @@
         "trxKey": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "screenshotUrl": { "type": "string", "maxLength": 1000 },
         "voucherCode": { "type": "string", "maxLength": 500 },
+        "walletRefunded": { "type": "boolean" },
         "paymentStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled"] },
         "adminNote": { "type": "string", "maxLength": 1000 },

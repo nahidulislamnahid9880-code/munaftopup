@@ -118,10 +118,15 @@ export function CheckoutPage() {
       setError(`Please enter your ${product.serverLabel || 'Server ID'}.`);
       return;
     }
-    if (!customerName.trim() || customerPhone.trim().length < 5) {
-      setError('Please enter your name and a valid contact phone number (at least 5 characters).');
+    if (!customerName.trim()) {
+      setError('Please enter your name.');
       return;
     }
+    const effectivePhone = (
+      customerProfile?.phone?.trim() && customerProfile.phone.trim().length >= 5
+        ? customerProfile.phone.trim()
+        : 'Not Required'
+    ).slice(0, 30);
 
     if (paymentMode === 'wallet') {
       if (selectedPackage.price <= 0 || walletBalance < selectedPackage.price) {
@@ -180,7 +185,7 @@ export function CheckoutPage() {
           customerUid: firebaseUser.uid,
           customerName: customerName.trim().slice(0, 100),
           customerEmail: (firebaseUser.email || '').slice(0, 160),
-          customerPhone: customerPhone.trim().slice(0, 30),
+          customerPhone: effectivePhone,
           productId: product.id,
           productName: product.name.slice(0, 120),
           productImage: thumbUrl,
@@ -194,7 +199,7 @@ export function CheckoutPage() {
           paymentType: 'wallet',
           paymentMethodId: 'wallet',
           paymentMethodName: 'Wallet Balance',
-          senderNumber: customerPhone.trim().slice(0, 40),
+          senderNumber: effectivePhone.slice(0, 40),
           trxId: walletTrx,
           trxKey: walletTrxKey,
           screenshotUrl: '',
@@ -243,7 +248,7 @@ export function CheckoutPage() {
           customerUid: firebaseUser.uid,
           customerName: customerName.trim().slice(0, 100),
           customerEmail: (firebaseUser.email || '').slice(0, 160),
-          customerPhone: customerPhone.trim().slice(0, 30),
+          customerPhone: effectivePhone,
           productId: product.id,
           productName: product.name.slice(0, 120),
           productImage: thumbUrl,
@@ -257,7 +262,7 @@ export function CheckoutPage() {
           paymentType: 'manual',
           paymentMethodId: selectedMethod!.id,
           paymentMethodName: selectedMethod!.name.slice(0, 60),
-          senderNumber: (customerPhone.trim() || 'Not Required').slice(0, 40),
+          senderNumber: effectivePhone.slice(0, 40),
           trxId: trxId.trim().toUpperCase().slice(0, 64),
           trxKey,
           screenshotUrl: '',
@@ -318,7 +323,7 @@ export function CheckoutPage() {
                 trxId: paymentMode === 'wallet' ? `WALLET-${orderNumber}` : trxId.trim().toUpperCase(),
                 customerName: customerName.trim(),
                 customerEmail: firebaseUser.email || '',
-                customerPhone: customerPhone.trim(),
+                customerPhone: effectivePhone,
               },
             }),
           });
@@ -463,7 +468,7 @@ export function CheckoutPage() {
                     />
                   </div>
                 )}
-                  <div>
+                  <div className={product.requiresUid && product.requiresServerId ? 'sm:col-span-2' : ''}>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Full Name *
                     </label>
@@ -473,19 +478,6 @@ export function CheckoutPage() {
                       value={customerName}
                       onChange={(e) => setCustomerName(e.target.value)}
                       placeholder="Enter your name"
-                      className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Phone Number *
-                    </label>
-                    <input
-                      type="tel"
-                      required
-                      value={customerPhone}
-                      onChange={(e) => setCustomerPhone(e.target.value)}
-                      placeholder="Enter phone number"
                       className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
                     />
                   </div>

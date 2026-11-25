@@ -13,6 +13,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   writeBatch,
 } from 'firebase/firestore';
@@ -178,62 +179,113 @@ export function OrdersManager() {
     setProcessingId(order.id);
     setFeedback('');
     try {
-      const now = serverTimestamp();
-      const batch = writeBatch(db);
-      const statusMessages: Record<OrderStatus, string> = {
-        pending: 'Order is pending review.',
-        processing: 'Top-up is currently being fulfilled to your Player UID.',
-        completed: 'Diamonds / voucher fulfilled to your Player UID. Thank you!',
-        cancelled: adminNote || 'Order cancelled by administrator.',
-      };
-      const msg = notifText.trim() || statusMessages[nextStatus];
+      const refundedAmount = await runTransaction(db, async (tx) => {
+        const orderRef = doc(db, 'orders', order.id);
+        const orderSnap = await tx.get(orderRef);
+        const freshOrder = orderSnap.exists() ? (orderSnap.data() as Order) : order;
+        const now = serverTimestamp();
 
-      const orderPatch: Record<string, unknown> = {
-        orderStatus: nextStatus,
-        voucherCode: voucherCode.trim().slice(0, 500),
-        adminNote: adminNote.slice(0, 1000),
-        notificationMessage: msg.slice(0, 500),
-        updatedAt: now,
-      };
-      if (nextStatus === 'completed') {
-        orderPatch.completedAt = now;
-      }
+        const isWalletOrder =
+          freshOrder.paymentType === 'wallet' || freshOrder.paymentMethodId === 'wallet';
+        const shouldRefundWallet =
+          nextStatus === 'cancelled' &&
+          isWalletOrder &&
+          freshOrder.orderStatus !== 'cancelled' &&
+          !freshOrder.walletRefunded &&
+          Number(freshOrder.totalAmount || 0) > 0;
 
-      batch.update(doc(db, 'orders', order.id), orderPatch);
+        let credited = 0;
+        if (shouldRefundWallet) {
+          const custRef = doc(db, 'customers', freshOrder.customerUid);
+          const custSnap = await tx.get(custRef);
+          if (custSnap.exists()) {
+            const currentBal = Number(
+              (custSnap.data() as {walletBalance?: number}).walletBalance || 0,
+            );
+            credited = Number(freshOrder.totalAmount || 0);
+            const nextBal = Number((currentBal + credited).toFixed(2));
+            tx.update(custRef, {
+              walletBalance: nextBal,
+              updatedAt: now,
+            });
+          }
+        }
 
-      batch.update(doc(db, 'orderTracking', order.orderNumber), {
-        paymentStatus: order.paymentStatus,
-        orderStatus: nextStatus,
-        notificationMessage: msg.slice(0, 500),
-        updatedAt: now,
+        const statusMessages: Record<OrderStatus, string> = {
+          pending: 'Order is pending review.',
+          processing: 'Top-up is currently being fulfilled to your Player UID.',
+          completed: 'Diamonds / voucher fulfilled to your Player UID. Thank you!',
+          cancelled:
+            credited > 0
+              ? `${adminNote ? `${adminNote} — ` : ''}${formatCurrency(credited)} has been refunded to your Wallet Balance.`
+              : adminNote || 'Order cancelled by administrator.',
+        };
+        const msg = notifText.trim() || statusMessages[nextStatus];
+
+        const orderPatch: Record<string, unknown> = {
+          orderStatus: nextStatus,
+          voucherCode: voucherCode.trim().slice(0, 500),
+          adminNote: adminNote.slice(0, 1000),
+          notificationMessage: msg.slice(0, 500),
+          updatedAt: now,
+        };
+        if (nextStatus === 'completed') {
+          orderPatch.completedAt = now;
+        }
+        if (credited > 0) {
+          orderPatch.walletRefunded = true;
+        }
+
+        tx.update(orderRef, orderPatch);
+
+        tx.update(doc(db, 'orderTracking', freshOrder.orderNumber), {
+          paymentStatus: freshOrder.paymentStatus,
+          orderStatus: nextStatus,
+          notificationMessage: msg.slice(0, 500),
+          updatedAt: now,
+        });
+
+        const notifId = `ntf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        tx.set(doc(db, 'notifications', notifId), {
+          id: notifId,
+          customerUid: freshOrder.customerUid,
+          orderId: freshOrder.id,
+          orderNumber: freshOrder.orderNumber,
+          title:
+            credited > 0
+              ? 'Order Cancelled & Refunded'
+              : `Order ${nextStatus.toUpperCase()}`,
+          message: msg.slice(0, 500),
+          read: false,
+          createdAt: now,
+        });
+
+        const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        tx.set(doc(db, 'auditLogs', logId), {
+          id: logId,
+          actorEmail: adminUser.email,
+          actorRole: adminUser.role,
+          action:
+            credited > 0
+              ? 'ORDER_CANCELLED_WALLET_REFUNDED'
+              : `ORDER_STATUS_${nextStatus.toUpperCase()}`,
+          targetType: 'order',
+          targetId: freshOrder.orderNumber,
+          details:
+            credited > 0
+              ? `Cancelled wallet order and refunded ${formatCurrency(credited)} to customer wallet. Note: ${adminNote}`
+              : `Set status=${nextStatus}. Note: ${adminNote}`,
+          createdAt: now,
+        });
+
+        return credited;
       });
 
-      const notifId = `ntf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      batch.set(doc(db, 'notifications', notifId), {
-        id: notifId,
-        customerUid: order.customerUid,
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        title: `Order ${nextStatus.toUpperCase()}`,
-        message: msg.slice(0, 500),
-        read: false,
-        createdAt: now,
-      });
-
-      const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      batch.set(doc(db, 'auditLogs', logId), {
-        id: logId,
-        actorEmail: adminUser.email,
-        actorRole: adminUser.role,
-        action: `ORDER_STATUS_${nextStatus.toUpperCase()}`,
-        targetType: 'order',
-        targetId: order.orderNumber,
-        details: `Set status=${nextStatus}. Note: ${adminNote}`,
-        createdAt: now,
-      });
-
-      await batch.commit();
-      setFeedback(`Order status updated to ${nextStatus}.`);
+      setFeedback(
+        refundedAmount > 0
+          ? `Order cancelled & ${formatCurrency(refundedAmount)} automatically refunded to customer wallet.`
+          : `Order status updated to ${nextStatus}.`,
+      );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
     } finally {
@@ -362,7 +414,9 @@ export function OrdersManager() {
                       </td>
                       <td className="px-4 py-3">
                         <p className="font-medium">{o.customerName}</p>
-                        <p className="text-xs text-slate-500">{o.customerPhone}</p>
+                        {o.customerPhone && o.customerPhone !== 'Not Required' && (
+                          <p className="text-xs text-slate-500">{o.customerPhone}</p>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <p className="font-medium">{o.packageName}</p>
@@ -448,6 +502,11 @@ export function OrdersManager() {
                   {selectedOrder.paymentMethodName} · {formatCurrency(selectedOrder.totalAmount)}
                 </span>
                 <span className="block font-mono">TrxID: {selectedOrder.trxId}</span>
+                {selectedOrder.walletRefunded && (
+                  <span className="inline-block mt-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                    Refunded to Wallet
+                  </span>
+                )}
                 {selectedOrder.senderNumber && selectedOrder.senderNumber !== 'Not Required' && (
                   <span className="block font-mono text-slate-500">
                     From: {selectedOrder.senderNumber}
@@ -552,7 +611,12 @@ export function OrdersManager() {
                   </button>
                   <button
                     type="button"
-                    disabled={processingId === selectedOrder.id || selectedOrder.paymentStatus === 'rejected'}
+                    disabled={
+                      processingId === selectedOrder.id ||
+                      selectedOrder.paymentStatus === 'rejected' ||
+                      selectedOrder.paymentType === 'wallet' ||
+                      selectedOrder.paymentMethodId === 'wallet'
+                    }
                     onClick={() => void handleVerifyPayment(selectedOrder, 'rejected')}
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-semibold cursor-pointer">
                     <XCircle className="w-3.5 h-3.5" /> Reject Payment
@@ -583,10 +647,12 @@ export function OrdersManager() {
                   </button>
                   <button
                     type="button"
-                    disabled={processingId === selectedOrder.id}
+                    disabled={processingId === selectedOrder.id || selectedOrder.orderStatus === 'cancelled'}
                     onClick={() => void handleUpdateOrderStatus(selectedOrder, 'cancelled')}
-                    className="px-3 py-2 rounded-lg border border-red-200 dark:border-red-900 text-red-600 text-xs font-semibold cursor-pointer">
-                    Cancel
+                    className="px-3 py-2 rounded-lg border border-red-200 dark:border-red-900 disabled:opacity-40 text-red-600 text-xs font-semibold cursor-pointer">
+                    {selectedOrder.paymentType === 'wallet' || selectedOrder.paymentMethodId === 'wallet'
+                      ? 'Cancel & Refund Wallet'
+                      : 'Cancel'}
                   </button>
                 </div>
               )}

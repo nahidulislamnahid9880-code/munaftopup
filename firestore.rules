@@ -179,7 +179,7 @@ service cloud.firestore {
           'productId', 'productName', 'productImage', 'packageId', 'packageName', 'quantityLabel',
           'unitPrice', 'totalAmount', 'playerUid', 'serverId', 'paymentType',
           'paymentMethodId', 'paymentMethodName', 'senderNumber', 'trxId', 'trxKey',
-          'screenshotUrl', 'voucherCode', 'paymentStatus', 'orderStatus', 'adminNote', 'notificationMessage',
+          'screenshotUrl', 'voucherCode', 'walletRefunded', 'paymentStatus', 'orderStatus', 'adminNote', 'notificationMessage',
           'createdAt', 'updatedAt', 'completedAt'
         ]) &&
         isValidId(data.id) &&
@@ -206,6 +206,7 @@ service cloud.firestore {
         isValidId(data.trxKey) &&
         data.screenshotUrl is string && data.screenshotUrl.size() <= 1000 &&
         (!('voucherCode' in data) || (data.voucherCode is string && data.voucherCode.size() <= 500)) &&
+        (!('walletRefunded' in data) || data.walletRefunded is bool) &&
         data.paymentStatus in ['pending', 'verified', 'rejected'] &&
         data.orderStatus in ['pending', 'processing', 'completed', 'cancelled'] &&
         data.adminNote is string && data.adminNote.size() <= 1000 &&
@@ -436,6 +437,7 @@ service cloud.firestore {
         incoming().orderStatus == 'pending' &&
         incoming().adminNote == '' &&
         (!('voucherCode' in incoming()) || incoming().voucherCode == '') &&
+        (!('walletRefunded' in incoming()) || incoming().walletRefunded == false) &&
         incoming().createdAt == request.time &&
         !('completedAt' in incoming()) &&
         exists(/databases/$(database)/documents/products/$(incoming().productId)) &&
@@ -469,8 +471,9 @@ service cloud.firestore {
         incoming().customerUid == existing().customerUid &&
         incoming().trxKey == existing().trxKey &&
         incoming().createdAt == existing().createdAt &&
+        (!('walletRefunded' in existing()) || existing().walletRefunded == false || incoming().walletRefunded == true) &&
         incoming().diff(existing()).affectedKeys().hasOnly([
-          'paymentStatus', 'orderStatus', 'voucherCode', 'adminNote', 'notificationMessage', 'updatedAt', 'completedAt'
+          'paymentStatus', 'orderStatus', 'voucherCode', 'walletRefunded', 'adminNote', 'notificationMessage', 'updatedAt', 'completedAt'
         ]);
       allow delete: if false;
     }
@@ -587,6 +590,13 @@ service cloud.firestore {
            incoming().suspendedReason == existing().suspendedReason &&
            'walletBalance' in incoming() &&
            incoming().walletBalance >= 0 &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['walletBalance', 'updatedAt'])) ||
+          (hasPerm('orders') &&
+           incoming().suspended == existing().suspended &&
+           incoming().suspendedReason == existing().suspendedReason &&
+           'walletBalance' in incoming() &&
+           incoming().walletBalance >= 0 &&
+           (!('walletBalance' in existing()) || incoming().walletBalance >= existing().walletBalance) &&
            incoming().diff(existing()).affectedKeys().hasOnly(['walletBalance', 'updatedAt']))
         );
       allow delete: if false;

@@ -78,23 +78,23 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
 
       {/* Top Sticky Header */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-[0_1px_12px_rgba(15,23,42,0.04)]">
-        <div className="max-w-[1248px] mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-3">
+        <div className="max-w-[1248px] mx-auto px-3 sm:px-6 h-16 sm:h-20 flex items-center justify-between gap-3">
           {/* Left: Website Logo + Brand Name */}
           <Link
             to="/"
-            className="flex items-center gap-2 text-base sm:text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0 font-display">
+            className="flex items-center gap-2.5 text-lg sm:text-xl font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0 font-display">
             {siteSettings.logoUrl ? (
               <ImageWithFallback
                 src={siteSettings.logoUrl}
                 alt={siteSettings.brandName}
-                className="w-8 h-8 rounded-lg object-cover border border-slate-200"
+                className="h-12 sm:h-14 w-auto min-w-[48px] max-w-[140px] sm:max-w-[260px] rounded-xl object-contain"
               />
             ) : (
-              <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                <Gem className="w-4 h-4" />
+              <span className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Gem className="w-5 h-5 sm:w-6 sm:h-6" />
               </span>
             )}
-            <span className="truncate max-w-[140px] sm:max-w-none">{siteSettings.brandName}</span>
+            <span className="truncate max-w-[115px] sm:max-w-none">{siteSettings.brandName}</span>
           </Link>
 
           {/* Center: Desktop Navigation */}
@@ -377,16 +377,16 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
       <footer className="bg-slate-950 text-slate-300 border-t border-slate-900 pb-20 md:pb-0">
         <div className="max-w-[1248px] mx-auto px-4 sm:px-6 py-10 grid grid-cols-1 md:grid-cols-4 gap-8">
           <div className="space-y-2.5 md:col-span-2">
-            <div className="flex items-center gap-2.5 text-white font-bold text-base font-display">
+            <div className="flex items-center gap-3 text-white font-bold text-lg font-display">
               {siteSettings.logoUrl ? (
                 <ImageWithFallback
                   src={siteSettings.logoUrl}
                   alt={siteSettings.brandName}
-                  className="w-7 h-7 rounded-md object-cover"
+                  className="h-10 sm:h-12 w-auto max-w-[180px] rounded-lg object-contain"
                 />
               ) : (
-                <span className="w-7 h-7 rounded-md bg-cyan-500 text-white flex items-center justify-center">
-                  <Gem className="w-4 h-4" />
+                <span className="w-10 h-10 rounded-xl bg-cyan-500 text-white flex items-center justify-center">
+                  <Gem className="w-5 h-5" />
                 </span>
               )}
               <span>{siteSettings.brandName}</span>
