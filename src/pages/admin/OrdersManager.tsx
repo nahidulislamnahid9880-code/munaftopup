@@ -378,7 +378,18 @@ export function OrdersManager() {
                         {formatCurrency(o.totalAmount)}
                       </td>
                       <td className="px-4 py-3 text-xs font-semibold capitalize">
-                        {o.orderStatus}
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                            o.orderStatus === 'completed'
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400'
+                              : o.orderStatus === 'processing'
+                                ? 'bg-cyan-50 text-cyan-700 dark:bg-cyan-950/50 dark:text-cyan-400'
+                                : o.orderStatus === 'cancelled'
+                                  ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400'
+                                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400'
+                          }`}>
+                          {o.orderStatus}
+                        </span>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <button
@@ -437,9 +448,11 @@ export function OrdersManager() {
                   {selectedOrder.paymentMethodName} · {formatCurrency(selectedOrder.totalAmount)}
                 </span>
                 <span className="block font-mono">TrxID: {selectedOrder.trxId}</span>
-                <span className="block font-mono text-slate-500">
-                  From: {selectedOrder.senderNumber}
-                </span>
+                {selectedOrder.senderNumber && selectedOrder.senderNumber !== 'Not Required' && (
+                  <span className="block font-mono text-slate-500">
+                    From: {selectedOrder.senderNumber}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -470,12 +483,30 @@ export function OrdersManager() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium mb-1">Admin Internal Note</label>
+                <label className="block text-xs font-medium mb-1">
+                  Admin Note / Cancel Reason (Shown to customer if cancelled)
+                </label>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {[
+                    'Invalid Player UID',
+                    'TrxID Not Found / Invalid',
+                    'Insufficient Payment Amount',
+                    'Wrong Server Selected',
+                  ].map((reason) => (
+                    <button
+                      key={reason}
+                      type="button"
+                      onClick={() => setAdminNote(reason)}
+                      className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] font-medium cursor-pointer">
+                      {reason}
+                    </button>
+                  ))}
+                </div>
                 <input
                   type="text"
                   value={adminNote}
                   onChange={(e) => setAdminNote(e.target.value)}
-                  placeholder="Optional verification or fulfillment note..."
+                  placeholder="Enter verification note or cancel reason..."
                   className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                 />
               </div>

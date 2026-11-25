@@ -128,7 +128,7 @@ export function OrderTrackingPage() {
             Track Your Order
           </h1>
           <p className="text-sm text-slate-600">
-            Enter your Order ID (e.g. SV-123456) to check payment verification and diamond delivery status.
+            Enter your Order ID to check payment verification and diamond delivery status.
           </p>
         </div>
 
@@ -139,7 +139,7 @@ export function OrderTrackingPage() {
               type="text"
               value={orderInput}
               onChange={(e) => setOrderInput(e.target.value)}
-              placeholder="Enter Order ID (e.g. SV-100420)"
+              placeholder="Enter Order ID"
               className="w-full pl-10 pr-4 py-3 text-sm font-mono uppercase rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
             />
           </div>

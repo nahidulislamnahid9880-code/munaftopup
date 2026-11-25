@@ -7,6 +7,7 @@ import express, {type NextFunction, type Request, type Response} from 'express';
 import {getApp, getApps, initializeApp as initializeAdminApp} from 'firebase-admin/app';
 import {getAuth as getAdminAuth} from 'firebase-admin/auth';
 import multer from 'multer';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
@@ -43,12 +44,15 @@ interface StoredStaff {
   updatedAt: string;
 }
 
+const DEFAULT_NOTIFICATION_EMAIL = 'abdulmunafadmin@gmail.com';
+
 interface SystemSettingsStore {
   smtpHost: string;
   smtpPort: number;
   smtpUser: string;
   smtpPassword: string;
   smtpFromEmail: string;
+  notificationEmail: string;
   smtpEnabled: boolean;
   distributorBaseUrl: string;
   distributorMerchantId: string;
@@ -130,11 +134,12 @@ function defaultStore(): AdminStoreData {
       },
     },
     systemSettings: {
-      smtpHost: '',
+      smtpHost: 'smtp.gmail.com',
       smtpPort: 587,
       smtpUser: '',
       smtpPassword: '',
       smtpFromEmail: '',
+      notificationEmail: DEFAULT_NOTIFICATION_EMAIL,
       smtpEnabled: false,
       distributorBaseUrl: '',
       distributorMerchantId: '',
@@ -158,7 +163,11 @@ function readStore(): AdminStoreData {
     if (!parsed.staff[SUPER_ADMIN_EMAIL]) {
       parsed.staff[SUPER_ADMIN_EMAIL] = defaultStore().staff[SUPER_ADMIN_EMAIL];
     }
-    if (!parsed.systemSettings) parsed.systemSettings = defaultStore().systemSettings;
+    if (!parsed.systemSettings) {
+      parsed.systemSettings = defaultStore().systemSettings;
+    } else if (!parsed.systemSettings.notificationEmail) {
+      parsed.systemSettings.notificationEmail = DEFAULT_NOTIFICATION_EMAIL;
+    }
     if (!Array.isArray(parsed.serverLogs)) parsed.serverLogs = [];
     return parsed;
   } catch {
@@ -359,6 +368,100 @@ const upload = multer({
     }
   },
 });
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function resolveSmtpConfig(store: AdminStoreData) {
+  const s = store.systemSettings;
+  const host = (s.smtpHost || process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+  const port = Number(s.smtpPort || process.env.SMTP_PORT || 587) || 587;
+  const user = (s.smtpUser || process.env.SMTP_USER || '').trim();
+  const pass = (s.smtpPassword || process.env.SMTP_PASSWORD || '').trim();
+  const fromEmail = (s.smtpFromEmail || process.env.SMTP_FROM_EMAIL || user).trim();
+  const toEmail = (
+    s.notificationEmail ||
+    process.env.NOTIFICATION_EMAIL ||
+    DEFAULT_NOTIFICATION_EMAIL
+  ).trim();
+  const envConfigured = Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD);
+  const enabled = Boolean((s.smtpEnabled || envConfigured) && host && user && pass && toEmail);
+  return {host, port, user, pass, fromEmail, toEmail, enabled};
+}
+
+async function sendAdminNotificationEmail(
+  subject: string,
+  rows: Array<{label: string; value: string}>,
+  actorEmail: string,
+): Promise<{sent: boolean; reason?: string; toEmail?: string}> {
+  const store = readStore();
+  const cfg = resolveSmtpConfig(store);
+
+  if (!cfg.enabled) {
+    appendServerLog(
+      store,
+      actorEmail,
+      'EMAIL_NOTIFY_SKIPPED',
+      `Notification "${subject}" skipped (configure SMTP username & App Password in Admin Settings or env vars).`,
+    );
+    writeStore(store);
+    return {sent: false, reason: 'SMTP credentials not configured yet', toEmail: cfg.toEmail};
+  }
+
+  const textBody = [subject, '', ...rows.map((r) => `${r.label}: ${r.value}`)].join('\n');
+  const htmlRows = rows
+    .map(
+      (r) =>
+        `<tr><td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-size:13px;font-weight:600;width:150px;">${escapeHtml(r.label)}</td><td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-size:13px;word-break:break-word;">${escapeHtml(r.value)}</td></tr>`,
+    )
+    .join('');
+
+  const htmlBody = `
+    <div style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;">
+      <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="background:#0f172a;color:#ffffff;padding:16px 20px;">
+          <h2 style="margin:0;font-size:16px;">${escapeHtml(subject)}</h2>
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          ${htmlRows}
+        </table>
+        <div style="padding:12px 20px;background:#f1f5f9;color:#64748b;font-size:12px;">
+          Automated notification sent to ${escapeHtml(cfg.toEmail)}
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.port === 465,
+      auth: {user: cfg.user, pass: cfg.pass},
+    });
+    await transporter.sendMail({
+      from: cfg.fromEmail || cfg.user,
+      to: cfg.toEmail,
+      subject,
+      text: textBody,
+      html: htmlBody,
+    });
+    appendServerLog(store, actorEmail, 'EMAIL_NOTIFY_SENT', `Sent "${subject}" to ${cfg.toEmail}`);
+    writeStore(store);
+    return {sent: true, toEmail: cfg.toEmail};
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    appendServerLog(store, actorEmail, 'EMAIL_NOTIFY_FAILED', `Failed "${subject}": ${msg}`);
+    writeStore(store);
+    return {sent: false, reason: msg, toEmail: cfg.toEmail};
+  }
+}
 
 function saveUploadedFile(file: Express.Multer.File): string {
   const ext = ALLOWED_IMAGE_MIMES[file.mimetype] || '.png';
@@ -787,18 +890,88 @@ async function startServer(): Promise<void> {
     res.json({ok: true});
   });
 
+  // Customer -> Admin email notification endpoint (Orders, Support Complaints, Deposits)
+  app.post('/api/notify/admin', requireSignedInFirebase, async (req, res) => {
+    const {type, details} = req.body as {
+      type?: 'order' | 'ticket' | 'deposit';
+      details?: Record<string, unknown>;
+    };
+
+    if (!type || !['order', 'ticket', 'deposit'].includes(type) || !details || typeof details !== 'object') {
+      res.status(400).json({error: 'Invalid notification payload'});
+      return;
+    }
+
+    const safeStr = (val: unknown, max = 400) => String(val ?? '').trim().slice(0, max);
+    const timestamp = new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'});
+
+    let subject = 'New Store Notification';
+    let rows: Array<{label: string; value: string}> = [];
+
+    if (type === 'order') {
+      const orderNumber = safeStr(details.orderNumber, 40);
+      subject = `New Order ${orderNumber || ''} — ${safeStr(details.productName, 80)}`;
+      rows = [
+        {label: 'Order Number', value: orderNumber || '—'},
+        {label: 'Product', value: safeStr(details.productName, 120) || '—'},
+        {label: 'Package', value: safeStr(details.packageName, 120) || '—'},
+        {label: 'Amount', value: safeStr(details.amount, 40) || '—'},
+        {label: 'Player UID', value: safeStr(details.playerUid, 80) || '—'},
+        {label: 'Server ID', value: safeStr(details.serverId, 80) || 'N/A'},
+        {label: 'Payment Method', value: safeStr(details.paymentMethod, 60) || '—'},
+        {label: 'TrxID', value: safeStr(details.trxId, 64) || '—'},
+        {label: 'Customer Name', value: safeStr(details.customerName, 100) || '—'},
+        {label: 'Customer Email', value: safeStr(details.customerEmail, 160) || '—'},
+        {label: 'Customer Phone', value: safeStr(details.customerPhone, 30) || '—'},
+        {label: 'Time (BD)', value: timestamp},
+      ];
+    } else if (type === 'ticket') {
+      const subjectLine = safeStr(details.subject, 140);
+      subject = `Customer Complaint / Support: ${subjectLine || 'New Ticket'}`;
+      rows = [
+        {label: 'Ticket ID', value: safeStr(details.ticketId, 60) || '—'},
+        {label: 'Order Number', value: safeStr(details.orderNumber, 40) || 'Not specified'},
+        {label: 'Subject', value: subjectLine || '—'},
+        {label: 'Complaint / Message', value: safeStr(details.message, 1500) || '—'},
+        {label: 'Customer Name', value: safeStr(details.customerName, 100) || '—'},
+        {label: 'Customer Email', value: safeStr(details.customerEmail, 160) || '—'},
+        {label: 'Time (BD)', value: timestamp},
+      ];
+    } else {
+      const amount = safeStr(details.amount, 40);
+      subject = `New Wallet Deposit Request (${amount})`;
+      rows = [
+        {label: 'Deposit Amount', value: amount || '—'},
+        {label: 'Payment Method', value: safeStr(details.paymentMethod, 60) || '—'},
+        {label: 'TrxID', value: safeStr(details.trxId, 64) || '—'},
+        {label: 'Customer Name', value: safeStr(details.customerName, 100) || '—'},
+        {label: 'Customer Email', value: safeStr(details.customerEmail, 160) || '—'},
+        {label: 'Time (BD)', value: timestamp},
+      ];
+    }
+
+    const result = await sendAdminNotificationEmail(
+      subject,
+      rows,
+      safeStr(details.customerEmail, 160) || 'customer',
+    );
+    res.json({ok: true, ...result});
+  });
+
   // SMTP & Authorized Distributor API Settings (Server-Only Secrets)
   app.get('/api/admin/system-settings', requireAdmin('settings'), (_req, res) => {
     const store = readStore();
     const s = store.systemSettings;
+    const cfg = resolveSmtpConfig(store);
     res.json({
       settings: {
-        smtpHost: s.smtpHost,
-        smtpPort: s.smtpPort,
-        smtpUser: s.smtpUser,
-        hasSmtpPassword: Boolean(s.smtpPassword),
+        smtpHost: s.smtpHost || cfg.host,
+        smtpPort: s.smtpPort || cfg.port,
+        smtpUser: s.smtpUser || (process.env.SMTP_USER ? '(Configured via ENV)' : ''),
+        hasSmtpPassword: Boolean(s.smtpPassword || process.env.SMTP_PASSWORD),
         smtpFromEmail: s.smtpFromEmail,
-        smtpEnabled: s.smtpEnabled,
+        notificationEmail: s.notificationEmail || cfg.toEmail || DEFAULT_NOTIFICATION_EMAIL,
+        smtpEnabled: s.smtpEnabled || Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD),
         distributorBaseUrl: s.distributorBaseUrl,
         distributorMerchantId: s.distributorMerchantId,
         hasDistributorApiKey: Boolean(s.distributorApiKey),
@@ -829,12 +1002,22 @@ async function startServer(): Promise<void> {
       }
     }
 
+    const cleanNotifEmail = String(
+      body.notificationEmail ?? prev.notificationEmail ?? DEFAULT_NOTIFICATION_EMAIL,
+    )
+      .trim()
+      .slice(0, 160);
+
+    const rawUser = String(body.smtpUser ?? prev.smtpUser).trim();
+    const safeUser = rawUser === '(Configured via ENV)' ? prev.smtpUser : rawUser.slice(0, 160);
+
     store.systemSettings = {
-      smtpHost: String(body.smtpHost ?? prev.smtpHost).trim().slice(0, 160),
+      smtpHost: String(body.smtpHost ?? prev.smtpHost ?? 'smtp.gmail.com').trim().slice(0, 160),
       smtpPort: Math.min(65535, Math.max(1, Number(body.smtpPort ?? prev.smtpPort) || 587)),
-      smtpUser: String(body.smtpUser ?? prev.smtpUser).trim().slice(0, 160),
+      smtpUser: safeUser,
       smtpPassword: body.smtpPassword ? String(body.smtpPassword) : prev.smtpPassword,
       smtpFromEmail: String(body.smtpFromEmail ?? prev.smtpFromEmail).trim().slice(0, 160),
+      notificationEmail: cleanNotifEmail || DEFAULT_NOTIFICATION_EMAIL,
       smtpEnabled: Boolean(body.smtpEnabled ?? prev.smtpEnabled),
       distributorBaseUrl: cleanDistUrl,
       distributorMerchantId: String(body.distributorMerchantId ?? prev.distributorMerchantId).trim().slice(0, 120),
@@ -842,10 +1025,32 @@ async function startServer(): Promise<void> {
       distributorEnabled: Boolean(body.distributorEnabled ?? prev.distributorEnabled),
       updatedAt: new Date().toISOString(),
     };
-    appendServerLog(store, req.adminSession!.email, 'SYSTEM_SETTINGS_UPDATED', 'Updated SMTP and Distributor API configuration');
+    appendServerLog(
+      store,
+      req.adminSession!.email,
+      'SYSTEM_SETTINGS_UPDATED',
+      `Updated SMTP (${store.systemSettings.notificationEmail}) and Distributor API configuration`,
+    );
     writeStore(store);
 
     res.json({ok: true});
+  });
+
+  app.post('/api/admin/test-email', requireAdmin('settings'), async (req: AuthedRequest, res) => {
+    const result = await sendAdminNotificationEmail(
+      'Test Notification — Order & Complaint Email Alerts Active',
+      [
+        {label: 'Status', value: 'SMTP connection working'},
+        {label: 'Triggered By', value: req.adminSession!.email},
+        {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
+      ],
+      req.adminSession!.email,
+    );
+    if (!result.sent) {
+      res.status(400).json({error: result.reason || 'Failed to send test email', ...result});
+      return;
+    }
+    res.json({ok: true, toEmail: result.toEmail});
   });
 
   // Server Security & Auth Logs

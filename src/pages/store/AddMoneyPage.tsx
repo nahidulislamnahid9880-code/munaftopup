@@ -29,8 +29,7 @@ import {
   timestampToMillis,
 } from '../../lib/firebase';
 import type {WalletTopup} from '../../types';
-import {ImageUploadField} from '../../components/ImageUploadField';
-import {ImageWithFallback} from '../../components/ImageWithFallback';
+import {PaymentMethodLogo} from '../../components/PaymentMethodLogo';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
 const PRESET_AMOUNTS = [100, 300, 500, 1000, 2000];
@@ -46,9 +45,7 @@ export function AddMoneyPage() {
 
   const [amount, setAmount] = useState('500');
   const [selectedMethodId, setSelectedMethodId] = useState('');
-  const [senderNumber, setSenderNumber] = useState('');
   const [trxId, setTrxId] = useState('');
-  const [screenshotUrl, setScreenshotUrl] = useState('');
   const [copied, setCopied] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
@@ -110,24 +107,45 @@ export function AddMoneyPage() {
       setError('No active payment gateway available.');
       return;
     }
-    if (senderNumber.trim().length < 5 || trxId.trim().length < 4) {
-      setError('Enter a valid Sender Number and Transaction ID (TrxID).');
+    if (trxId.trim().length < 4 || trxId.trim().length > 64) {
+      setError('Enter a valid Transaction ID (TrxID) between 4 and 64 characters.');
       return;
     }
 
     setSubmitting(true);
     try {
       const trxKey = normalizeTrxKey(selectedMethod.id, trxId);
-      const existingTrx = await getDoc(doc(db, 'trxRegistry', trxKey));
-      if (existingTrx.exists()) {
-        setError('This Transaction ID (TrxID) has already been submitted. Duplicate TrxIDs are blocked.');
+      if (trxKey.length < 4) {
+        setError('Enter a valid Transaction ID (TrxID).');
         setSubmitting(false);
         return;
+      }
+
+      try {
+        const existingTrx = await getDoc(doc(db, 'trxRegistry', trxKey));
+        if (existingTrx.exists()) {
+          setError('This Transaction ID (TrxID) has already been submitted. Duplicate TrxIDs are blocked.');
+          setSubmitting(false);
+          return;
+        }
+      } catch (checkErr) {
+        const checkMsg = checkErr instanceof Error ? checkErr.message.toLowerCase() : '';
+        if (checkMsg.includes('permission')) {
+          setError('This Transaction ID (TrxID) has already been submitted. Duplicate TrxIDs are blocked.');
+          setSubmitting(false);
+          return;
+        }
+        throw checkErr;
       }
 
       const topupId = `top_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const now = serverTimestamp();
       const batch = writeBatch(db);
+
+      const defaultSender =
+        customerProfile?.phone?.trim() && customerProfile.phone.trim().length >= 5
+          ? customerProfile.phone.trim()
+          : 'Not Required';
 
       batch.set(doc(db, 'walletTopups', topupId), {
         id: topupId,
@@ -137,10 +155,10 @@ export function AddMoneyPage() {
         amount: numAmount,
         paymentMethodId: selectedMethod.id,
         paymentMethodName: selectedMethod.name.slice(0, 60),
-        senderNumber: senderNumber.trim().slice(0, 40),
+        senderNumber: defaultSender.slice(0, 40),
         trxId: trxId.trim().toUpperCase().slice(0, 64),
         trxKey,
-        screenshotUrl: screenshotUrl.trim().slice(0, 1000),
+        screenshotUrl: '',
         status: 'pending',
         adminNote: '',
         createdAt: now,
@@ -159,8 +177,35 @@ export function AddMoneyPage() {
       });
 
       await batch.commit();
+
+      const submittedTrx = trxId.trim().toUpperCase();
+      const submittedMethod = selectedMethod.name;
+      void (async () => {
+        try {
+          const token = await firebaseUser.getIdToken();
+          await fetch('/api/notify/admin', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              type: 'deposit',
+              details: {
+                amount: formatCurrency(numAmount),
+                paymentMethod: submittedMethod,
+                trxId: submittedTrx,
+                customerName: customerProfile?.displayName || firebaseUser.displayName || 'Customer',
+                customerEmail: firebaseUser.email || '',
+              },
+            }),
+          });
+        } catch {
+          // Non-blocking notification failure should not block deposit confirmation
+        }
+      })();
+
       setTrxId('');
-      setScreenshotUrl('');
       setSuccessMsg(`Deposit request for ${formatCurrency(numAmount)} submitted! Wallet balance updates automatically once verified.`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -256,7 +301,7 @@ export function AddMoneyPage() {
                 No payment gateways are currently enabled by the administrator.
               </p>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {activeMethods.map((method) => {
                   const active = selectedMethod?.id === method.id;
                   return (
@@ -264,20 +309,18 @@ export function AddMoneyPage() {
                       key={method.id}
                       type="button"
                       onClick={() => setSelectedMethodId(method.id)}
-                      className={`p-3.5 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center gap-1.5 ${
+                      className={`p-3.5 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center gap-2 ${
                         active
-                          ? 'border-cyan-500 bg-cyan-50/50 ring-2 ring-cyan-500/20'
+                          ? 'border-cyan-500 bg-cyan-50/60 ring-2 ring-cyan-500/20 shadow-xs'
                           : 'border-slate-200 bg-white hover:border-slate-300'
                       }`}>
-                      {method.logoUrl && (
-                        <ImageWithFallback
-                          src={method.logoUrl}
-                          alt={method.name}
-                          className="w-9 h-9 rounded-lg object-cover"
-                        />
-                      )}
-                      <span className="text-sm font-bold text-slate-900">{method.name}</span>
-                      <span className="text-[11px] text-slate-500">{method.accountType}</span>
+                      <PaymentMethodLogo name={method.name} logoUrl={method.logoUrl} size="md" />
+                      <div className="min-w-0">
+                        <span className="text-sm font-bold text-slate-900 block truncate">
+                          {method.name}
+                        </span>
+                        <span className="text-[11px] text-slate-500 block">{method.accountType}</span>
+                      </div>
                     </button>
                   );
                 })}
@@ -287,19 +330,22 @@ export function AddMoneyPage() {
 
           {selectedMethod && (
             <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className="text-xs text-slate-500 block">
-                    Send {formatCurrency(Number(amount) || 0)} to ({selectedMethod.name} {selectedMethod.accountType})
-                  </span>
-                  <span className="text-lg font-bold font-mono text-slate-900 tabular-nums">
-                    {selectedMethod.accountNumber}
-                  </span>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <PaymentMethodLogo name={selectedMethod.name} logoUrl={selectedMethod.logoUrl} size="md" />
+                  <div className="min-w-0">
+                    <span className="text-xs text-slate-500 block">
+                      Send {formatCurrency(Number(amount) || 0)} to ({selectedMethod.name} {selectedMethod.accountType})
+                    </span>
+                    <span className="text-lg font-bold font-mono text-slate-900 tabular-nums">
+                      {selectedMethod.accountNumber}
+                    </span>
+                  </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => void handleCopy()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer">
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0">
                   <Copy className="w-3.5 h-3.5" /> {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
@@ -311,44 +357,19 @@ export function AddMoneyPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Sender Number *
-              </label>
-              <input
-                type="text"
-                required
-                value={senderNumber}
-                onChange={(e) => setSenderNumber(e.target.value)}
-                placeholder="01XXXXXXXXX"
-                className="w-full px-3 py-2 text-sm font-mono rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Transaction ID (TrxID) *
-              </label>
-              <input
-                type="text"
-                required
-                value={trxId}
-                onChange={(e) => setTrxId(e.target.value)}
-                placeholder="e.g. 9K2M7P4X1Q"
-                className="w-full px-3 py-2 text-sm font-mono uppercase rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-              />
-            </div>
-          </div>
-
-          {firebaseUser && (
-            <ImageUploadField
-              label="Payment Screenshot (Optional)"
-              value={screenshotUrl}
-              onChange={setScreenshotUrl}
-              endpoint="/api/upload"
-              compact
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Transaction ID (TrxID) *
+            </label>
+            <input
+              type="text"
+              required
+              value={trxId}
+              onChange={(e) => setTrxId(e.target.value)}
+              placeholder="Enter Transaction ID (TrxID)"
+              className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
             />
-          )}
+          </div>
 
           {error && (
             <div className="rounded-xl bg-red-50 border border-red-200 p-3 flex items-start gap-2 text-xs text-red-700">

@@ -310,7 +310,7 @@ export function CustomizationManager() {
                   />
                 </div>
                 <ImageUploadField
-                  label="Banner Image"
+                  label="Banner Image (Recommended: 1200 × 450 px)"
                   value={banner.imageUrl}
                   onChange={(url) => {
                     const next = [...form.banners];
@@ -468,6 +468,24 @@ export function CustomizationManager() {
                 setForm({...form, contact: {...form.contact, supportHours: e.target.value}})
               }
               placeholder="Support Hours"
+              className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+            <input
+              type="text"
+              value={form.contact.whatsapp || ''}
+              onChange={(e) =>
+                setForm({...form, contact: {...form.contact, whatsapp: e.target.value}})
+              }
+              placeholder="WhatsApp Number or https://wa.me/... link"
+              className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+            <input
+              type="text"
+              value={form.contact.telegram || ''}
+              onChange={(e) =>
+                setForm({...form, contact: {...form.contact, telegram: e.target.value}})
+              }
+              placeholder="Telegram Username (@...) or https://t.me/... link"
               className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             />
             <input

@@ -477,42 +477,68 @@ export async function initializeDefaultCatalogIfMissing(actorEmail: string): Pro
   }
 }
 
-export async function syncRecommendedCatalog(actorEmail: string): Promise<void> {
+export async function syncRecommendedCatalog(
+  actorEmail: string,
+  actorRole: string = 'super_admin',
+): Promise<void> {
   try {
-    const batch = writeBatch(db);
     const now = serverTimestamp();
 
+    // Commit categories (and default settings/payment methods if missing) first
+    const baseBatch = writeBatch(db);
+    const settingsRef = doc(db, 'settings', 'site');
+    const settingsSnap = await getDoc(settingsRef);
+    if (!settingsSnap.exists()) {
+      baseBatch.set(settingsRef, {
+        ...DEFAULT_SITE_SHELL,
+        noticeText: 'Fast UID Delivery Active · Verify your Player UID carefully before placing an order.',
+        noticeActive: true,
+        updatedAt: now,
+      });
+      for (const pm of INITIAL_PAYMENT_METHODS) {
+        baseBatch.set(doc(db, 'paymentMethods', pm.id), {
+          ...pm,
+          updatedAt: now,
+        });
+      }
+    }
+
     for (const cat of INITIAL_CATEGORIES) {
-      batch.set(doc(db, 'categories', cat.id), {
+      baseBatch.set(doc(db, 'categories', cat.id), {
         ...cat,
         updatedAt: now,
       });
     }
+    await baseBatch.commit();
+
+    // Commit products + audit log in second batch
+    const prodBatch = writeBatch(db);
+    const prodNow = serverTimestamp();
 
     for (const prod of INITIAL_PRODUCTS) {
       const prodRef = doc(db, 'products', prod.id);
       const existingSnap = await getDoc(prodRef);
-      const createdAt = existingSnap.exists() ? existingSnap.data().createdAt || now : now;
-      batch.set(prodRef, {
+      const existingCreatedAt = existingSnap.exists() ? existingSnap.data()?.createdAt : null;
+      prodBatch.set(prodRef, {
         ...prod,
-        createdAt,
-        updatedAt: now,
+        createdAt: existingCreatedAt || prodNow,
+        updatedAt: prodNow,
       });
     }
 
     const logId = `sync_${Date.now()}`;
-    batch.set(doc(db, 'auditLogs', logId), {
+    prodBatch.set(doc(db, 'auditLogs', logId), {
       id: logId,
       actorEmail,
-      actorRole: 'super_admin',
+      actorRole,
       action: 'CATALOG_SYNCED',
       targetType: 'products',
       targetId: 'recommended',
       details: 'Synced default products and all diamond/membership packages.',
-      createdAt: now,
+      createdAt: prodNow,
     });
 
-    await batch.commit();
+    await prodBatch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'products');
   }

@@ -5,6 +5,7 @@ import {
   Mail,
   Plus,
   Save,
+  Send,
   Server,
   Trash2,
   UserCheck,
@@ -47,6 +48,7 @@ interface SystemSettingsForm {
   smtpPassword: string;
   hasSmtpPassword: boolean;
   smtpFromEmail: string;
+  notificationEmail: string;
   smtpEnabled: boolean;
   distributorBaseUrl: string;
   distributorMerchantId: string;
@@ -89,12 +91,13 @@ export function AdminSettings() {
 
   // SMTP & Distributor API
   const [sysForm, setSysForm] = useState<SystemSettingsForm>({
-    smtpHost: '',
+    smtpHost: 'smtp.gmail.com',
     smtpPort: 587,
     smtpUser: '',
     smtpPassword: '',
     hasSmtpPassword: false,
     smtpFromEmail: '',
+    notificationEmail: 'abdulmunafadmin@gmail.com',
     smtpEnabled: false,
     distributorBaseUrl: '',
     distributorMerchantId: '',
@@ -103,6 +106,8 @@ export function AdminSettings() {
     distributorEnabled: false,
   });
   const [sysMsg, setSysMsg] = useState('');
+  const [sysErr, setSysErr] = useState('');
+  const [testingEmail, setTestingEmail] = useState(false);
 
   // Audit logs
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
@@ -239,6 +244,7 @@ export function AdminSettings() {
   const handleSaveSystemSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSysMsg('');
+    setSysErr('');
     const res = await adminFetch('/api/admin/system-settings', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
@@ -246,10 +252,43 @@ export function AdminSettings() {
     });
     const data = (await res.json()) as {ok?: boolean; error?: string};
     if (!res.ok) {
-      setSysMsg(data.error || 'Failed to save system settings');
+      setSysErr(data.error || 'Failed to save system settings');
     } else {
       setSysMsg('Server SMTP & Distributor API settings saved securely.');
       void loadServerData();
+    }
+  };
+
+  const handleSendTestEmail = async () => {
+    setSysMsg('');
+    setSysErr('');
+    setTestingEmail(true);
+    try {
+      const saveRes = await adminFetch('/api/admin/system-settings', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(sysForm),
+      });
+      if (!saveRes.ok) {
+        const saveErr = (await saveRes.json()) as {error?: string};
+        setSysErr(saveErr.error || 'Failed to save settings before sending test email');
+        return;
+      }
+
+      const res = await adminFetch('/api/admin/test-email', {
+        method: 'POST',
+      });
+      const data = (await res.json()) as {ok?: boolean; toEmail?: string; error?: string; reason?: string};
+      if (!res.ok || !data.ok) {
+        setSysErr(data.error || data.reason || 'Failed to send test email');
+      } else {
+        setSysMsg(`Test email sent successfully to ${data.toEmail || sysForm.notificationEmail}!`);
+        void loadServerData();
+      }
+    } catch {
+      setSysErr('Network error while sending test email.');
+    } finally {
+      setTestingEmail(false);
     }
   };
 
@@ -475,8 +514,11 @@ export function AdminSettings() {
             className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 space-y-6">
             <div className="space-y-4">
               <h2 className="text-base font-bold font-display flex items-center gap-2">
-                <Mail className="w-4 h-4 text-blue-600" /> Server SMTP Configuration
+                <Mail className="w-4 h-4 text-blue-600" /> Server SMTP &amp; Email Alerts
               </h2>
+              <p className="text-xs text-slate-600 dark:text-slate-400">
+                Customer orders, support complaints/tickets, and wallet deposits automatically notify the recipient email below. For Gmail, use host <code className="font-mono">smtp.gmail.com</code>, port <code className="font-mono">587</code>, your Gmail address as Username, and a 16-character Google App Password (or set <code className="font-mono">SMTP_USER</code> / <code className="font-mono">SMTP_PASSWORD</code> env vars on Render).
+              </p>
               <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
                 <input
                   type="checkbox"
@@ -486,41 +528,78 @@ export function AdminSettings() {
                 Enable Outbound SMTP Email Notifications
               </label>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <input
-                  type="text"
-                  value={sysForm.smtpHost}
-                  onChange={(e) => setSysForm({...sysForm, smtpHost: e.target.value})}
-                  placeholder="SMTP Host (e.g. smtp.gmail.com)"
-                  className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                />
-                <input
-                  type="number"
-                  value={sysForm.smtpPort}
-                  onChange={(e) => setSysForm({...sysForm, smtpPort: Number(e.target.value)})}
-                  placeholder="Port (587)"
-                  className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                />
-                <input
-                  type="text"
-                  value={sysForm.smtpFromEmail}
-                  onChange={(e) => setSysForm({...sysForm, smtpFromEmail: e.target.value})}
-                  placeholder="From Email"
-                  className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                />
-                <input
-                  type="text"
-                  value={sysForm.smtpUser}
-                  onChange={(e) => setSysForm({...sysForm, smtpUser: e.target.value})}
-                  placeholder="SMTP Username"
-                  className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                />
-                <input
-                  type="password"
-                  value={sysForm.smtpPassword}
-                  onChange={(e) => setSysForm({...sysForm, smtpPassword: e.target.value})}
-                  placeholder={sysForm.hasSmtpPassword ? '•••••••• (Saved on server)' : 'SMTP Password'}
-                  className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                />
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    Notification Recipient Email *
+                  </label>
+                  <input
+                    type="email"
+                    value={sysForm.notificationEmail}
+                    onChange={(e) => setSysForm({...sysForm, notificationEmail: e.target.value})}
+                    placeholder="abdulmunafadmin@gmail.com"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    SMTP Host
+                  </label>
+                  <input
+                    type="text"
+                    value={sysForm.smtpHost}
+                    onChange={(e) => setSysForm({...sysForm, smtpHost: e.target.value})}
+                    placeholder="smtp.gmail.com"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    SMTP Port
+                  </label>
+                  <input
+                    type="number"
+                    value={sysForm.smtpPort}
+                    onChange={(e) => setSysForm({...sysForm, smtpPort: Number(e.target.value)})}
+                    placeholder="587"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    SMTP Username (Sender Gmail)
+                  </label>
+                  <input
+                    type="text"
+                    value={sysForm.smtpUser}
+                    onChange={(e) => setSysForm({...sysForm, smtpUser: e.target.value})}
+                    placeholder="yourgmail@gmail.com"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    SMTP App Password
+                  </label>
+                  <input
+                    type="password"
+                    value={sysForm.smtpPassword}
+                    onChange={(e) => setSysForm({...sysForm, smtpPassword: e.target.value})}
+                    placeholder={sysForm.hasSmtpPassword ? '•••••••• (Saved on server)' : '16-char Google App Password'}
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    From Email (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={sysForm.smtpFromEmail}
+                    onChange={(e) => setSysForm({...sysForm, smtpFromEmail: e.target.value})}
+                    placeholder="Defaults to SMTP Username"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
               </div>
             </div>
 
@@ -571,13 +650,23 @@ export function AdminSettings() {
               </div>
             </div>
 
+            {sysErr && <p className="text-xs text-red-600 font-medium">{sysErr}</p>}
             {sysMsg && <p className="text-xs text-emerald-600 font-medium">{sysMsg}</p>}
 
-            <button
-              type="submit"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">
-              <Save className="w-3.5 h-3.5" /> Save Secure Server Settings
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="submit"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">
+                <Save className="w-3.5 h-3.5" /> Save Secure Server Settings
+              </button>
+              <button
+                type="button"
+                disabled={testingEmail}
+                onClick={() => void handleSendTestEmail()}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white text-xs font-semibold cursor-pointer">
+                <Send className="w-3.5 h-3.5" /> {testingEmail ? 'Sending...' : 'Send Test Email'}
+              </button>
+            </div>
           </form>
         )}
 

@@ -1,9 +1,12 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
 import {
+  AlertTriangle,
   CheckCircle2,
   Clock,
+  Eye,
   KeyRound,
+  Loader2,
   Package,
   RefreshCw,
   Search,
@@ -21,7 +24,7 @@ import {
   handleFirestoreError,
   timestampToMillis,
 } from '../../lib/firebase';
-import type {Order} from '../../types';
+import type {Order, OrderStatus} from '../../types';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
@@ -29,6 +32,7 @@ export function MyOrdersPage() {
   const {firebaseUser, authReady, signInCustomerWithGoogle} = useAuth();
   const {products} = useStore();
   const [orders, setOrders] = useState<Order[]>([]);
+  const [statusFilter, setStatusFilter] = useState<'all' | OrderStatus>('all');
   const [detailOrder, setDetailOrder] = useState<Order | null>(null);
 
   useEffect(() => {
@@ -48,6 +52,21 @@ export function MyOrdersPage() {
     return () => unsub();
   }, [authReady, firebaseUser]);
 
+  const counts = useMemo(() => {
+    const map = {all: orders.length, pending: 0, processing: 0, completed: 0, cancelled: 0};
+    for (const o of orders) {
+      if (o.orderStatus in map) {
+        map[o.orderStatus] += 1;
+      }
+    }
+    return map;
+  }, [orders]);
+
+  const filteredOrders = useMemo(
+    () => (statusFilter === 'all' ? orders : orders.filter((o) => o.orderStatus === statusFilter)),
+    [orders, statusFilter],
+  );
+
   const getProductSlug = (order: Order) => {
     const found = products.find((p) => p.id === order.productId);
     return found?.slug || order.productId;
@@ -59,48 +78,99 @@ export function MyOrdersPage() {
     return found?.images?.[0] || '';
   };
 
-  const renderStatusPill = (status: Order['orderStatus']) => {
+  const getCancelReason = (order: Order) => {
+    if (order.orderStatus !== 'cancelled' && order.paymentStatus !== 'rejected') return '';
+    return (
+      order.adminNote?.trim() ||
+      order.notificationMessage?.trim() ||
+      'Order was cancelled by administrator.'
+    );
+  };
+
+  const renderStatusBadge = (status: Order['orderStatus']) => {
     if (status === 'completed') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold">
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold whitespace-nowrap">
           <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+        </span>
+      );
+    }
+    if (status === 'processing') {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-50 border border-cyan-200 text-cyan-700 text-xs font-bold whitespace-nowrap">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Processing
         </span>
       );
     }
     if (status === 'cancelled') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-50 border border-red-200 text-red-700 text-xs font-bold">
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold whitespace-nowrap">
           <XCircle className="w-3.5 h-3.5" /> Cancelled
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold capitalize">
-        <Clock className="w-3.5 h-3.5" /> {status}
+      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold whitespace-nowrap">
+        <Clock className="w-3.5 h-3.5" /> Pending
       </span>
     );
   };
+
+  const filterTabs: Array<{key: 'all' | OrderStatus; label: string}> = [
+    {key: 'all', label: 'All'},
+    {key: 'pending', label: 'Pending'},
+    {key: 'processing', label: 'Processing'},
+    {key: 'completed', label: 'Completed'},
+    {key: 'cancelled', label: 'Cancelled'},
+  ];
 
   return (
     <StoreLayout>
       <div className="max-w-3xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5">
         <div className="flex items-end justify-between gap-4">
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-display">
-            My orders
-          </h1>
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-display">
+              My Orders
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+              Live status updates, cancel reasons &amp; quick re-order
+            </p>
+          </div>
           <Link
             to="/track"
-            className="inline-flex items-center gap-1 text-xs sm:text-sm font-medium text-slate-600 hover:text-cyan-600">
-            <Search className="w-3.5 h-3.5" /> Track a guest order
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 hover:text-cyan-600 transition-colors whitespace-nowrap">
+            <Search className="w-3.5 h-3.5" /> Track Order
           </Link>
         </div>
+
+        {/* Interactive Status Filter Buttons */}
+        {firebaseUser && orders.length > 0 && (
+          <div className="flex items-center gap-1.5 p-1.5 bg-white border border-slate-200/90 rounded-2xl overflow-x-auto shadow-2xs">
+            {filterTabs.map((tab) => {
+              const active = statusFilter === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setStatusFilter(tab.key)}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
+                    active
+                      ? 'bg-gradient-to-r from-slate-900 to-slate-800 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                  }`}>
+                  {tab.label} ({counts[tab.key]})
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {!authReady ? (
           <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center text-sm text-slate-500">
             Loading orders...
           </div>
         ) : !firebaseUser ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-4">
+          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-4 shadow-xs">
             <div className="w-12 h-12 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center mx-auto">
               <User className="w-6 h-6" />
             </div>
@@ -115,108 +185,141 @@ export function MyOrdersPage() {
               Sign in with Google
             </button>
           </div>
-        ) : orders.length === 0 ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-10 text-center space-y-3">
+        ) : filteredOrders.length === 0 ? (
+          <div className="rounded-2xl bg-white border border-slate-200 p-10 text-center space-y-3 shadow-xs">
             <Package className="w-8 h-8 text-slate-400 mx-auto" />
-            <p className="text-sm font-bold text-slate-900">No orders yet</p>
-            <p className="text-xs text-slate-500">
-              Your diamond top-ups and game voucher orders will appear here.
+            <p className="text-sm font-bold text-slate-900">
+              {statusFilter === 'all' ? 'No orders yet' : `No ${statusFilter} orders`}
             </p>
-            <Link
-              to="/"
-              className="inline-flex px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold">
-              Browse Top-Ups
-            </Link>
+            <p className="text-xs text-slate-500">
+              {statusFilter === 'all'
+                ? 'Your diamond top-ups and game voucher orders will appear here.'
+                : 'Switch filter tabs above to view your other orders.'}
+            </p>
+            {statusFilter === 'all' && (
+              <Link
+                to="/"
+                className="inline-flex px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold">
+                Browse Top-Ups
+              </Link>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
-            {orders.map((order) => (
-              <div
-                key={order.id}
-                className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 space-y-4 shadow-xs">
-                {/* Card Header: Order # + Placed Date + Status */}
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-base sm:text-lg font-extrabold text-slate-900 font-mono tabular-nums">
-                      {order.orderNumber}
-                    </p>
-                    <p className="text-xs text-slate-500 tabular-nums">
-                      Placed {new Date(timestampToMillis(order.createdAt)).toLocaleString()} · 1 item
-                    </p>
-                  </div>
-                  {renderStatusPill(order.orderStatus)}
-                </div>
-
-                {/* Product Summary */}
-                <div className="space-y-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
-                      <ImageWithFallback
-                        src={getProductImage(order)}
-                        alt={order.productName}
-                        className="w-full h-full object-cover"
-                      />
+            {filteredOrders.map((order) => {
+              const cancelReason = getCancelReason(order);
+              return (
+                <div
+                  key={order.id}
+                  className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-4 shadow-sm hover:shadow-md transition-shadow">
+                  {/* Card Header */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-base sm:text-lg font-extrabold text-slate-900 font-mono tabular-nums">
+                        {order.orderNumber}
+                      </p>
+                      <p className="text-xs text-slate-500 tabular-nums">
+                        {new Date(timestampToMillis(order.createdAt)).toLocaleString()}
+                      </p>
                     </div>
-                    <p className="text-sm font-semibold text-slate-700 truncate">
-                      {order.productName}
-                    </p>
+                    {renderStatusBadge(order.orderStatus)}
                   </div>
-                  <p className="text-sm sm:text-base font-extrabold text-slate-900 tabular-nums">
-                    Paid {formatCurrency(order.totalAmount)}
-                  </p>
-                  <div className="text-xs text-slate-600 space-y-0.5">
-                    <p>
-                      {order.productName} — {order.packageName}
-                    </p>
-                    {order.playerUid && (
-                      <p className="font-mono text-slate-500">PLAYER ID: {order.playerUid}</p>
-                    )}
-                  </div>
-                </div>
 
-                {/* Action Buttons Row */}
-                <div className="pt-2 border-t border-slate-100 space-y-2">
-                  <div className={`grid gap-2 ${order.voucherCode ? 'grid-cols-2' : 'grid-cols-2'}`}>
+                  {/* Product Summary */}
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50/90 border border-slate-200/70 p-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-12 h-12 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
+                        <ImageWithFallback
+                          src={getProductImage(order)}
+                          alt={order.productName}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">
+                          {order.productName}
+                        </p>
+                        <p className="text-xs text-slate-600 truncate">{order.packageName}</p>
+                        {order.playerUid && (
+                          <p className="text-[11px] font-mono text-slate-500 mt-0.5">
+                            UID: {order.playerUid}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-[11px] text-slate-500 block">Paid</span>
+                      <span className="text-sm sm:text-base font-extrabold text-cyan-700 tabular-nums">
+                        {formatCurrency(order.totalAmount)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Cancel Reason Notice */}
+                  {cancelReason && (
+                    <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 flex items-start gap-2.5 text-xs text-rose-800">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold block">Cancel Reason</span>
+                        <p className="mt-0.5">{cancelReason}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Processing / Active Status Update */}
+                  {!cancelReason && order.notificationMessage && (
+                    <div
+                      className={`rounded-xl border px-3.5 py-2.5 text-xs ${
+                        order.orderStatus === 'processing'
+                          ? 'bg-cyan-50/70 border-cyan-200 text-cyan-900'
+                          : order.orderStatus === 'completed'
+                            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                            : 'bg-amber-50/70 border-amber-200 text-amber-900'
+                      }`}>
+                      <span className="font-bold">Status Note: </span>
+                      <span>{order.notificationMessage}</span>
+                    </div>
+                  )}
+
+                  {/* Action Buttons Row */}
+                  <div className="pt-2 border-t border-slate-100 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                     <Link
                       to={`/product/${getProductSlug(order)}`}
-                      className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs sm:text-sm font-semibold text-slate-800 transition-colors">
-                      <RefreshCw className="w-3.5 h-3.5" /> Top up again
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-cyan-600 hover:to-blue-600 text-white text-xs sm:text-sm font-bold transition-all shadow-2xs">
+                      <RefreshCw className="w-3.5 h-3.5" /> Top Up Again
                     </Link>
 
-                    {order.voucherCode ? (
-                      <Link
-                        to="/codes"
-                        className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs sm:text-sm font-semibold text-slate-800 transition-colors">
-                        <KeyRound className="w-3.5 h-3.5 text-cyan-600" /> Codes
-                      </Link>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setDetailOrder(order)}
-                        className="inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs sm:text-sm font-semibold text-slate-800 transition-colors cursor-pointer">
-                        View details
-                      </button>
-                    )}
-                  </div>
-
-                  {order.voucherCode && (
                     <button
                       type="button"
                       onClick={() => setDetailOrder(order)}
-                      className="w-full inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs sm:text-sm font-semibold text-slate-800 transition-colors cursor-pointer">
-                      View details
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs sm:text-sm font-bold text-slate-800 transition-colors cursor-pointer">
+                      <Eye className="w-3.5 h-3.5 text-cyan-600" /> View Details
                     </button>
-                  )}
+
+                    <Link
+                      to={`/track?order=${order.orderNumber}`}
+                      className={`${order.voucherCode ? 'col-span-1' : 'col-span-2 sm:col-span-1'} sm:flex-none inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-cyan-200 bg-cyan-50/60 hover:bg-cyan-100/70 text-xs sm:text-sm font-bold text-cyan-800 transition-colors`}>
+                      <Search className="w-3.5 h-3.5" /> Track
+                    </Link>
+
+                    {order.voucherCode && (
+                      <Link
+                        to="/codes"
+                        className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold transition-colors">
+                        <KeyRound className="w-3.5 h-3.5" /> Codes
+                      </Link>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
 
       {/* Order Details Modal */}
       {detailOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-[1px]">
           <div className="bg-white rounded-2xl border border-slate-200 max-w-md w-full p-5 space-y-4 shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
@@ -250,13 +353,13 @@ export function MyOrdersPage() {
                 <span className="text-slate-500">TrxID</span>
                 <span className="font-mono text-slate-900">{detailOrder.trxId}</span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <span className="text-slate-500">Payment Status</span>
                 <span className="font-semibold capitalize">{detailOrder.paymentStatus}</span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <span className="text-slate-500">Order Status</span>
-                <span className="font-semibold capitalize">{detailOrder.orderStatus}</span>
+                {renderStatusBadge(detailOrder.orderStatus)}
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Total Paid</span>
@@ -266,11 +369,18 @@ export function MyOrdersPage() {
               </div>
             </div>
 
-            {detailOrder.notificationMessage && (
-              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-700">
-                <span className="font-bold text-slate-900 block mb-0.5">Latest Update</span>
-                {detailOrder.notificationMessage}
+            {getCancelReason(detailOrder) ? (
+              <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-800">
+                <span className="font-bold block mb-0.5">Cancel Reason</span>
+                {getCancelReason(detailOrder)}
               </div>
+            ) : (
+              detailOrder.notificationMessage && (
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-700">
+                  <span className="font-bold text-slate-900 block mb-0.5">Latest Update</span>
+                  {detailOrder.notificationMessage}
+                </div>
+              )
             )}
 
             {detailOrder.voucherCode && (

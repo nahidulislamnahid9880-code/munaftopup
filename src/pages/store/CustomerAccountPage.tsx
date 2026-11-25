@@ -24,6 +24,7 @@ import {
   where,
 } from 'firebase/firestore';
 import {useAuth} from '../../contexts/AuthContext';
+import {useStore} from '../../contexts/StoreContext';
 import {
   OperationType,
   db,
@@ -31,11 +32,14 @@ import {
   handleFirestoreError,
   timestampToMillis,
 } from '../../lib/firebase';
+import {resolveTelegramHref, resolveWhatsAppHref} from '../../lib/supportLinks';
 import type {CustomerNotification, Order, SupportTicket} from '../../types';
+import {TelegramIcon, WhatsAppIcon} from '../../components/SupportIcons';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
 export function CustomerAccountPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const {siteSettings} = useStore();
   const {
     firebaseUser,
     authReady,
@@ -44,6 +48,8 @@ export function CustomerAccountPage() {
     signOutCustomer,
     updateCustomerPhone,
   } = useAuth();
+  const whatsappHref = resolveWhatsAppHref(siteSettings.contact);
+  const telegramHref = resolveTelegramHref(siteSettings.contact);
 
   const initialTab =
     (searchParams.get('tab') as 'overview' | 'notifications' | 'support' | 'profile') || 'overview';
@@ -168,6 +174,36 @@ export function CustomerAccountPage() {
         createdAt: now,
         updatedAt: now,
       });
+
+      const submittedOrder = ticketOrder.trim().toUpperCase();
+      const submittedSubject = ticketSubject.trim();
+      const submittedMessage = ticketMessage.trim();
+      void (async () => {
+        try {
+          const token = await firebaseUser.getIdToken();
+          await fetch('/api/notify/admin', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              type: 'ticket',
+              details: {
+                ticketId: id,
+                orderNumber: submittedOrder,
+                subject: submittedSubject,
+                message: submittedMessage,
+                customerName: customerProfile?.displayName || firebaseUser.displayName || 'Customer',
+                customerEmail: firebaseUser.email || '',
+              },
+            }),
+          });
+        } catch {
+          // Non-blocking notification failure should not block ticket submission
+        }
+      })();
+
       setTicketSubject('');
       setTicketMessage('');
       setTicketOrder('');
@@ -441,6 +477,35 @@ export function CustomerAccountPage() {
         {/* Tab: Support Tickets */}
         {tab === 'support' && (
           <div className="space-y-5">
+            {(whatsappHref || telegramHref) && (
+              <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900">Instant Live Support</h2>
+                  <p className="text-xs text-slate-500">Chat directly with our support team on WhatsApp or Telegram.</p>
+                </div>
+                <div className="flex flex-wrap gap-2.5 shrink-0">
+                  {whatsappHref && (
+                    <a
+                      href={whatsappHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors">
+                      <WhatsAppIcon className="w-4 h-4" /> WhatsApp
+                    </a>
+                  )}
+                  {telegramHref && (
+                    <a
+                      href={telegramHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold transition-colors">
+                      <TelegramIcon className="w-4 h-4" /> Telegram
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+
             <form
               onSubmit={handleCreateTicket}
               className="rounded-2xl bg-white border border-slate-200 p-5 space-y-4 shadow-xs">
@@ -456,7 +521,7 @@ export function CustomerAccountPage() {
                     type="text"
                     value={ticketOrder}
                     onChange={(e) => setTicketOrder(e.target.value)}
-                    placeholder="SV-123456"
+                    placeholder="Enter Order Number"
                     className="w-full px-3 py-2 text-sm font-mono uppercase rounded-xl border border-slate-300"
                   />
                 </div>
@@ -562,7 +627,7 @@ export function CustomerAccountPage() {
                 type="tel"
                 value={editPhone}
                 onChange={(e) => setEditPhone(e.target.value)}
-                placeholder="01XXXXXXXXX"
+                placeholder="Enter phone number"
                 className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
               />
             </div>

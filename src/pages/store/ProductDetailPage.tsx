@@ -156,10 +156,10 @@ export function ProductDetailPage() {
           {/* Left / Main Purchase Column */}
           <form onSubmit={handleContinue} className="lg:col-span-8 space-y-4 sm:space-y-5">
             {/* Step 1: Select Recharge */}
-            <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 space-y-3.5 shadow-xs">
+            <div className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-3.5 shadow-sm">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5">
-                  <span className="w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-extrabold flex items-center justify-center shrink-0">
+                  <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white text-xs font-extrabold flex items-center justify-center shrink-0 shadow-2xs">
                     1
                   </span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display">
@@ -195,7 +195,7 @@ export function ProductDetailPage() {
                         onClick={() => setSelectedPkgId(pkg.id)}
                         className={`w-full text-left px-3 py-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-2 shadow-2xs ${
                           isSelected
-                            ? 'border-cyan-500 bg-cyan-50/70 ring-1 ring-cyan-500/40'
+                            ? 'border-cyan-500 bg-cyan-50/75 ring-1 ring-cyan-500/40'
                             : 'border-slate-200 bg-white hover:border-slate-300'
                         }`}>
                         <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -252,9 +252,9 @@ export function ProductDetailPage() {
             </div>
 
             {/* Step 2: Account Info */}
-            <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 space-y-3.5 shadow-xs">
+            <div className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-3.5 shadow-sm">
               <div className="flex items-center gap-2.5">
-                <span className="w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-extrabold flex items-center justify-center shrink-0">
+                <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white text-xs font-extrabold flex items-center justify-center shrink-0 shadow-2xs">
                   2
                 </span>
                 <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display">
@@ -264,7 +264,7 @@ export function ProductDetailPage() {
 
               {product.requiresUid && savedUid && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-slate-500">Used before:</span>
+                  <span className="text-xs text-slate-500">Saved UID:</span>
                   <button
                     type="button"
                     onClick={() => setPlayerUid(savedUid)}
@@ -285,7 +285,7 @@ export function ProductDetailPage() {
                       required
                       value={playerUid}
                       onChange={(e) => setPlayerUid(e.target.value)}
-                      placeholder="Enter exact Player UID (e.g. 2481950312)"
+                      placeholder="Enter Player UID"
                       className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500"
                     />
                   </div>
@@ -330,9 +330,9 @@ export function ProductDetailPage() {
 
             {/* Step 3: Order Summary & Continue CTA */}
             {selectedPackage && (
-              <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 space-y-4 shadow-xs">
+              <div className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-4 shadow-sm">
                 <div className="flex items-center gap-2.5">
-                  <span className="w-6 h-6 rounded-full bg-cyan-500 text-white text-xs font-extrabold flex items-center justify-center shrink-0">
+                  <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white text-xs font-extrabold flex items-center justify-center shrink-0 shadow-2xs">
                     3
                   </span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display">
@@ -366,7 +366,7 @@ export function ProductDetailPage() {
 
                 <button
                   type="submit"
-                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-bold transition-colors cursor-pointer">
+                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-cyan-600 hover:to-blue-600 text-white text-sm font-bold transition-all cursor-pointer shadow-sm">
                   Continue to Checkout <ArrowRight className="w-4 h-4" />
                 </button>
                 <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5">

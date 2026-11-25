@@ -246,12 +246,13 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
       body: JSON.stringify({idToken}),
     });
     const data = (await res.json()) as {token?: string; admin?: AdminSessionUser; error?: string};
-    if (res.ok && data.token && data.admin) {
-      setAdminToken(data.token);
-      setAdminUser(data.admin);
-      if (data.admin.role === 'super_admin') {
-        await initializeDefaultCatalogIfMissing(data.admin.email).catch(() => false);
-      }
+    if (!res.ok || !data.token || !data.admin) {
+      throw new Error(data.error || 'Google account is not authorized for admin sync.');
+    }
+    setAdminToken(data.token);
+    setAdminUser(data.admin);
+    if (data.admin.role === 'super_admin') {
+      await initializeDefaultCatalogIfMissing(data.admin.email).catch(() => false);
     }
   }, []);
 

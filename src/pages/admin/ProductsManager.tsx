@@ -29,7 +29,7 @@ function slugify(val: string): string {
 }
 
 export function ProductsManager() {
-  const {adminUser} = useAuth();
+  const {adminUser, firebaseUser, adminLinkGoogleForSync} = useAuth();
   const {products, categories} = useStore();
   const canEdit = adminUser?.role === 'super_admin' || adminUser?.permissions.products;
 
@@ -42,16 +42,37 @@ export function ProductsManager() {
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
 
   const handleSyncCatalog = async () => {
     if (!adminUser || !canEdit) return;
     setSyncing(true);
     setMessage('');
+    setErrorMessage('');
     try {
-      await syncRecommendedCatalog(adminUser.email);
+      const needsGoogleLink =
+        !firebaseUser ||
+        firebaseUser.email?.toLowerCase() !== adminUser.email.toLowerCase();
+      if (needsGoogleLink) {
+        await adminLinkGoogleForSync();
+      }
+      await syncRecommendedCatalog(adminUser.email, adminUser.role);
       setMessage('All default products and packages have been synced to Firestore.');
-    } catch {
-      setMessage('Failed to sync default packages.');
+    } catch (err) {
+      let detail = 'Failed to sync default packages.';
+      if (err instanceof Error) {
+        try {
+          const parsed = JSON.parse(err.message) as {error?: string};
+          detail = parsed.error || err.message;
+        } catch {
+          detail = err.message;
+        }
+      }
+      setErrorMessage(
+        detail.includes('Missing or insufficient permissions')
+          ? 'Permission denied: please click "Link Google Sync" at the top with nahidulislamnahid9880@gmail.com and try again.'
+          : `Failed to sync default packages: ${detail}`,
+      );
     } finally {
       setSyncing(false);
     }
@@ -351,6 +372,12 @@ export function ProductsManager() {
         {message && (
           <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 px-4 py-3 text-xs font-medium text-emerald-800 dark:text-emerald-300">
             {message}
+          </div>
+        )}
+
+        {errorMessage && (
+          <div className="rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 px-4 py-3 text-xs font-medium text-red-700 dark:text-red-300">
+            {errorMessage}
           </div>
         )}
 

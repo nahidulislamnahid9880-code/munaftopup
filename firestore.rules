@@ -407,7 +407,7 @@ service cloud.firestore {
         isValidProduct(incoming()) &&
         incoming().id == productId &&
         incoming().createdAt == request.time &&
-        exists(/databases/$(database)/documents/categories/$(incoming().categoryId));
+        existsAfter(/databases/$(database)/documents/categories/$(incoming().categoryId));
       allow update: if isValidId(productId) && hasPerm('products') &&
         isValidProduct(incoming()) &&
         incoming().id == existing().id &&
@@ -456,8 +456,10 @@ service cloud.firestore {
             exists(/databases/$(database)/documents/customers/$(request.auth.uid)) &&
             'walletBalance' in get(/databases/$(database)/documents/customers/$(request.auth.uid)).data &&
             get(/databases/$(database)/documents/customers/$(request.auth.uid)).data.walletBalance >= incoming().totalAmount &&
-            getAfter(/databases/$(database)/documents/customers/$(request.auth.uid)).data.walletBalance ==
-              get(/databases/$(database)/documents/customers/$(request.auth.uid)).data.walletBalance - incoming().totalAmount
+            getAfter(/databases/$(database)/documents/customers/$(request.auth.uid)).data.walletBalance >=
+              get(/databases/$(database)/documents/customers/$(request.auth.uid)).data.walletBalance - incoming().totalAmount - 0.01 &&
+            getAfter(/databases/$(database)/documents/customers/$(request.auth.uid)).data.walletBalance <=
+              get(/databases/$(database)/documents/customers/$(request.auth.uid)).data.walletBalance - incoming().totalAmount + 0.01
           )
         );
       allow update: if isValidId(orderId) && isSignedIn() && (hasPerm('orders') || hasPerm('payments')) &&
@@ -519,7 +521,7 @@ service cloud.firestore {
 
     // Unique TrxID lock registry
     match /trxRegistry/{trxKey} {
-      allow get: if isValidId(trxKey) && isSignedIn() && (existing().customerUid == request.auth.uid || isStaff());
+      allow get: if isValidId(trxKey) && isSignedIn() && (resource == null || existing().customerUid == request.auth.uid || isStaff());
       allow list: if isStaff();
       allow create: if isValidId(trxKey) && isSignedIn() && isNotSuspended(request.auth.uid) &&
         isValidTrxRegistry(incoming()) &&

@@ -25,6 +25,7 @@ import {useAuth} from '../../contexts/AuthContext';
 import {useStore} from '../../contexts/StoreContext';
 import {
   OperationType,
+  auth,
   db,
   formatCurrency,
   handleFirestoreError,
@@ -38,10 +39,34 @@ import type {
 } from '../../types';
 import {ImageUploadField} from '../../components/ImageUploadField';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
+import {PaymentMethodLogo} from '../../components/PaymentMethodLogo';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
+const GATEWAY_PRESETS = [
+  {
+    name: 'bKash',
+    accountType: 'Personal' as const,
+    instructions: 'Open bKash App → Send Money → Enter the number above → Copy and enter your TrxID below.',
+  },
+  {
+    name: 'Nagad',
+    accountType: 'Personal' as const,
+    instructions: 'Open Nagad App → Send Money → Enter the number above → Copy and enter your TrxID below.',
+  },
+  {
+    name: 'Upay',
+    accountType: 'Personal' as const,
+    instructions: 'Open Upay App → Send Money → Enter the number above → Copy and enter your TrxID below.',
+  },
+  {
+    name: 'Rocket',
+    accountType: 'Personal' as const,
+    instructions: 'Open Rocket App → Send Money → Enter the number above → Copy and enter your TrxID below.',
+  },
+];
+
 export function PaymentsManager() {
-  const {adminUser, firebaseUser} = useAuth();
+  const {adminUser, firebaseUser, adminLinkGoogleForSync} = useAuth();
   const {paymentMethods} = useStore();
   const canEdit = adminUser?.role === 'super_admin' || adminUser?.permissions.payments;
 
@@ -95,14 +120,49 @@ export function PaymentsManager() {
     };
   }, [firebaseUser, canEdit]);
 
+  const [methodError, setMethodError] = useState('');
+
+  const startPresetMethod = (preset?: (typeof GATEWAY_PRESETS)[number]) => {
+    setMethodError('');
+    setIsNew(true);
+    setEditing({
+      id: `pm_${Date.now()}`,
+      name: preset?.name || '',
+      accountNumber: '',
+      accountType: preset?.accountType || 'Personal',
+      instructions: preset?.instructions || '',
+      logoUrl: '',
+      active: true,
+      displayOrder: paymentMethods.length + 1,
+    });
+  };
+
   const handleSaveMethod = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editing || !canEdit || !adminUser) return;
+    setMethodError('');
+    if (!editing.name.trim()) {
+      setMethodError('Provider name is required.');
+      return;
+    }
+    if (editing.accountNumber.trim().length < 3) {
+      setMethodError('Account number must be at least 3 characters.');
+      return;
+    }
+
     setSaving(true);
     try {
+      const currentEmail = auth.currentUser?.email?.toLowerCase();
+      if (!auth.currentUser || currentEmail !== adminUser.email.toLowerCase()) {
+        await adminLinkGoogleForSync();
+      }
       const now = serverTimestamp();
       const payload: PaymentMethod = {
         ...editing,
+        name: editing.name.trim().slice(0, 60),
+        accountNumber: editing.accountNumber.trim().slice(0, 40),
+        instructions: editing.instructions.trim().slice(0, 1500),
+        logoUrl: editing.logoUrl.trim().slice(0, 1000),
         displayOrder: Number(editing.displayOrder) || 1,
         updatedAt: now,
       };
@@ -120,7 +180,8 @@ export function PaymentsManager() {
       });
       setEditing(null);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `paymentMethods/${editing.id}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      setMethodError(msg || 'Failed to save payment method.');
     } finally {
       setSaving(false);
     }
@@ -129,6 +190,10 @@ export function PaymentsManager() {
   const handleDeleteMethod = async (m: PaymentMethod) => {
     if (!canEdit || !adminUser) return;
     try {
+      const currentEmail = auth.currentUser?.email?.toLowerCase();
+      if (!auth.currentUser || currentEmail !== adminUser.email.toLowerCase()) {
+        await adminLinkGoogleForSync();
+      }
       await deleteDoc(doc(db, 'paymentMethods', m.id));
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `paymentMethods/${m.id}`);
@@ -277,24 +342,23 @@ export function PaymentsManager() {
           </div>
 
           {tab === 'methods' && (
-            <button
-              type="button"
-              onClick={() => {
-                setIsNew(true);
-                setEditing({
-                  id: `pm_${Date.now()}`,
-                  name: '',
-                  accountNumber: '',
-                  accountType: 'Personal',
-                  instructions: '',
-                  logoUrl: '',
-                  active: true,
-                  displayOrder: paymentMethods.length + 1,
-                });
-              }}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">
-              <Plus className="w-4 h-4" /> Add Payment Method
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {GATEWAY_PRESETS.map((preset) => (
+                <button
+                  key={preset.name}
+                  type="button"
+                  onClick={() => startPresetMethod(preset)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold cursor-pointer">
+                  <Plus className="w-3.5 h-3.5" /> {preset.name}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => startPresetMethod()}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">
+                <Plus className="w-4 h-4" /> Add Custom Method
+              </button>
+            </div>
           )}
         </div>
 
@@ -325,8 +389,12 @@ export function PaymentsManager() {
                         {new Date(timestampToMillis(t.createdAt)).toLocaleString()}
                       </p>
                       <p className="text-xs font-mono mt-1">
-                        TrxID: <span className="font-bold">{t.trxId}</span> · Sender:{' '}
-                        <span>{t.senderNumber}</span>
+                        TrxID: <span className="font-bold">{t.trxId}</span>
+                        {t.senderNumber && t.senderNumber !== 'Not Required' && (
+                          <>
+                            {' · '}Sender: <span>{t.senderNumber}</span>
+                          </>
+                        )}
                       </p>
                     </div>
                     <span
@@ -476,12 +544,28 @@ export function PaymentsManager() {
                   />
                 </div>
 
-                <ImageUploadField
-                  label="Provider Logo (Optional)"
-                  value={editing.logoUrl}
-                  onChange={(url) => setEditing({...editing, logoUrl: url})}
-                  compact
-                />
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
+                  <div className="lg:col-span-9">
+                    <ImageUploadField
+                      label="Provider Logo (Upload custom logo or leave blank for auto bKash / Nagad / Upay / Rocket logo)"
+                      value={editing.logoUrl}
+                      onChange={(url) => setEditing({...editing, logoUrl: url})}
+                    />
+                  </div>
+                  <div className="lg:col-span-3 flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                    <PaymentMethodLogo name={editing.name || 'Gateway'} logoUrl={editing.logoUrl} size="md" />
+                    <div className="min-w-0">
+                      <span className="text-[11px] font-semibold text-slate-500 block">Gateway Preview</span>
+                      <span className="text-xs font-bold truncate block">
+                        {editing.name || 'Provider'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {methodError && (
+                  <p className="text-xs text-red-600 dark:text-red-400 font-medium">{methodError}</p>
+                )}
 
                 <div className="flex items-center justify-between pt-2">
                   <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
@@ -508,14 +592,17 @@ export function PaymentsManager() {
                   key={m.id}
                   className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 space-y-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-base font-bold font-display">
-                        {m.name}{' '}
-                        <span className="text-xs font-normal text-slate-500">({m.accountType})</span>
-                      </h3>
-                      <p className="text-lg font-mono font-bold text-blue-600 dark:text-blue-400 tabular-nums mt-0.5">
-                        {m.accountNumber}
-                      </p>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <PaymentMethodLogo name={m.name} logoUrl={m.logoUrl} size="md" />
+                      <div className="min-w-0">
+                        <h3 className="text-base font-bold font-display truncate">
+                          {m.name}{' '}
+                          <span className="text-xs font-normal text-slate-500">({m.accountType})</span>
+                        </h3>
+                        <p className="text-lg font-mono font-bold text-blue-600 dark:text-blue-400 tabular-nums mt-0.5 truncate">
+                          {m.accountNumber}
+                        </p>
+                      </div>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span
@@ -579,7 +666,9 @@ export function PaymentsManager() {
                         <td className="px-4 py-3 font-mono font-semibold">{h.orderNumber}</td>
                         <td className="px-4 py-3 text-xs">
                           <span className="font-semibold">{h.paymentMethodName}</span>
-                          <span className="block font-mono text-slate-500">{h.senderNumber}</span>
+                          {h.senderNumber && h.senderNumber !== 'Not Required' && (
+                            <span className="block font-mono text-slate-500">{h.senderNumber}</span>
+                          )}
                         </td>
                         <td className="px-4 py-3 font-mono text-xs">{h.trxId}</td>
                         <td className="px-4 py-3 font-semibold tabular-nums">

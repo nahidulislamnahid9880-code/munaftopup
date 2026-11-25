@@ -9,7 +9,7 @@ import {
   ShieldCheck,
   Wallet,
 } from 'lucide-react';
-import {doc, getDoc, serverTimestamp, writeBatch} from 'firebase/firestore';
+import {doc, getDoc, getDocFromServer, serverTimestamp, writeBatch} from 'firebase/firestore';
 import {useAuth} from '../../contexts/AuthContext';
 import {useStore} from '../../contexts/StoreContext';
 import {
@@ -19,8 +19,8 @@ import {
   handleFirestoreError,
   normalizeTrxKey,
 } from '../../lib/firebase';
-import {ImageUploadField} from '../../components/ImageUploadField';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
+import {PaymentMethodLogo} from '../../components/PaymentMethodLogo';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
 export function CheckoutPage() {
@@ -57,9 +57,7 @@ export function CheckoutPage() {
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [selectedMethodId, setSelectedMethodId] = useState('');
-  const [senderNumber, setSenderNumber] = useState('');
   const [trxId, setTrxId] = useState('');
-  const [screenshotUrl, setScreenshotUrl] = useState('');
   const [copiedNumber, setCopiedNumber] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
@@ -120,8 +118,8 @@ export function CheckoutPage() {
       setError(`Please enter your ${product.serverLabel || 'Server ID'}.`);
       return;
     }
-    if (!customerName.trim() || !customerPhone.trim()) {
-      setError('Please enter your name and contact phone number.');
+    if (!customerName.trim() || customerPhone.trim().length < 5) {
+      setError('Please enter your name and a valid contact phone number (at least 5 characters).');
       return;
     }
 
@@ -135,8 +133,8 @@ export function CheckoutPage() {
         setError('Please select a payment method.');
         return;
       }
-      if (senderNumber.trim().length < 5 || trxId.trim().length < 4) {
-        setError('Please provide a valid sender number and Transaction ID (TrxID).');
+      if (trxId.trim().length < 4 || trxId.trim().length > 64) {
+        setError('Please provide a valid Transaction ID (TrxID) between 4 and 64 characters.');
         return;
       }
     }
@@ -150,11 +148,28 @@ export function CheckoutPage() {
       const thumbUrl = (selectedPackage.imageUrl || product.images?.[0] || '').slice(0, 1000);
 
       if (paymentMode === 'wallet') {
-        const nextBalance = Number((walletBalance - selectedPackage.price).toFixed(2));
+        const custRef = doc(db, 'customers', firebaseUser.uid);
+        let custSnap;
+        try {
+          custSnap = await getDocFromServer(custRef);
+        } catch {
+          custSnap = await getDoc(custRef);
+        }
+        const freshBalance = custSnap.exists()
+          ? Number((custSnap.data() as {walletBalance?: number}).walletBalance || 0)
+          : walletBalance;
+
+        if (freshBalance < selectedPackage.price) {
+          setError('Insufficient Wallet Balance. Add money or use bKash / Nagad.');
+          setSubmitting(false);
+          return;
+        }
+
+        const nextBalance = Math.max(0, Number((freshBalance - selectedPackage.price).toFixed(2)));
         const walletTrx = `WALLET-${orderNumber}`;
         const walletTrxKey = `wallet_${orderNumber}`;
 
-        batch.update(doc(db, 'customers', firebaseUser.uid), {
+        batch.update(custRef, {
           walletBalance: nextBalance,
           updatedAt: now,
         });
@@ -164,7 +179,7 @@ export function CheckoutPage() {
           orderNumber,
           customerUid: firebaseUser.uid,
           customerName: customerName.trim().slice(0, 100),
-          customerEmail: firebaseUser.email || '',
+          customerEmail: (firebaseUser.email || '').slice(0, 160),
           customerPhone: customerPhone.trim().slice(0, 30),
           productId: product.id,
           productName: product.name.slice(0, 120),
@@ -205,11 +220,21 @@ export function CheckoutPage() {
         });
       } else {
         const trxKey = normalizeTrxKey(selectedMethod!.id, trxId);
-        const existingTrx = await getDoc(doc(db, 'trxRegistry', trxKey));
-        if (existingTrx.exists()) {
-          setError('This Transaction ID (TrxID) has already been used. Duplicate TrxIDs are not permitted.');
-          setSubmitting(false);
-          return;
+        try {
+          const existingTrx = await getDoc(doc(db, 'trxRegistry', trxKey));
+          if (existingTrx.exists()) {
+            setError('This Transaction ID (TrxID) has already been used. Duplicate TrxIDs are not permitted.');
+            setSubmitting(false);
+            return;
+          }
+        } catch (checkErr) {
+          const checkMsg = checkErr instanceof Error ? checkErr.message.toLowerCase() : '';
+          if (checkMsg.includes('permission')) {
+            setError('This Transaction ID (TrxID) has already been used. Duplicate TrxIDs are not permitted.');
+            setSubmitting(false);
+            return;
+          }
+          throw checkErr;
         }
 
         batch.set(doc(db, 'orders', orderId), {
@@ -217,7 +242,7 @@ export function CheckoutPage() {
           orderNumber,
           customerUid: firebaseUser.uid,
           customerName: customerName.trim().slice(0, 100),
-          customerEmail: firebaseUser.email || '',
+          customerEmail: (firebaseUser.email || '').slice(0, 160),
           customerPhone: customerPhone.trim().slice(0, 30),
           productId: product.id,
           productName: product.name.slice(0, 120),
@@ -232,10 +257,10 @@ export function CheckoutPage() {
           paymentType: 'manual',
           paymentMethodId: selectedMethod!.id,
           paymentMethodName: selectedMethod!.name.slice(0, 60),
-          senderNumber: senderNumber.trim().slice(0, 40),
+          senderNumber: (customerPhone.trim() || 'Not Required').slice(0, 40),
           trxId: trxId.trim().toUpperCase().slice(0, 64),
           trxKey,
-          screenshotUrl: screenshotUrl.trim().slice(0, 1000),
+          screenshotUrl: '',
           voucherCode: '',
           paymentStatus: 'pending',
           orderStatus: 'pending',
@@ -270,6 +295,38 @@ export function CheckoutPage() {
       }
 
       await batch.commit();
+
+      void (async () => {
+        try {
+          const token = await firebaseUser.getIdToken();
+          await fetch('/api/notify/admin', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              type: 'order',
+              details: {
+                orderNumber,
+                productName: product.name,
+                packageName: `${selectedPackage.name} (${selectedPackage.quantityLabel})`,
+                amount: formatCurrency(selectedPackage.price),
+                playerUid: playerUid.trim() || 'N/A',
+                serverId: serverId.trim() || 'N/A',
+                paymentMethod: paymentMode === 'wallet' ? 'Wallet Balance' : selectedMethod?.name || 'Manual',
+                trxId: paymentMode === 'wallet' ? `WALLET-${orderNumber}` : trxId.trim().toUpperCase(),
+                customerName: customerName.trim(),
+                customerEmail: firebaseUser.email || '',
+                customerPhone: customerPhone.trim(),
+              },
+            }),
+          });
+        } catch {
+          // Non-blocking notification failure should never block order confirmation
+        }
+      })();
+
       setConfirmedOrderNumber(orderNumber);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -406,34 +463,34 @@ export function CheckoutPage() {
                     />
                   </div>
                 )}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Full Name *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    placeholder="Your name"
-                    className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Phone Number *
-                  </label>
-                  <input
-                    type="tel"
-                    required
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    placeholder="01XXXXXXXXX"
-                    className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-                  />
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Full Name *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={customerName}
+                      onChange={(e) => setCustomerName(e.target.value)}
+                      placeholder="Enter your name"
+                      className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Phone Number *
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      value={customerPhone}
+                      onChange={(e) => setCustomerPhone(e.target.value)}
+                      placeholder="Enter phone number"
+                      className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
 
             {/* Payment Option Switcher: Manual bKash/Nagad vs Wallet Balance */}
             <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-6 space-y-5 shadow-xs">
@@ -522,24 +579,20 @@ export function CheckoutPage() {
                           key={method.id}
                           type="button"
                           onClick={() => setSelectedMethodId(method.id)}
-                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2.5 ${
                             active
-                              ? 'border-cyan-500 bg-cyan-50/70 ring-2 ring-cyan-500/20'
+                              ? 'border-cyan-500 bg-cyan-50/70 ring-2 ring-cyan-500/20 shadow-xs'
                               : 'border-slate-200 hover:border-slate-300 bg-white'
                           }`}>
-                          <div className="flex items-center gap-2">
-                            {method.logoUrl && (
-                              <ImageWithFallback
-                                src={method.logoUrl}
-                                alt={method.name}
-                                className="w-6 h-6 rounded object-cover"
-                              />
-                            )}
-                            <span className="text-sm font-bold text-slate-900">{method.name}</span>
+                          <PaymentMethodLogo name={method.name} logoUrl={method.logoUrl} size="sm" />
+                          <div className="min-w-0">
+                            <span className="text-sm font-bold text-slate-900 block truncate">
+                              {method.name}
+                            </span>
+                            <span className="text-[11px] text-slate-500 block">
+                              {method.accountType}
+                            </span>
                           </div>
-                          <span className="text-[11px] text-slate-500 block mt-0.5">
-                            {method.accountType}
-                          </span>
                         </button>
                       );
                     })}
@@ -548,18 +601,25 @@ export function CheckoutPage() {
                   {selectedMethod && (
                     <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <span className="text-xs text-slate-500 block">
-                            Send {formatCurrency(selectedPackage.price)} to ({selectedMethod.name} {selectedMethod.accountType})
-                          </span>
-                          <span className="text-lg font-bold font-mono text-slate-900 tabular-nums">
-                            {selectedMethod.accountNumber}
-                          </span>
+                        <div className="flex items-center gap-3 min-w-0">
+                          <PaymentMethodLogo
+                            name={selectedMethod.name}
+                            logoUrl={selectedMethod.logoUrl}
+                            size="md"
+                          />
+                          <div className="min-w-0">
+                            <span className="text-xs text-slate-500 block">
+                              Send {formatCurrency(selectedPackage.price)} to ({selectedMethod.name} {selectedMethod.accountType})
+                            </span>
+                            <span className="text-lg font-bold font-mono text-slate-900 tabular-nums">
+                              {selectedMethod.accountNumber}
+                            </span>
+                          </div>
                         </div>
                         <button
                           type="button"
                           onClick={() => void handleCopyAccount()}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-xs font-semibold text-slate-700 cursor-pointer">
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-xs font-semibold text-slate-700 cursor-pointer shrink-0">
                           <Copy className="w-3.5 h-3.5" />
                           {copiedNumber ? 'Copied' : 'Copy Number'}
                         </button>
@@ -572,44 +632,19 @@ export function CheckoutPage() {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Your Sender Number *
-                      </label>
-                      <input
-                        type="text"
-                        required={paymentMode === 'manual'}
-                        value={senderNumber}
-                        onChange={(e) => setSenderNumber(e.target.value)}
-                        placeholder="01XXXXXXXXX"
-                        className="w-full px-3 py-2 text-sm font-mono rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Transaction ID (TrxID) *
-                      </label>
-                      <input
-                        type="text"
-                        required={paymentMode === 'manual'}
-                        value={trxId}
-                        onChange={(e) => setTrxId(e.target.value)}
-                        placeholder="e.g. 9K2M7P4X1Q"
-                        className="w-full px-3 py-2 text-sm font-mono uppercase rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
-                      />
-                    </div>
-                  </div>
-
-                  {firebaseUser && (
-                    <ImageUploadField
-                      label="Payment Screenshot (Optional)"
-                      value={screenshotUrl}
-                      onChange={setScreenshotUrl}
-                      endpoint="/api/upload"
-                      compact
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Transaction ID (TrxID) *
+                    </label>
+                    <input
+                      type="text"
+                      required={paymentMode === 'manual'}
+                      value={trxId}
+                      onChange={(e) => setTrxId(e.target.value)}
+                      placeholder="Enter Transaction ID (TrxID)"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
                     />
-                  )}
+                  </div>
                 </>
               )}
             </div>
