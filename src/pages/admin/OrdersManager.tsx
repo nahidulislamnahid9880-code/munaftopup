@@ -262,6 +262,10 @@ export function OrdersManager() {
             credited > 0
               ? `${adminNote ? `${adminNote} — ` : ''}${formatCurrency(credited)} has been refunded to your Wallet Balance.`
               : adminNote || 'Order cancelled by administrator.',
+          expired:
+            credited > 0
+              ? `Order expired after 30 minutes pending — ${formatCurrency(credited)} refunded to Wallet Balance.`
+              : adminNote || 'Order expired automatically after 30 minutes pending.',
         };
         const msg = notifText.trim() || statusMessages[nextStatus];
 
@@ -440,7 +444,7 @@ export function OrdersManager() {
           </div>
 
           <div className="flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl overflow-x-auto">
-            {(['all', 'pending', 'processing', 'completed', 'cancelled'] as const).map((st) => (
+            {(['all', 'pending', 'processing', 'completed', 'cancelled', 'expired'] as const).map((st) => (
               <button
                 key={st}
                 type="button"
@@ -514,7 +518,9 @@ export function OrdersManager() {
                                 ? 'bg-cyan-50 text-cyan-700 dark:bg-cyan-950/50 dark:text-cyan-400'
                                 : o.orderStatus === 'cancelled'
                                   ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400'
-                                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400'
+                                  : o.orderStatus === 'expired'
+                                    ? 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                                    : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400'
                           }`}>
                           {o.orderStatus}
                         </span>

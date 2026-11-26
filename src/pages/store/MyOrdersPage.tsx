@@ -53,7 +53,7 @@ export function MyOrdersPage() {
   }, [authReady, firebaseUser]);
 
   const counts = useMemo(() => {
-    const map = {all: orders.length, pending: 0, processing: 0, completed: 0, cancelled: 0};
+    const map = {all: orders.length, pending: 0, processing: 0, completed: 0, cancelled: 0, expired: 0};
     for (const o of orders) {
       if (o.orderStatus in map) {
         map[o.orderStatus] += 1;
@@ -109,6 +109,13 @@ export function MyOrdersPage() {
         </span>
       );
     }
+    if (status === 'expired') {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold whitespace-nowrap">
+          <Clock className="w-3.5 h-3.5" /> Expired
+        </span>
+      );
+    }
     return (
       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold whitespace-nowrap">
         <Clock className="w-3.5 h-3.5" /> Pending
@@ -122,6 +129,7 @@ export function MyOrdersPage() {
     {key: 'processing', label: 'Processing'},
     {key: 'completed', label: 'Completed'},
     {key: 'cancelled', label: 'Cancelled'},
+    {key: 'expired', label: 'Expired'},
   ];
 
   return (
@@ -274,7 +282,9 @@ export function MyOrdersPage() {
                           ? 'bg-cyan-50/70 border-cyan-200 text-cyan-900'
                           : order.orderStatus === 'completed'
                             ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
-                            : 'bg-amber-50/70 border-amber-200 text-amber-900'
+                            : order.orderStatus === 'expired'
+                              ? 'bg-slate-100 border-slate-300 text-slate-800'
+                              : 'bg-amber-50/70 border-amber-200 text-amber-900'
                       }`}>
                       <span className="font-bold">Status Note: </span>
                       <span>{order.notificationMessage}</span>

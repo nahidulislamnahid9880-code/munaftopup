@@ -124,7 +124,7 @@ export interface PaymentMethod {
 }
 
 export type PaymentStatus = 'pending' | 'verified' | 'rejected';
-export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled';
+export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled' | 'expired';
 
 export interface Order {
   id: string;

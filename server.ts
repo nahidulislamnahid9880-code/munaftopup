@@ -1172,7 +1172,7 @@ async function resolveTelegramDestination(
 
 export interface OrderStatusTelegramPayload {
   orderNumber: string;
-  orderStatus: 'pending' | 'processing' | 'completed' | 'cancelled';
+  orderStatus: 'pending' | 'processing' | 'completed' | 'cancelled' | 'expired';
   paymentStatus?: 'pending' | 'verified' | 'rejected';
   productName: string;
   packageName: string;
@@ -1225,6 +1225,10 @@ export async function sendTelegramOrderStatusUpdate(
         ? '❌ আপনার পেমেন্ট বাতিল/রিজেক্ট হওয়ায় অর্ডারটি ক্যানসেল করা হয়েছে।'
         : '❌ আপনার অর্ডারটি ক্যানসেল (Cancelled) করা হয়েছে।';
     statusBadge = 'Cancelled ❌';
+  } else if (params.orderStatus === 'expired') {
+    headline =
+      '⌛ আপনার অর্ডারটি ৩০ মিনিটের বেশি সময় পেন্ডিং থাকায় স্বয়ংক্রিয়ভাবে মেয়াদোত্তীর্ণ (Expired) হয়েছে।';
+    statusBadge = 'Expired ⌛';
   } else if (params.orderStatus === 'pending') {
     headline = '🕒 আপনার অর্ডারটি পেন্ডিং রিভিউতে রয়েছে।';
     statusBadge = 'Pending 🕒';
@@ -1265,6 +1269,8 @@ export async function sendTelegramOrderStatusUpdate(
   lines.push('');
   if (params.orderStatus === 'completed') {
     lines.push('আমাদের সাথে থাকার জন্য ধন্যবাদ! নতুন অর্ডার করতে "অর্ডার" লিখুন।');
+  } else if (params.orderStatus === 'expired') {
+    lines.push('নতুন করে অর্ডার করতে "অর্ডার" লিখুন অথবা কোনো সহায়তার জন্য "এজেন্ট" লিখে মেসেজ করুন।');
   } else {
     lines.push('যেকোনো সহায়তার জন্য এখানে মেসেজ করুন অথবা "অর্ডার" লিখে নতুন অর্ডার শুরু করুন।');
   }
@@ -3477,6 +3483,10 @@ async function startServer(): Promise<void> {
       geminiModel: GEMINI_BOT_MODEL,
       bkashNumberMasked: maskPhone(process.env.BKASH_NUMBER || ''),
       nagadNumberMasked: maskPhone(process.env.NAGAD_NUMBER || ''),
+      pendingOrderExpiryCronRunning: orderExpiryCronState.running,
+      lastOrderExpiryCheckAt: orderExpiryCronState.lastCheckAt,
+      expiredOrdersCount: orderExpiryCronState.totalExpired,
+      lastOrderExpiryError: orderExpiryCronState.lastError,
     });
   });
 
@@ -3497,7 +3507,7 @@ async function startServer(): Promise<void> {
     if (
       !orderNumber ||
       !orderStatus ||
-      !['pending', 'processing', 'completed', 'cancelled'].includes(orderStatus) ||
+      !['pending', 'processing', 'completed', 'cancelled', 'expired'].includes(orderStatus) ||
       !productName ||
       !packageName
     ) {
@@ -3572,8 +3582,207 @@ async function startServer(): Promise<void> {
       );
     }
     startTelegramBusinessBot();
+    startPendingOrderExpiryCron();
     startFirestoreAdminEmailWatcher();
   });
+}
+
+const PENDING_ORDER_EXPIRY_MS = 30 * 60 * 1000;
+const PENDING_ORDER_CRON_INTERVAL_MS = 60 * 1000;
+
+const orderExpiryCronState = {
+  running: false,
+  inFlight: false,
+  lastCheckAt: '',
+  totalExpired: 0,
+  lastError: '',
+};
+
+function parseFirestoreTimestampMillis(val: unknown): number {
+  if (!val) return 0;
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (val instanceof Date) return val.getTime();
+  if (typeof val === 'string') {
+    const parsed = Date.parse(val);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof val === 'object') {
+    const maybeTs = val as {toMillis?: () => number; seconds?: number; _seconds?: number};
+    if (typeof maybeTs.toMillis === 'function') {
+      return maybeTs.toMillis();
+    }
+    if (typeof maybeTs.seconds === 'number') {
+      return maybeTs.seconds * 1000;
+    }
+    if (typeof maybeTs._seconds === 'number') {
+      return maybeTs._seconds * 1000;
+    }
+  }
+  return 0;
+}
+
+async function expireStalePendingOrders(): Promise<void> {
+  if (!adminDb || orderExpiryCronState.inFlight) return;
+  orderExpiryCronState.inFlight = true;
+  orderExpiryCronState.lastCheckAt = new Date().toISOString();
+
+  try {
+    const cutoffMs = Date.now() - PENDING_ORDER_EXPIRY_MS;
+    const pendingSnap = await adminDb.collection('orders').where('orderStatus', '==', 'pending').get();
+
+    for (const docSnap of pendingSnap.docs) {
+      const data = docSnap.data() as Record<string, unknown>;
+      const createdMs = parseFirestoreTimestampMillis(data.createdAt);
+      if (!createdMs || createdMs > cutoffMs) continue;
+
+      const orderId = docSnap.id;
+      const orderNumber = String(data.orderNumber || orderId).trim();
+
+      try {
+        const txOutcome = await adminDb.runTransaction(async (tx) => {
+          const orderRef = adminDb!.collection('orders').doc(orderId);
+          const freshSnap = await tx.get(orderRef);
+          if (!freshSnap.exists) return null;
+
+          const fresh = freshSnap.data() as Record<string, unknown>;
+          if (fresh.orderStatus !== 'pending') return null;
+
+          const freshCreatedMs = parseFirestoreTimestampMillis(fresh.createdAt);
+          if (!freshCreatedMs || freshCreatedMs > Date.now() - PENDING_ORDER_EXPIRY_MS) {
+            return null;
+          }
+
+          const now = FieldValue.serverTimestamp();
+          const customerUid = String(fresh.customerUid || '').trim();
+          const totalAmount = Number(fresh.totalAmount || 0);
+          const isWalletOrder = fresh.paymentType === 'wallet' || fresh.paymentMethodId === 'wallet';
+          let refundedAmount = 0;
+
+          if (isWalletOrder && !fresh.walletRefunded && totalAmount > 0 && customerUid) {
+            const custRef = adminDb!.collection('customers').doc(customerUid);
+            const custSnap = await tx.get(custRef);
+            if (custSnap.exists) {
+              const curBal = Number((custSnap.data() as {walletBalance?: number}).walletBalance || 0);
+              const nextBal = Number((curBal + totalAmount).toFixed(2));
+              tx.update(custRef, {
+                walletBalance: nextBal,
+                updatedAt: now,
+              });
+              refundedAmount = totalAmount;
+            }
+          }
+
+          const expiryNote =
+            refundedAmount > 0
+              ? `Order automatically expired after 30 minutes pending; ৳${refundedAmount} refunded to wallet.`
+              : 'Order automatically expired after remaining pending for more than 30 minutes.';
+          const trackingRef = orderNumber ? adminDb!.collection('orderTracking').doc(orderNumber) : null;
+          const trackingSnap = trackingRef ? await tx.get(trackingRef) : null;
+
+          const orderPatch: Record<string, unknown> = {
+            orderStatus: 'expired',
+            adminNote: String(fresh.adminNote || '').trim() || expiryNote,
+            notificationMessage: expiryNote.slice(0, 500),
+            updatedAt: now,
+          };
+          if (refundedAmount > 0) {
+            orderPatch.walletRefunded = true;
+          }
+          tx.update(orderRef, orderPatch);
+
+          if (trackingRef && trackingSnap?.exists) {
+            tx.update(trackingRef, {
+              orderStatus: 'expired',
+              notificationMessage: expiryNote.slice(0, 500),
+              updatedAt: now,
+            });
+          }
+
+          return {
+            orderNumber: String(fresh.orderNumber || orderId),
+            customerUid,
+            productName: String(fresh.productName || 'Top-up'),
+            packageName: String(fresh.packageName || 'Package'),
+            playerUid: String(fresh.playerUid || ''),
+            totalAmount,
+            paymentMethodName: String(fresh.paymentMethodName || ''),
+            paymentStatus: (fresh.paymentStatus === 'verified' || fresh.paymentStatus === 'rejected'
+              ? fresh.paymentStatus
+              : 'pending') as 'pending' | 'verified' | 'rejected',
+            trxId: String(fresh.trxId || ''),
+            refundedAmount,
+          };
+        });
+
+        if (!txOutcome) continue;
+
+        orderExpiryCronState.totalExpired += 1;
+
+        const store = readStore();
+        appendServerLog(
+          store,
+          'order_expiry_cron',
+          'ORDER_AUTO_EXPIRED',
+          `Order ${txOutcome.orderNumber} marked expired after 30m pending${txOutcome.refundedAmount > 0 ? ` (wallet refunded ৳${txOutcome.refundedAmount})` : ''}`,
+        );
+        writeStore(store);
+
+        const telegramNote =
+          txOutcome.refundedAmount > 0
+            ? `৩০ মিনিটের বেশি সময় পেন্ডিং থাকায় অর্ডারটি স্বয়ংক্রিয়ভাবে এক্সপায়ার্ড হয়েছে এবং ৳${txOutcome.refundedAmount} আপনার ওয়ালেটে রিফান্ড করা হয়েছে।`
+            : '৩০ মিনিটের বেশি সময় পেন্ডিং থাকায় অর্ডারটি স্বয়ংক্রিয়ভাবে এক্সপায়ার্ড হয়েছে। অনুগ্রহ করে নতুন অর্ডার করুন বা সাপোর্টে যোগাযোগ করুন।';
+
+        const tgResult = await sendTelegramOrderStatusUpdate({
+          orderNumber: txOutcome.orderNumber,
+          orderStatus: 'expired',
+          paymentStatus: txOutcome.paymentStatus,
+          productName: txOutcome.productName,
+          packageName: txOutcome.packageName,
+          playerUid: txOutcome.playerUid || undefined,
+          totalAmount: txOutcome.totalAmount > 0 ? txOutcome.totalAmount : undefined,
+          paymentMethodName: txOutcome.paymentMethodName || undefined,
+          trxId: txOutcome.trxId || undefined,
+          note: telegramNote,
+          customerUid: txOutcome.customerUid || undefined,
+        });
+
+        console.log(
+          `[Order Expiry Cron] Order ${txOutcome.orderNumber} expired (Telegram sent=${tgResult.sent}${tgResult.reason ? `, reason=${tgResult.reason}` : ''})`,
+        );
+      } catch (orderErr) {
+        const msg = orderErr instanceof Error ? orderErr.message : String(orderErr);
+        console.error(`[Order Expiry Cron] Failed to expire order ${orderNumber}:`, msg);
+      }
+    }
+
+    orderExpiryCronState.lastError = '';
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    orderExpiryCronState.lastError = msg;
+    console.error('[Order Expiry Cron] Query error:', msg);
+  } finally {
+    orderExpiryCronState.inFlight = false;
+  }
+}
+
+function startPendingOrderExpiryCron(): void {
+  if (!adminDb) {
+    orderExpiryCronState.running = false;
+    console.warn('[Order Expiry Cron] Skipped (Firestore Admin not initialized).');
+    return;
+  }
+  if (orderExpiryCronState.running) return;
+  orderExpiryCronState.running = true;
+  console.log('[Order Expiry Cron] Active (checks pending orders > 30m every 60s)');
+
+  // Initial check shortly after server startup, then every 60 seconds
+  setTimeout(() => {
+    void expireStalePendingOrders();
+  }, 15_000).unref();
+
+  setInterval(() => {
+    void expireStalePendingOrders();
+  }, PENDING_ORDER_CRON_INTERVAL_MS).unref();
 }
 
 function startFirestoreAdminEmailWatcher(): void {

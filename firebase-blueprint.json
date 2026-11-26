@@ -119,7 +119,7 @@
         "voucherCode": { "type": "string", "maxLength": 500 },
         "walletRefunded": { "type": "boolean" },
         "paymentStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
-        "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled"] },
+        "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled", "expired"] },
         "adminNote": { "type": "string", "maxLength": 1000 },
         "notificationMessage": { "type": "string", "maxLength": 500 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -161,7 +161,7 @@
         "packageName": { "type": "string", "maxLength": 120 },
         "playerUidMasked": { "type": "string", "maxLength": 80 },
         "paymentStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
-        "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled"] },
+        "orderStatus": { "type": "string", "enum": ["pending", "processing", "completed", "cancelled", "expired"] },
         "notificationMessage": { "type": "string", "maxLength": 500 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }

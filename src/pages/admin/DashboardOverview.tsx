@@ -93,9 +93,9 @@ export function DashboardOverview() {
       if (o.orderStatus === 'pending') pending += 1;
       if (o.orderStatus === 'processing') processing += 1;
       if (o.orderStatus === 'completed') completed += 1;
-      if (o.orderStatus === 'cancelled') cancelled += 1;
+      if (o.orderStatus === 'cancelled' || o.orderStatus === 'expired') cancelled += 1;
 
-      if (o.orderStatus !== 'cancelled' && o.paymentStatus !== 'rejected') {
+      if (o.orderStatus !== 'cancelled' && o.orderStatus !== 'expired' && o.paymentStatus !== 'rejected') {
         totalRevenue += Number(o.totalAmount || 0);
         if (timestampToMillis(o.createdAt) >= todayMs) {
           todaySales += Number(o.totalAmount || 0);
@@ -132,7 +132,7 @@ export function DashboardOverview() {
 
     const map = new Map(days.map((item) => [item.dateKey, item]));
     for (const o of orders) {
-      if (o.orderStatus === 'cancelled' || o.paymentStatus === 'rejected') continue;
+      if (o.orderStatus === 'cancelled' || o.orderStatus === 'expired' || o.paymentStatus === 'rejected') continue;
       const ms = timestampToMillis(o.createdAt);
       if (!ms) continue;
       const key = new Date(ms).toISOString().slice(0, 10);

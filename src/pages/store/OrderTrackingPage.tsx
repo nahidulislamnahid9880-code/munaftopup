@@ -111,6 +111,12 @@ export function OrderTrackingPage() {
             <XCircle className="w-3.5 h-3.5" /> {status.toUpperCase()}
           </span>
         );
+      case 'expired':
+        return (
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+            <Clock className="w-3.5 h-3.5" /> EXPIRED
+          </span>
+        );
       default:
         return (
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700">

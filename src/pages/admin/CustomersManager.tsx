@@ -77,7 +77,7 @@ export function CustomersManager() {
     for (const o of orders) {
       const prev = map.get(o.customerUid) || {count: 0, spent: 0};
       prev.count += 1;
-      if (o.orderStatus !== 'cancelled' && o.paymentStatus !== 'rejected') {
+      if (o.orderStatus !== 'cancelled' && o.orderStatus !== 'expired' && o.paymentStatus !== 'rejected') {
         prev.spent += Number(o.totalAmount || 0);
       }
       map.set(o.customerUid, prev);

@@ -208,7 +208,7 @@ service cloud.firestore {
         (!('voucherCode' in data) || (data.voucherCode is string && data.voucherCode.size() <= 500)) &&
         (!('walletRefunded' in data) || data.walletRefunded is bool) &&
         data.paymentStatus in ['pending', 'verified', 'rejected'] &&
-        data.orderStatus in ['pending', 'processing', 'completed', 'cancelled'] &&
+        data.orderStatus in ['pending', 'processing', 'completed', 'cancelled', 'expired'] &&
         data.adminNote is string && data.adminNote.size() <= 1000 &&
         data.notificationMessage is string && data.notificationMessage.size() <= 500 &&
         data.createdAt is timestamp &&
@@ -258,7 +258,7 @@ service cloud.firestore {
         data.packageName is string && data.packageName.size() >= 1 && data.packageName.size() <= 120 &&
         data.playerUidMasked is string && data.playerUidMasked.size() <= 80 &&
         data.paymentStatus in ['pending', 'verified', 'rejected'] &&
-        data.orderStatus in ['pending', 'processing', 'completed', 'cancelled'] &&
+        data.orderStatus in ['pending', 'processing', 'completed', 'cancelled', 'expired'] &&
         data.notificationMessage is string && data.notificationMessage.size() <= 500 &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp && data.updatedAt == request.time;
