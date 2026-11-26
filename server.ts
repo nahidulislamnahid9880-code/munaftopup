@@ -734,7 +734,7 @@ async function dispatchDistributorIfEnabled(params: {
 
 const WEBSITE_URL = (process.env.WEBSITE_URL || 'https://munaftopup.onrender.com').trim();
 const GEMINI_BOT_MODEL = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
-const GEMINI_FALLBACK_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash-lite'] as const;
+const GEMINI_FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash'] as const;
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
