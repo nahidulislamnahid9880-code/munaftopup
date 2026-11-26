@@ -183,8 +183,9 @@ export function AddMoneyPage() {
       void (async () => {
         try {
           const token = await firebaseUser.getIdToken();
-          await fetch('/api/notify/admin', {
+          const notifyRes = await fetch('/api/notify/admin', {
             method: 'POST',
+            keepalive: true,
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
@@ -200,8 +201,16 @@ export function AddMoneyPage() {
               },
             }),
           });
-        } catch {
-          // Non-blocking notification failure should not block deposit confirmation
+          if (!notifyRes.ok) {
+            console.error('Deposit admin notify HTTP error:', notifyRes.status);
+          } else {
+            const notifyData = (await notifyRes.json()) as {sent?: boolean; reason?: string};
+            if (notifyData.sent === false) {
+              console.warn('Deposit admin email skipped:', notifyData.reason);
+            }
+          }
+        } catch (notifyErr) {
+          console.error('Deposit admin notify request failed:', notifyErr);
         }
       })();
 

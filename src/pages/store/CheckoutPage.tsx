@@ -304,8 +304,9 @@ export function CheckoutPage() {
       void (async () => {
         try {
           const token = await firebaseUser.getIdToken();
-          await fetch('/api/notify/admin', {
+          const notifyRes = await fetch('/api/notify/admin', {
             method: 'POST',
+            keepalive: true,
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
@@ -327,8 +328,16 @@ export function CheckoutPage() {
               },
             }),
           });
-        } catch {
-          // Non-blocking notification failure should never block order confirmation
+          if (!notifyRes.ok) {
+            console.error('Order admin notify HTTP error:', notifyRes.status);
+          } else {
+            const notifyData = (await notifyRes.json()) as {sent?: boolean; reason?: string};
+            if (notifyData.sent === false) {
+              console.warn('Order admin email skipped:', notifyData.reason);
+            }
+          }
+        } catch (notifyErr) {
+          console.error('Order admin notify request failed:', notifyErr);
         }
       })();
 

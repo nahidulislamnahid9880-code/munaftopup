@@ -540,7 +540,7 @@ export function AdminSettings() {
                 <Mail className="w-4 h-4 text-blue-600" /> Server SMTP &amp; Email Alerts
               </h2>
               <p className="text-xs text-slate-600 dark:text-slate-400">
-                Customer orders, support complaints/tickets, and wallet deposits automatically notify the recipient email below. For Gmail, use host <code className="font-mono">smtp.gmail.com</code>, port <code className="font-mono">587</code>, your Gmail address as Username, and a 16-character Google App Password (or set <code className="font-mono">SMTP_USER</code> / <code className="font-mono">SMTP_PASSWORD</code> env vars on Render).
+                Customer orders, support complaints/tickets, and wallet deposits automatically notify the recipient email below. For Gmail, use host <code className="font-mono">smtp.gmail.com</code>, port <code className="font-mono">587</code>, your Gmail address as Username, and a 16-character Google App Password (or set <code className="font-mono">SMTP_USER</code> / <code className="font-mono">SMTP_PASSWORD</code> or <code className="font-mono">EMAIL_USER</code> / <code className="font-mono">EMAIL_PASS</code> env vars on Render).
               </p>
               <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
                 <input
@@ -733,7 +733,7 @@ export function AdminSettings() {
                       AI Mode:{' '}
                       <strong className={autoStatus.geminiConfigured ? 'text-emerald-600' : 'text-slate-500'}>
                         {autoStatus.geminiConfigured
-                          ? `Gemini (${autoStatus.geminiModel || 'gemini-2.5-flash'})`
+                          ? `Gemini (${autoStatus.geminiModel || 'gemini-3.8-flash'})`
                           : 'Rule-based fallback'}
                       </strong>
                     </span>

@@ -458,21 +458,61 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+const notifiedEventKeys = new Map<string, number>();
+const SERVER_BOOT_TIME_MS = Date.now();
+
+function markNotificationEventSent(eventKey: string): boolean {
+  const now = Date.now();
+  if (notifiedEventKeys.size > 1000) {
+    for (const [k, ts] of notifiedEventKeys.entries()) {
+      if (now - ts > 15 * 60 * 1000) notifiedEventKeys.delete(k);
+    }
+  }
+  const prev = notifiedEventKeys.get(eventKey);
+  if (prev && now - prev < 15 * 60 * 1000) {
+    return false;
+  }
+  notifiedEventKeys.set(eventKey, now);
+  return true;
+}
+
 function resolveSmtpConfig(store: AdminStoreData) {
   const s = store.systemSettings;
-  const host = (s.smtpHost || process.env.SMTP_HOST || 'smtp.gmail.com').trim();
-  const port = Number(s.smtpPort || process.env.SMTP_PORT || 587) || 587;
-  const user = (s.smtpUser || process.env.SMTP_USER || '').trim();
-  const pass = (s.smtpPassword || process.env.SMTP_PASSWORD || '').trim();
-  const fromEmail = (s.smtpFromEmail || process.env.SMTP_FROM_EMAIL || user).trim();
+  const host = (s.smtpHost || process.env.SMTP_HOST || process.env.EMAIL_HOST || 'smtp.gmail.com').trim();
+  const port = Number(s.smtpPort || process.env.SMTP_PORT || process.env.EMAIL_PORT || 587) || 587;
+  const user = (
+    s.smtpUser ||
+    process.env.SMTP_USER ||
+    process.env.EMAIL_USER ||
+    process.env.GMAIL_USER ||
+    ''
+  ).trim();
+  const pass = (
+    s.smtpPassword ||
+    process.env.SMTP_PASSWORD ||
+    process.env.EMAIL_PASS ||
+    process.env.GMAIL_PASS ||
+    ''
+  ).trim();
+  const fromEmail = (
+    s.smtpFromEmail ||
+    process.env.SMTP_FROM_EMAIL ||
+    process.env.EMAIL_FROM ||
+    user
+  ).trim();
   const toEmail = (
     s.notificationEmail ||
     process.env.NOTIFICATION_EMAIL ||
+    process.env.ADMIN_EMAIL ||
     DEFAULT_NOTIFICATION_EMAIL
   ).trim();
-  const envConfigured = Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD);
+  const envConfigured = Boolean(
+    (process.env.SMTP_USER && process.env.SMTP_PASSWORD) ||
+      (process.env.EMAIL_USER && process.env.EMAIL_PASS) ||
+      (process.env.GMAIL_USER && process.env.GMAIL_PASS),
+  );
   const enabled = Boolean((s.smtpEnabled || envConfigured) && host && user && pass && toEmail);
-  return {host, port, user, pass, fromEmail, toEmail, enabled};
+  return {host, port, user, pass, fromEmail, toEmail, enabled, envConfigured};
 }
 
 async function sendAdminNotificationEmail(
@@ -484,14 +524,23 @@ async function sendAdminNotificationEmail(
   const cfg = resolveSmtpConfig(store);
 
   if (!cfg.enabled) {
+    const missingParts: string[] = [];
+    if (!cfg.user) missingParts.push('SMTP_USER / EMAIL_USER');
+    if (!cfg.pass) missingParts.push('SMTP_PASSWORD / EMAIL_PASS');
+    if (!cfg.toEmail) missingParts.push('NOTIFICATION_EMAIL');
+    const detail =
+      missingParts.length > 0
+        ? `Missing mail credentials: ${missingParts.join(', ')}`
+        : 'Outbound SMTP is disabled in Admin Settings';
+    console.warn(`[Admin Email Skipped] "${subject}" -> ${detail}`);
     appendServerLog(
       store,
       actorEmail,
       'EMAIL_NOTIFY_SKIPPED',
-      `Notification "${subject}" skipped (configure SMTP username & App Password in Admin Settings or env vars).`,
+      `Notification "${subject}" skipped (${detail}).`,
     );
     writeStore(store);
-    return {sent: false, reason: 'SMTP credentials not configured yet', toEmail: cfg.toEmail};
+    return {sent: false, reason: detail, toEmail: cfg.toEmail};
   }
 
   const textBody = [subject, '', ...rows.map((r) => `${r.label}: ${r.value}`)].join('\n');
@@ -524,6 +573,9 @@ async function sendAdminNotificationEmail(
       port: cfg.port,
       secure: cfg.port === 465,
       auth: {user: cfg.user, pass: cfg.pass},
+      connectionTimeout: 12000,
+      greetingTimeout: 12000,
+      socketTimeout: 15000,
     });
     await transporter.sendMail({
       from: cfg.fromEmail || cfg.user,
@@ -532,11 +584,13 @@ async function sendAdminNotificationEmail(
       text: textBody,
       html: htmlBody,
     });
+    console.log(`[Admin Email Sent] "${subject}" -> ${cfg.toEmail}`);
     appendServerLog(store, actorEmail, 'EMAIL_NOTIFY_SENT', `Sent "${subject}" to ${cfg.toEmail}`);
     writeStore(store);
     return {sent: true, toEmail: cfg.toEmail};
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Admin Email Failed] "${subject}" -> ${msg}`);
     appendServerLog(store, actorEmail, 'EMAIL_NOTIFY_FAILED', `Failed "${subject}": ${msg}`);
     writeStore(store);
     return {sent: false, reason: msg, toEmail: cfg.toEmail};
@@ -679,7 +733,8 @@ async function dispatchDistributorIfEnabled(params: {
 }
 
 const WEBSITE_URL = (process.env.WEBSITE_URL || 'https://munaftopup.onrender.com').trim();
-const GEMINI_BOT_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+const GEMINI_BOT_MODEL = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+const GEMINI_FALLBACK_MODEL = 'gemini-4-hydrogen';
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -1353,6 +1408,94 @@ function isCancelCommand(text: string): boolean {
   return lower === 'বাতিল' || lower === 'cancel' || lower === '/cancel' || lower === '/reset';
 }
 
+function isHumanAgentRequest(text: string): boolean {
+  const lower = text.trim().toLowerCase();
+  const triggers = [
+    'এজেন্ট',
+    'এডমিন',
+    'অ্যাডমিন',
+    'কথা বলতে চাই',
+    'সরাসরি কথা',
+    'কথা বলবো',
+    'কথা বলব',
+    'ম্যানেজার',
+    'কাস্টমার কেয়ার',
+    'কাস্টমার কেয়ার',
+    'human agent',
+    'live agent',
+    'support agent',
+    'customer care',
+    'talk to admin',
+    'talk to agent',
+    'speak to admin',
+    'speak with admin',
+    'speak with agent',
+    'agent',
+    'admin',
+  ];
+  return triggers.some((kw) => lower.includes(kw));
+}
+
+async function escalateToHumanAgent(params: {
+  token: string;
+  chatId: number;
+  businessConnectionId?: string;
+  customerName: string;
+  tgUid: string;
+  rawText: string;
+  session: BotSession;
+  customReply?: string;
+}): Promise<void> {
+  const {token, chatId, businessConnectionId, customerName, tgUid, rawText, session, customReply} = params;
+  const recentHistory = session.history
+    .slice(-6)
+    .map((h) => `${h.role === 'user' ? 'Customer' : 'Bot'}: ${h.text}`)
+    .join(' | ');
+
+  await sendAdminNotificationEmail(
+    `Telegram Human Agent Request — ${customerName}`,
+    [
+      {label: 'Customer Name', value: customerName},
+      {label: 'Telegram ID', value: `${tgUid} (Chat ${chatId})`},
+      {label: 'Customer Message', value: rawText.slice(0, 800)},
+      {label: 'Current Bot Step', value: session.step},
+      {
+        label: 'Selected Package',
+        value: session.selected
+          ? `${session.selected.productName} - ${session.selected.packageName} (৳${session.selected.price})`
+          : 'None',
+      },
+      {label: 'Player UID', value: session.playerUid || 'None'},
+      {label: 'Recent Chat', value: recentHistory || 'N/A'},
+      {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
+    ],
+    'telegram_bot',
+  );
+
+  const adminTelegramChatIdRaw = (process.env.ADMIN_TELEGRAM_CHAT_ID || '').trim();
+  const adminTelegramChatId = Number(adminTelegramChatIdRaw);
+  if (adminTelegramChatIdRaw && Number.isFinite(adminTelegramChatId)) {
+    const adminPing = [
+      '🚨 Telegram Customer Agent Request',
+      `👤 Customer: ${customerName} (${tgUid})`,
+      `💬 Message: ${rawText.slice(0, 300)}`,
+    ].join('\n');
+    await sendTelegramReply(token, adminTelegramChatId, adminPing).catch(() => null);
+  }
+
+  const replyText =
+    customReply ||
+    [
+      '🙋‍♂️ আপনার অনুরোধটি আমাদের এডমিনের কাছে পাঠানো হয়েছে (ইমেইলে নোটিফিকেশন গেছে)।',
+      '',
+      '⏳ খুব শীঘ্রই একজন এডমিন আপনার সাথে এখানেই যোগাযোগ করবেন। অনুগ্রহ করে একটু অপেক্ষা করুন।',
+      `🌐 ওয়েবসাইট: ${WEBSITE_URL}`,
+    ].join('\n');
+
+  pushSessionHistory(session, 'model', replyText);
+  await sendTelegramReply(token, chatId, replyText, businessConnectionId);
+}
+
 function formatPaymentSummaryPrompt(
   selected: BotPackageOption,
   playerUid: string,
@@ -1586,6 +1729,7 @@ async function verifyAndCompleteTelegramOrder(params: {
     session.selected = undefined;
     session.playerUid = undefined;
     botSessions.set(sessionKey, session);
+    markNotificationEventSent(`order:${outcome.orderNumber}`);
 
     const distResult = await dispatchDistributorIfEnabled({
       orderNumber: outcome.orderNumber,
@@ -1662,7 +1806,14 @@ async function verifyAndCompleteTelegramOrder(params: {
 
 interface GeminiAssistantDecision {
   reply: string;
-  action: 'NONE' | 'SHOW_LIST' | 'SELECT_PACKAGE' | 'SET_UID' | 'CHECK_TRXID' | 'CANCEL_ORDER';
+  action:
+    | 'NONE'
+    | 'SHOW_LIST'
+    | 'SELECT_PACKAGE'
+    | 'SET_UID'
+    | 'CHECK_TRXID'
+    | 'CANCEL_ORDER'
+    | 'REQUEST_AGENT';
   selectedOptionIndex?: number;
   extractedUid?: string;
   extractedTrxId?: string;
@@ -1675,7 +1826,10 @@ async function askGeminiAssistant(params: {
   liveCtx: TelegramBotLiveContext;
 }): Promise<GeminiAssistantDecision | null> {
   const ai = getGeminiClient();
-  if (!ai) return null;
+  if (!ai) {
+    console.warn('[Telegram AI] GEMINI_API_KEY is not configured; using deterministic fallback.');
+    return null;
+  }
 
   const {rawText, customerName, session, liveCtx} = params;
 
@@ -1757,6 +1911,7 @@ ${currentFlowText}
 - "SELECT_PACKAGE": Customer picks or clearly requests to buy a specific package (either by index like "1", "১", "#2", "দুই নম্বর" OR by package name like "115 diamond", "weekly", "monthly", "level up pass"). Set "selectedOptionIndex" to that exact integer #index from section 5. If the same message ALSO includes a 5-15 digit Player UID, put the English-digit UID in "extractedUid".
 - "SET_UID": Customer is providing their 5-15 digit Game Player UID (convert Bengali digits ০-৯ to 0-9). Set "extractedUid" to the English digits only.
 - "CHECK_TRXID": Current step is AWAITING_TRXID (or customer has selected a package and UID) and the customer sends a Transaction ID (TrxID / TxnID) to verify their payment. Put the uppercase TrxID in "extractedTrxId".
+- "REQUEST_AGENT": Customer explicitly asks to speak with a human agent, admin, manager, or real person (e.g., "এজেন্ট", "agent", "admin", "কথা বলতে চাই"). Reply politely confirming that an admin has been notified.
 - "CANCEL_ORDER": Customer wants to cancel, stop, or restart the current order.
 - "NONE": Customer is asking a general question (prices of a single item without ordering, delivery time, UID instructions, payment method info, checking their recent order status, greeting, etc.). Keep the conversation smooth and helpful!`;
 
@@ -1767,54 +1922,74 @@ ${historyText}
 Latest Customer Message:
 ${rawText}`;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: GEMINI_BOT_MODEL,
-      contents: userPrompt,
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            reply: {
-              type: Type.STRING,
-              description: 'Helpful natural response for the customer in Bengali/Banglish/English.',
-            },
-            action: {
-              type: Type.STRING,
-              enum: ['NONE', 'SHOW_LIST', 'SELECT_PACKAGE', 'SET_UID', 'CHECK_TRXID', 'CANCEL_ORDER'],
-              description: 'Structured next state action for the order flow.',
-            },
-            selectedOptionIndex: {
-              type: Type.INTEGER,
-              description: '1-based index of the package selected from live products list.',
-            },
-            extractedUid: {
-              type: Type.STRING,
-              description: '5 to 15 digit Game Player UID normalized to English digits 0-9.',
-            },
-            extractedTrxId: {
-              type: Type.STRING,
-              description: 'Uppercase payment TrxID/TxnID provided by the customer.',
-            },
-          },
-          required: ['reply', 'action'],
-        },
-      },
-    });
+  const modelsToTry = Array.from(new Set([GEMINI_BOT_MODEL, GEMINI_FALLBACK_MODEL]));
 
-    const jsonText = (response.text ?? '').trim();
-    if (!jsonText) return null;
-    const parsed = JSON.parse(jsonText) as GeminiAssistantDecision;
-    if (!parsed || typeof parsed.reply !== 'string' || !parsed.reply.trim()) {
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const modelName = modelsToTry[i];
+    try {
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: userPrompt,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              reply: {
+                type: Type.STRING,
+                description: 'Helpful natural response for the customer in Bengali/Banglish/English.',
+              },
+              action: {
+                type: Type.STRING,
+                enum: [
+                  'NONE',
+                  'SHOW_LIST',
+                  'SELECT_PACKAGE',
+                  'SET_UID',
+                  'CHECK_TRXID',
+                  'CANCEL_ORDER',
+                  'REQUEST_AGENT',
+                ],
+                description: 'Structured next state action for the order flow.',
+              },
+              selectedOptionIndex: {
+                type: Type.INTEGER,
+                description: '1-based index of the package selected from live products list.',
+              },
+              extractedUid: {
+                type: Type.STRING,
+                description: '5 to 15 digit Game Player UID normalized to English digits 0-9.',
+              },
+              extractedTrxId: {
+                type: Type.STRING,
+                description: 'Uppercase payment TrxID/TxnID provided by the customer.',
+              },
+            },
+            required: ['reply', 'action'],
+          },
+        },
+      });
+
+      const jsonText = (response.text ?? '').trim();
+      if (!jsonText) return null;
+      const parsed = JSON.parse(jsonText) as GeminiAssistantDecision;
+      if (!parsed || typeof parsed.reply !== 'string' || !parsed.reply.trim()) {
+        return null;
+      }
+      return parsed;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isNotFound = /\b404\b|NOT_FOUND|is not found/i.test(msg);
+      console.error(`Gemini bot assistant error (${modelName}):`, msg);
+      if (isNotFound && i + 1 < modelsToTry.length) {
+        console.warn(`[Telegram AI] Model "${modelName}" returned 404; retrying with "${modelsToTry[i + 1]}".`);
+        continue;
+      }
       return null;
     }
-    return parsed;
-  } catch (err) {
-    console.error('Gemini bot assistant error:', err instanceof Error ? err.message : err);
-    return null;
   }
+  return null;
 }
 
 async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage): Promise<void> {
@@ -1847,6 +2022,20 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
       '✅ আপনার চলমান অর্ডার প্রক্রিয়া বাতিল করা হয়েছে।\n\nনতুন অর্ডার করতে প্যাকেজের নাম লিখুন অথবা "দাম কত" লিখে লিস্ট দেখুন।';
     pushSessionHistory(session, 'model', cancelMsg);
     await sendTelegramReply(token, chatId, cancelMsg, businessConnectionId);
+    return;
+  }
+
+  // 1b. Human Agent / Admin Escalation
+  if (isHumanAgentRequest(rawText)) {
+    await escalateToHumanAgent({
+      token,
+      chatId,
+      businessConnectionId,
+      customerName,
+      tgUid,
+      rawText,
+      session,
+    });
     return;
   }
 
@@ -1940,6 +2129,20 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
   });
 
   if (aiDecision) {
+    if (aiDecision.action === 'REQUEST_AGENT') {
+      await escalateToHumanAgent({
+        token,
+        chatId,
+        businessConnectionId,
+        customerName,
+        tgUid,
+        rawText,
+        session,
+        customReply: aiDecision.reply,
+      });
+      return;
+    }
+
     if (aiDecision.action === 'CANCEL_ORDER') {
       session.step = 'IDLE';
       session.selected = undefined;
@@ -2573,8 +2776,8 @@ async function startServer(): Promise<void> {
     res.json({ok: true});
   });
 
-  // Customer -> Admin email notification endpoint (Orders, Support Complaints, Deposits)
-  app.post('/api/notify/admin', requireSignedInFirebase, async (req, res) => {
+  // Customer -> Admin email notification endpoints (Orders, Support Complaints, Deposits)
+  const handleAdminNotifyRequest = async (req: Request, res: Response): Promise<void> => {
     const {type, details} = req.body as {
       type?: 'order' | 'ticket' | 'deposit';
       details?: Record<string, unknown>;
@@ -2590,9 +2793,11 @@ async function startServer(): Promise<void> {
 
     let subject = 'New Store Notification';
     let rows: Array<{label: string; value: string}> = [];
+    let eventKey = '';
 
     if (type === 'order') {
       const orderNumber = safeStr(details.orderNumber, 40);
+      eventKey = orderNumber ? `order:${orderNumber}` : '';
       subject = `New Order ${orderNumber || ''} — ${safeStr(details.productName, 80)}`;
       rows = [
         {label: 'Order Number', value: orderNumber || '—'},
@@ -2609,10 +2814,12 @@ async function startServer(): Promise<void> {
         {label: 'Time (BD)', value: timestamp},
       ];
     } else if (type === 'ticket') {
+      const ticketId = safeStr(details.ticketId, 60);
+      eventKey = ticketId ? `ticket:${ticketId}` : '';
       const subjectLine = safeStr(details.subject, 140);
       subject = `Customer Complaint / Support: ${subjectLine || 'New Ticket'}`;
       rows = [
-        {label: 'Ticket ID', value: safeStr(details.ticketId, 60) || '—'},
+        {label: 'Ticket ID', value: ticketId || '—'},
         {label: 'Order Number', value: safeStr(details.orderNumber, 40) || 'Not specified'},
         {label: 'Subject', value: subjectLine || '—'},
         {label: 'Complaint / Message', value: safeStr(details.message, 1500) || '—'},
@@ -2622,15 +2829,22 @@ async function startServer(): Promise<void> {
       ];
     } else {
       const amount = safeStr(details.amount, 40);
+      const trxId = safeStr(details.trxId, 64);
+      eventKey = trxId ? `deposit:${trxId}` : '';
       subject = `New Wallet Deposit Request (${amount})`;
       rows = [
         {label: 'Deposit Amount', value: amount || '—'},
         {label: 'Payment Method', value: safeStr(details.paymentMethod, 60) || '—'},
-        {label: 'TrxID', value: safeStr(details.trxId, 64) || '—'},
+        {label: 'TrxID', value: trxId || '—'},
         {label: 'Customer Name', value: safeStr(details.customerName, 100) || '—'},
         {label: 'Customer Email', value: safeStr(details.customerEmail, 160) || '—'},
         {label: 'Time (BD)', value: timestamp},
       ];
+    }
+
+    if (eventKey && !markNotificationEventSent(eventKey)) {
+      res.json({ok: true, sent: true, deduplicated: true});
+      return;
     }
 
     const result = await sendAdminNotificationEmail(
@@ -2639,7 +2853,10 @@ async function startServer(): Promise<void> {
       safeStr(details.customerEmail, 160) || 'customer',
     );
     res.json({ok: true, ...result});
-  });
+  };
+
+  app.post('/api/notify/admin', requireSignedInFirebase, handleAdminNotifyRequest);
+  app.post('/api/notify-admin', requireSignedInFirebase, handleAdminNotifyRequest);
 
   // SMTP & Authorized Distributor API Settings (Server-Only Secrets)
   app.get('/api/admin/system-settings', requireAdmin('settings'), (_req, res) => {
@@ -2650,11 +2867,11 @@ async function startServer(): Promise<void> {
       settings: {
         smtpHost: s.smtpHost || cfg.host,
         smtpPort: s.smtpPort || cfg.port,
-        smtpUser: s.smtpUser || (process.env.SMTP_USER ? '(Configured via ENV)' : ''),
-        hasSmtpPassword: Boolean(s.smtpPassword || process.env.SMTP_PASSWORD),
+        smtpUser: s.smtpUser || (cfg.user ? '(Configured via ENV)' : ''),
+        hasSmtpPassword: Boolean(cfg.pass),
         smtpFromEmail: s.smtpFromEmail,
         notificationEmail: s.notificationEmail || cfg.toEmail || DEFAULT_NOTIFICATION_EMAIL,
-        smtpEnabled: s.smtpEnabled || Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD),
+        smtpEnabled: s.smtpEnabled || cfg.envConfigured,
         distributorBaseUrl: s.distributorBaseUrl,
         distributorMerchantId: s.distributorMerchantId,
         hasDistributorApiKey: Boolean(s.distributorApiKey),
@@ -2927,8 +3144,142 @@ async function startServer(): Promise<void> {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`StrikeVault server running on http://0.0.0.0:${PORT}`);
+    const smtpCfg = resolveSmtpConfig(readStore());
+    if (smtpCfg.enabled) {
+      console.log(`[Admin Email] SMTP ready (host=${smtpCfg.host}:${smtpCfg.port}, to=${smtpCfg.toEmail})`);
+    } else {
+      console.warn(
+        '[Admin Email] SMTP credentials missing or disabled. Set SMTP_USER/SMTP_PASSWORD (or EMAIL_USER/EMAIL_PASS) or configure in Admin Settings.',
+      );
+    }
     startTelegramBusinessBot();
+    startFirestoreAdminEmailWatcher();
   });
+}
+
+function startFirestoreAdminEmailWatcher(): void {
+  if (!adminDb || firebaseInitMode !== 'service_account') {
+    return;
+  }
+
+  const getCreatedMs = (val: unknown): number => {
+    if (!val) return 0;
+    if (typeof (val as {toMillis?: () => number}).toMillis === 'function') {
+      return (val as {toMillis: () => number}).toMillis();
+    }
+    return 0;
+  };
+
+  let ordersInitialized = false;
+  adminDb.collection('orders').onSnapshot(
+    (snap) => {
+      if (!ordersInitialized) {
+        ordersInitialized = true;
+        return;
+      }
+      for (const change of snap.docChanges()) {
+        if (change.type !== 'added') continue;
+        const d = change.doc.data() as Record<string, unknown>;
+        const createdMs = getCreatedMs(d.createdAt);
+        if (createdMs && createdMs < SERVER_BOOT_TIME_MS - 10000) continue;
+        const orderNumber = String(d.orderNumber || change.doc.id).trim();
+        if (!orderNumber || !markNotificationEventSent(`order:${orderNumber}`)) continue;
+
+        void sendAdminNotificationEmail(
+          `New Order ${orderNumber} — ${String(d.productName || 'Top-up').slice(0, 80)}`,
+          [
+            {label: 'Order Number', value: orderNumber},
+            {label: 'Product', value: String(d.productName || '—')},
+            {label: 'Package', value: String(d.packageName || '—')},
+            {label: 'Amount', value: `৳${Number(d.totalAmount || 0)}`},
+            {label: 'Player UID', value: String(d.playerUid || '—')},
+            {label: 'Server ID', value: String(d.serverId || 'N/A')},
+            {label: 'Payment Method', value: String(d.paymentMethodName || '—')},
+            {label: 'TrxID', value: String(d.trxId || '—')},
+            {label: 'Customer Name', value: String(d.customerName || '—')},
+            {label: 'Customer Email', value: String(d.customerEmail || '—')},
+            {label: 'Customer Phone', value: String(d.customerPhone || '—')},
+            {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
+          ],
+          String(d.customerEmail || 'firestore_watcher'),
+        );
+      }
+    },
+    (err) => {
+      console.error('[Firestore Watcher] orders error:', err instanceof Error ? err.message : err);
+    },
+  );
+
+  let ticketsInitialized = false;
+  adminDb.collection('tickets').onSnapshot(
+    (snap) => {
+      if (!ticketsInitialized) {
+        ticketsInitialized = true;
+        return;
+      }
+      for (const change of snap.docChanges()) {
+        if (change.type !== 'added') continue;
+        const d = change.doc.data() as Record<string, unknown>;
+        const createdMs = getCreatedMs(d.createdAt);
+        if (createdMs && createdMs < SERVER_BOOT_TIME_MS - 10000) continue;
+        const ticketId = String(d.id || change.doc.id).trim();
+        if (!ticketId || !markNotificationEventSent(`ticket:${ticketId}`)) continue;
+
+        const subjectLine = String(d.subject || 'New Ticket').slice(0, 140);
+        void sendAdminNotificationEmail(
+          `Customer Complaint / Support: ${subjectLine}`,
+          [
+            {label: 'Ticket ID', value: ticketId},
+            {label: 'Order Number', value: String(d.orderNumber || 'Not specified')},
+            {label: 'Subject', value: subjectLine},
+            {label: 'Complaint / Message', value: String(d.message || '—').slice(0, 1500)},
+            {label: 'Customer Name', value: String(d.customerName || '—')},
+            {label: 'Customer Email', value: String(d.customerEmail || '—')},
+            {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
+          ],
+          String(d.customerEmail || 'firestore_watcher'),
+        );
+      }
+    },
+    (err) => {
+      console.error('[Firestore Watcher] tickets error:', err instanceof Error ? err.message : err);
+    },
+  );
+
+  let depositsInitialized = false;
+  adminDb.collection('walletTopups').onSnapshot(
+    (snap) => {
+      if (!depositsInitialized) {
+        depositsInitialized = true;
+        return;
+      }
+      for (const change of snap.docChanges()) {
+        if (change.type !== 'added') continue;
+        const d = change.doc.data() as Record<string, unknown>;
+        const createdMs = getCreatedMs(d.createdAt);
+        if (createdMs && createdMs < SERVER_BOOT_TIME_MS - 10000) continue;
+        const trxId = String(d.trxId || change.doc.id).trim();
+        if (!trxId || !markNotificationEventSent(`deposit:${trxId}`)) continue;
+
+        const amount = `৳${Number(d.amount || 0)}`;
+        void sendAdminNotificationEmail(
+          `New Wallet Deposit Request (${amount})`,
+          [
+            {label: 'Deposit Amount', value: amount},
+            {label: 'Payment Method', value: String(d.paymentMethodName || '—')},
+            {label: 'TrxID', value: trxId},
+            {label: 'Customer Name', value: String(d.customerName || '—')},
+            {label: 'Customer Email', value: String(d.customerEmail || '—')},
+            {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
+          ],
+          String(d.customerEmail || 'firestore_watcher'),
+        );
+      }
+    },
+    (err) => {
+      console.error('[Firestore Watcher] walletTopups error:', err instanceof Error ? err.message : err);
+    },
+  );
 }
 
 void startServer();

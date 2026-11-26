@@ -181,8 +181,9 @@ export function CustomerAccountPage() {
       void (async () => {
         try {
           const token = await firebaseUser.getIdToken();
-          await fetch('/api/notify/admin', {
+          const notifyRes = await fetch('/api/notify/admin', {
             method: 'POST',
+            keepalive: true,
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
@@ -199,8 +200,16 @@ export function CustomerAccountPage() {
               },
             }),
           });
-        } catch {
-          // Non-blocking notification failure should not block ticket submission
+          if (!notifyRes.ok) {
+            console.error('Ticket admin notify HTTP error:', notifyRes.status);
+          } else {
+            const notifyData = (await notifyRes.json()) as {sent?: boolean; reason?: string};
+            if (notifyData.sent === false) {
+              console.warn('Ticket admin email skipped:', notifyData.reason);
+            }
+          }
+        } catch (notifyErr) {
+          console.error('Ticket admin notify request failed:', notifyErr);
         }
       })();
 
