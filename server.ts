@@ -734,7 +734,7 @@ async function dispatchDistributorIfEnabled(params: {
 
 const WEBSITE_URL = (process.env.WEBSITE_URL || 'https://munaftopup.onrender.com').trim();
 const GEMINI_BOT_MODEL = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
-const GEMINI_FALLBACK_MODEL = 'gemini-4-hydrogen';
+const GEMINI_FALLBACK_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash-lite'] as const;
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -1922,7 +1922,7 @@ ${historyText}
 Latest Customer Message:
 ${rawText}`;
 
-  const modelsToTry = Array.from(new Set([GEMINI_BOT_MODEL, GEMINI_FALLBACK_MODEL]));
+  const modelsToTry = Array.from(new Set([GEMINI_BOT_MODEL, ...GEMINI_FALLBACK_MODELS]));
 
   for (let i = 0; i < modelsToTry.length; i++) {
     const modelName = modelsToTry[i];
@@ -1980,10 +1980,24 @@ ${rawText}`;
       return parsed;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isNotFound = /\b404\b|NOT_FOUND|is not found/i.test(msg);
+      const errStatus =
+        typeof err === 'object' && err !== null && 'status' in err
+          ? Number((err as {status?: unknown}).status)
+          : NaN;
+      const isRetryableModelOrLoadError =
+        errStatus === 404 ||
+        errStatus === 503 ||
+        /\b(404|503)\b|NOT_FOUND|UNAVAILABLE|is not found|high demand|overloaded|service unavailable/i.test(
+          msg,
+        );
       console.error(`Gemini bot assistant error (${modelName}):`, msg);
-      if (isNotFound && i + 1 < modelsToTry.length) {
-        console.warn(`[Telegram AI] Model "${modelName}" returned 404; retrying with "${modelsToTry[i + 1]}".`);
+      if (isRetryableModelOrLoadError && i + 1 < modelsToTry.length) {
+        const reasonTag = errStatus === 503 || /\b503\b|UNAVAILABLE|high demand|overloaded/i.test(msg)
+          ? '503/high demand'
+          : '404/not found';
+        console.warn(
+          `[Telegram AI] Model "${modelName}" failed (${reasonTag}); retrying with "${modelsToTry[i + 1]}".`,
+        );
         continue;
       }
       return null;
