@@ -127,6 +127,8 @@ export function AdminSettings() {
     telegramBotProcessedUpdates: number;
     telegramBotLastPollAt: string;
     telegramBotLastError: string;
+    geminiConfigured?: boolean;
+    geminiModel?: string;
     bkashNumberMasked: string;
     nagadNumberMasked: string;
   } | null>(null);
@@ -726,6 +728,14 @@ export function AdminSettings() {
                       {autoStatus.telegramBotRunning
                         ? `Active${autoStatus.telegramBotUsername ? ` (@${autoStatus.telegramBotUsername})` : ''}`
                         : 'Waiting for TELEGRAM_BOT_TOKEN'}
+                    </span>
+                    <span className="block text-[11px] text-slate-500 mt-0.5">
+                      AI Mode:{' '}
+                      <strong className={autoStatus.geminiConfigured ? 'text-emerald-600' : 'text-slate-500'}>
+                        {autoStatus.geminiConfigured
+                          ? `Gemini (${autoStatus.geminiModel || 'gemini-2.5-flash'})`
+                          : 'Rule-based fallback'}
+                      </strong>
                     </span>
                     {autoStatus.telegramBotRunning && (
                       <span className="block text-[11px] text-slate-400 mt-0.5">

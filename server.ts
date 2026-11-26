@@ -7,6 +7,7 @@ import express, {type NextFunction, type Request, type Response} from 'express';
 import {cert, getApp, getApps, initializeApp as initializeAdminApp, type ServiceAccount} from 'firebase-admin/app';
 import {getAuth as getAdminAuth} from 'firebase-admin/auth';
 import {FieldValue, getFirestore, type Firestore} from 'firebase-admin/firestore';
+import {GoogleGenAI, Type} from '@google/genai';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 
@@ -677,23 +678,62 @@ async function dispatchDistributorIfEnabled(params: {
   }
 }
 
+const WEBSITE_URL = (process.env.WEBSITE_URL || 'https://munaftopup.onrender.com').trim();
+const GEMINI_BOT_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) return null;
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
+
+function normalizeBengaliDigits(input: string): string {
+  const map: Record<string, string> = {
+    '০': '0',
+    '১': '1',
+    '২': '2',
+    '৩': '3',
+    '৪': '4',
+    '৫': '5',
+    '৬': '6',
+    '৭': '7',
+    '৮': '8',
+    '৯': '9',
+  };
+  return input.replace(/[০-৯]/g, (ch) => map[ch] ?? ch);
+}
+
 interface BotPackageOption {
   index: number;
   productId: string;
   productName: string;
+  productDescription: string;
+  productInstructions: string;
   productImage: string;
+  requiresUid: boolean;
+  uidLabel: string;
   packageId: string;
   packageName: string;
   quantityLabel: string;
   price: number;
+  originalPrice: number;
+  promoLabel: string;
 }
 
 interface BotSession {
-  step: 'AWAITING_PACKAGE' | 'AWAITING_UID' | 'AWAITING_TRXID';
+  step: 'IDLE' | 'AWAITING_PACKAGE' | 'AWAITING_UID' | 'AWAITING_TRXID';
   options?: BotPackageOption[];
   selected?: BotPackageOption;
   playerUid?: string;
   customerName: string;
+  history: Array<{role: 'user' | 'model'; text: string}>;
   updatedAt: number;
 }
 
@@ -749,6 +789,33 @@ function cleanupExpiredBotSessions(): void {
       botSessions.delete(key);
     }
   }
+}
+
+function getOrCreateBotSession(sessionKey: string, customerName: string): BotSession {
+  const existing = botSessions.get(sessionKey);
+  if (existing) {
+    existing.customerName = customerName || existing.customerName;
+    existing.updatedAt = Date.now();
+    return existing;
+  }
+  const fresh: BotSession = {
+    step: 'IDLE',
+    customerName,
+    history: [],
+    updatedAt: Date.now(),
+  };
+  botSessions.set(sessionKey, fresh);
+  return fresh;
+}
+
+function pushSessionHistory(session: BotSession, role: 'user' | 'model', text: string): void {
+  const clean = text.trim().slice(0, 1200);
+  if (!clean) return;
+  session.history.push({role, text: clean});
+  if (session.history.length > 8) {
+    session.history = session.history.slice(-8);
+  }
+  session.updatedAt = Date.now();
 }
 
 async function callTelegramApi<T>(
@@ -1041,52 +1108,201 @@ export async function sendTelegramOrderStatusUpdate(
 
 async function fetchActiveRateOptions(): Promise<BotPackageOption[]> {
   if (!adminDb) {
-    throw new Error('Firestore Admin database is not configured');
+    return [];
   }
-  const snap = await adminDb.collection('products').where('active', '==', true).get();
-  const products = snap.docs
-    .map((d) => d.data() as {
-      id?: string;
-      name?: string;
-      images?: string[];
-      displayOrder?: number;
-      packages?: Array<{
+  try {
+    const snap = await adminDb.collection('products').where('active', '==', true).get();
+    const products = snap.docs
+      .map((d) => d.data() as {
         id?: string;
         name?: string;
-        quantityLabel?: string;
-        price?: number;
-        active?: boolean;
+        shortDescription?: string;
+        instructions?: string;
+        images?: string[];
+        requiresUid?: boolean;
+        uidLabel?: string;
         displayOrder?: number;
-      }>;
-    })
-    .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0));
+        packages?: Array<{
+          id?: string;
+          name?: string;
+          quantityLabel?: string;
+          price?: number;
+          originalPrice?: number;
+          promoLabel?: string;
+          active?: boolean;
+          displayOrder?: number;
+        }>;
+      })
+      .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0));
 
-  const options: BotPackageOption[] = [];
-  let idx = 1;
-  for (const p of products) {
-    const productId = String(p.id || '').trim();
-    const productName = String(p.name || 'Product').trim();
-    const productImage = Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : '';
-    const pkgs = Array.isArray(p.packages)
-      ? [...p.packages]
-          .filter((pkg) => pkg && pkg.active !== false && Number(pkg.price) > 0)
-          .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0))
-      : [];
-    for (const pkg of pkgs) {
-      options.push({
-        index: idx++,
-        productId,
-        productName,
-        productImage,
-        packageId: String(pkg.id || `pkg_${idx}`),
-        packageName: String(pkg.name || pkg.quantityLabel || 'Package').trim(),
-        quantityLabel: String(pkg.quantityLabel || pkg.name || '').trim(),
-        price: Number(pkg.price),
-      });
+    const options: BotPackageOption[] = [];
+    let idx = 1;
+    for (const p of products) {
+      const productId = String(p.id || '').trim();
+      const productName = String(p.name || 'Product').trim();
+      const productImage = Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : '';
+      const pkgs = Array.isArray(p.packages)
+        ? [...p.packages]
+            .filter((pkg) => pkg && pkg.active !== false && Number(pkg.price) > 0)
+            .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0))
+        : [];
+      for (const pkg of pkgs) {
+        options.push({
+          index: idx++,
+          productId,
+          productName,
+          productDescription: String(p.shortDescription || '').trim(),
+          productInstructions: String(p.instructions || '').trim(),
+          productImage,
+          requiresUid: p.requiresUid !== false,
+          uidLabel: String(p.uidLabel || 'Player UID').trim(),
+          packageId: String(pkg.id || `pkg_${idx}`),
+          packageName: String(pkg.name || pkg.quantityLabel || 'Package').trim(),
+          quantityLabel: String(pkg.quantityLabel || pkg.name || '').trim(),
+          price: Number(pkg.price),
+          originalPrice: Number(pkg.originalPrice || 0),
+          promoLabel: String(pkg.promoLabel || '').trim(),
+        });
+      }
+    }
+    return options;
+  } catch (err) {
+    console.error('fetchActiveRateOptions error:', err instanceof Error ? err.message : err);
+    return [];
+  }
+}
+
+interface TelegramBotLiveContext {
+  brandName: string;
+  websiteUrl: string;
+  noticeText: string;
+  supportInfo: string;
+  options: BotPackageOption[];
+  bkashNumber: string;
+  nagadNumber: string;
+  otherPaymentMethods: Array<{name: string; accountNumber: string; accountType: string; instructions: string}>;
+  recentOrders: Array<{
+    orderNumber: string;
+    productName: string;
+    packageName: string;
+    playerUid: string;
+    totalAmount: number;
+    paymentStatus: string;
+    orderStatus: string;
+    voucherCode: string;
+    adminNote: string;
+    createdAtMs: number;
+  }>;
+}
+
+async function fetchTelegramBotLiveContext(tgUid: string): Promise<TelegramBotLiveContext> {
+  const ctx: TelegramBotLiveContext = {
+    brandName: 'Munaf Topup',
+    websiteUrl: WEBSITE_URL,
+    noticeText: '',
+    supportInfo: '',
+    options: [],
+    bkashNumber: (process.env.BKASH_NUMBER || '').trim(),
+    nagadNumber: (process.env.NAGAD_NUMBER || '').trim(),
+    otherPaymentMethods: [],
+    recentOrders: [],
+  };
+
+  if (!adminDb) return ctx;
+
+  const [optionsResult, paymentMethodsResult, settingsResult, ordersResult] = await Promise.allSettled([
+    fetchActiveRateOptions(),
+    adminDb.collection('paymentMethods').where('active', '==', true).get(),
+    adminDb.collection('settings').doc('storefront').get(),
+    adminDb.collection('orders').where('customerUid', '==', tgUid).get(),
+  ]);
+
+  if (optionsResult.status === 'fulfilled') {
+    ctx.options = optionsResult.value;
+  }
+
+  if (paymentMethodsResult.status === 'fulfilled') {
+    for (const docSnap of paymentMethodsResult.value.docs) {
+      const d = docSnap.data() as {
+        name?: string;
+        accountNumber?: string;
+        accountType?: string;
+        instructions?: string;
+      };
+      const name = String(d.name || '').trim();
+      const accountNumber = String(d.accountNumber || '').trim();
+      const nameLower = name.toLowerCase();
+      if (!ctx.bkashNumber && nameLower.includes('bkash') && accountNumber) {
+        ctx.bkashNumber = accountNumber;
+      } else if (!ctx.nagadNumber && nameLower.includes('nagad') && accountNumber) {
+        ctx.nagadNumber = accountNumber;
+      }
+      if (name && accountNumber) {
+        ctx.otherPaymentMethods.push({
+          name,
+          accountNumber,
+          accountType: String(d.accountType || 'Personal'),
+          instructions: String(d.instructions || '').trim(),
+        });
+      }
     }
   }
-  return options;
+
+  if (settingsResult.status === 'fulfilled' && settingsResult.value.exists) {
+    const s = settingsResult.value.data() as {
+      brandName?: string;
+      noticeText?: string;
+      noticeActive?: boolean;
+      contact?: {whatsapp?: string; telegram?: string; email?: string; supportHours?: string};
+    };
+    if (s.brandName && s.brandName.trim()) {
+      ctx.brandName = s.brandName.trim();
+    }
+    if (s.noticeActive && s.noticeText) {
+      ctx.noticeText = s.noticeText.trim();
+    }
+    if (s.contact) {
+      const parts = [
+        s.contact.whatsapp ? `WhatsApp: ${s.contact.whatsapp}` : '',
+        s.contact.telegram ? `Telegram: ${s.contact.telegram}` : '',
+        s.contact.email ? `Email: ${s.contact.email}` : '',
+        s.contact.supportHours ? `Hours: ${s.contact.supportHours}` : '',
+      ].filter(Boolean);
+      ctx.supportInfo = parts.join(' | ');
+    }
+  }
+
+  if (ordersResult.status === 'fulfilled') {
+    const toMs = (val: unknown): number => {
+      if (!val) return 0;
+      if (typeof (val as {toMillis?: () => number}).toMillis === 'function') {
+        return (val as {toMillis: () => number}).toMillis();
+      }
+      return 0;
+    };
+    ctx.recentOrders = ordersResult.value.docs
+      .map((d) => {
+        const o = d.data() as Record<string, unknown>;
+        return {
+          orderNumber: String(o.orderNumber || ''),
+          productName: String(o.productName || ''),
+          packageName: String(o.packageName || ''),
+          playerUid: String(o.playerUid || ''),
+          totalAmount: Number(o.totalAmount || 0),
+          paymentStatus: String(o.paymentStatus || ''),
+          orderStatus: String(o.orderStatus || ''),
+          voucherCode: String(o.voucherCode || ''),
+          adminNote: String(o.adminNote || ''),
+          createdAtMs: toMs(o.createdAt),
+        };
+      })
+      .sort((a, b) => b.createdAtMs - a.createdAtMs)
+      .slice(0, 5);
+  }
+
+  return ctx;
 }
+
 
 async function resolveBotPaymentNumbers(): Promise<{bkashNumber: string; nagadNumber: string}> {
   let bkashNumber = (process.env.BKASH_NUMBER || '').trim();
@@ -1137,6 +1353,470 @@ function isCancelCommand(text: string): boolean {
   return lower === 'বাতিল' || lower === 'cancel' || lower === '/cancel' || lower === '/reset';
 }
 
+function formatPaymentSummaryPrompt(
+  selected: BotPackageOption,
+  playerUid: string,
+  bkashNumber: string,
+  nagadNumber: string,
+): string {
+  const paymentLines: string[] = [];
+  if (bkashNumber) paymentLines.push(`• bKash (Send Money): ${bkashNumber}`);
+  if (nagadNumber) paymentLines.push(`• Nagad (Send Money): ${nagadNumber}`);
+  if (paymentLines.length === 0) {
+    paymentLines.push('• পেমেন্ট নম্বর এখনো সেট করা হয়নি — এডমিনের সাথে যোগাযোগ করুন।');
+  }
+
+  return [
+    '📋 অর্ডার সামারি:',
+    `🎮 প্রোডাক্ট: ${selected.productName}`,
+    `💎 প্যাকেজ: ${selected.packageName}`,
+    `🆔 ${selected.uidLabel || 'Player UID'}: ${playerUid}`,
+    `💰 মোট মূল্য: ৳${selected.price}`,
+    '',
+    '💳 নিচের যেকোনো নম্বরে Send Money করুন:',
+    ...paymentLines,
+    '',
+    `উপরের নম্বরে ঠিক ৳${selected.price} Send Money করে শুধুমাত্র আপনার Transaction ID (TrxID) লিখে পাঠান।`,
+    '(যেমন: 9B4X2K7M1P)',
+  ].join('\n');
+}
+
+function formatPackageSelectedPrompt(selected: BotPackageOption): string {
+  return [
+    '✅ আপনি সিলেক্ট করেছেন:',
+    `🎮 প্রোডাক্ট: ${selected.productName}`,
+    `💎 প্যাকেজ: ${selected.packageName}`,
+    `💰 মূল্য: ৳${selected.price}`,
+    '',
+    `👉 এখন আপনার গেম ${selected.uidLabel || 'Player UID'} (৫ থেকে ১৫ ডিজিটের সংখ্যা) লিখে পাঠান:`,
+  ].join('\n');
+}
+
+function formatFallbackRateList(options: BotPackageOption[], brandName: string): string {
+  const lines: string[] = [`💎 ${brandName} — আজকের টপআপ ও ডায়মন্ড রেট লিস্ট:`, ''];
+  let lastProduct = '';
+  for (const opt of options) {
+    if (opt.productName !== lastProduct) {
+      if (lastProduct) lines.push('');
+      lines.push(`🎮 ${opt.productName}`);
+      lastProduct = opt.productName;
+    }
+    lines.push(`${opt.index}. ${opt.packageName} — ৳${opt.price}`);
+  }
+  lines.push('');
+  lines.push('👉 অর্ডার করতে পছন্দের প্যাকেজের নম্বর (যেমন: 1 বা ১) অথবা প্যাকেজের নাম লিখে পাঠান।');
+  lines.push('❌ বাতিল করতে "বাতিল" লিখুন।');
+  return lines.join('\n');
+}
+
+async function verifyAndCompleteTelegramOrder(params: {
+  token: string;
+  chatId: number;
+  businessConnectionId?: string;
+  sessionKey: string;
+  session: BotSession;
+  selected: BotPackageOption;
+  playerUid: string;
+  rawTrxInput: string;
+  customerName: string;
+}): Promise<boolean> {
+  const {token, chatId, businessConnectionId, sessionKey, session, selected, playerUid, rawTrxInput, customerName} =
+    params;
+
+  if (!adminDb) {
+    await sendTelegramReply(
+      token,
+      chatId,
+      '⚠️ পেমেন্ট ভেরিফিকেশন সিস্টেম সাময়িকভাবে অনুপলব্ধ। অনুগ্রহ করে একটু পর আবার চেষ্টা করুন।',
+      businessConnectionId,
+    );
+    return false;
+  }
+
+  const normalizedInput = normalizeBengaliDigits(rawTrxInput);
+  const embeddedMatch = normalizedInput.match(
+    /(?:trx\s*id|txnid|txn\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,64})/i,
+  );
+  const candidate = embeddedMatch?.[1] ? embeddedMatch[1] : normalizedInput.trim();
+  const trxId = candidate.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
+
+  if (trxId.length < 4 || trxId.length > 64 || /\s/.test(candidate.trim())) {
+    await sendTelegramReply(
+      token,
+      chatId,
+      '❌ অনুগ্রহ করে শুধুমাত্র সঠিক Transaction ID (TrxID) লিখে পাঠান (যেমন: 9B4X2K7M1P)।',
+      businessConnectionId,
+    );
+    return false;
+  }
+
+  const tgUid = `tg_${chatId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+
+  try {
+    const outcome = await adminDb.runTransaction(async (tx) => {
+      const smsRef = adminDb!.collection('sms_payments').doc(trxId);
+      const smsSnap = await tx.get(smsRef);
+
+      if (!smsSnap.exists) {
+        return {ok: false as const, code: 'NOT_FOUND' as const};
+      }
+
+      const smsData = smsSnap.data() as {
+        amount?: number;
+        method?: string;
+        used?: boolean;
+      };
+
+      if (smsData.used === true) {
+        return {ok: false as const, code: 'ALREADY_USED' as const};
+      }
+
+      const paidAmount = Number(smsData.amount || 0);
+      if (paidAmount < selected.price) {
+        return {
+          ok: false as const,
+          code: 'INSUFFICIENT_AMOUNT' as const,
+          receivedAmount: paidAmount,
+        };
+      }
+
+      const methodName = smsData.method === 'Nagad' ? 'Nagad' : 'bKash';
+      const methodId = methodName.toLowerCase();
+      const trxKey = `${methodId}_${trxId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+      const trxRegRef = adminDb!.collection('trxRegistry').doc(trxKey);
+      const trxRegSnap = await tx.get(trxRegRef);
+      if (trxRegSnap.exists) {
+        return {ok: false as const, code: 'ALREADY_USED' as const};
+      }
+
+      const orderId = `ord_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+      const orderNumber = `SV-${Math.floor(100000 + Math.random() * 900000)}`;
+      const now = FieldValue.serverTimestamp();
+      const maskedUid =
+        playerUid.length > 4 ? `${playerUid.slice(0, 2)}***${playerUid.slice(-2)}` : playerUid;
+
+      tx.update(smsRef, {
+        used: true,
+        usedAt: now,
+        usedOrderNumber: orderNumber,
+      });
+
+      tx.set(adminDb!.collection('orders').doc(orderId), {
+        id: orderId,
+        orderNumber,
+        customerUid: tgUid,
+        customerName: customerName.slice(0, 100) || `Telegram User ${chatId}`,
+        customerEmail: '',
+        customerPhone: tgUid.slice(0, 30),
+        productId: selected.productId,
+        productName: selected.productName.slice(0, 120),
+        productImage: selected.productImage.slice(0, 1000),
+        packageId: selected.packageId,
+        packageName: selected.packageName.slice(0, 120),
+        quantityLabel: (selected.quantityLabel || selected.packageName).slice(0, 80),
+        unitPrice: selected.price,
+        totalAmount: selected.price,
+        playerUid,
+        serverId: '',
+        paymentType: 'manual',
+        paymentMethodId: methodId,
+        paymentMethodName: methodName,
+        senderNumber: 'Telegram',
+        trxId,
+        trxKey,
+        screenshotUrl: '',
+        voucherCode: '',
+        walletRefunded: false,
+        paymentStatus: 'verified',
+        orderStatus: 'completed',
+        adminNote: `Auto-verified via ${methodName} SMS (৳${paidAmount}) on Telegram Business Bot`,
+        notificationMessage: 'Payment verified automatically via Telegram Business Bot. Order completed!',
+        createdAt: now,
+        updatedAt: now,
+        completedAt: now,
+      });
+
+      tx.set(adminDb!.collection('orderTracking').doc(orderNumber), {
+        orderNumber,
+        productName: selected.productName.slice(0, 120),
+        packageName: selected.packageName.slice(0, 120),
+        playerUidMasked: maskedUid,
+        paymentStatus: 'verified',
+        orderStatus: 'completed',
+        notificationMessage: 'Payment verified automatically via Telegram Business Bot. Order completed!',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      tx.set(trxRegRef, {
+        trxKey,
+        trxId,
+        orderId,
+        customerUid: tgUid,
+        paymentMethodId: methodId,
+        amount: selected.price,
+        status: 'verified',
+        createdAt: now,
+      });
+
+      return {
+        ok: true as const,
+        orderId,
+        orderNumber,
+        methodName,
+        paidAmount,
+      };
+    });
+
+    if (!outcome.ok) {
+      let errReply = '';
+      if (outcome.code === 'NOT_FOUND') {
+        errReply = `❌ দুঃখিত! "${trxId}" ট্রানজ্যাকশন আইডিটি এখনো আমাদের সিস্টেমে পাওয়া যায়নি।\n\nটাকা পাঠিয়ে থাকলে ১০-১৫ সেকেন্ড অপেক্ষা করে সঠিক TrxID টি আবার পাঠান।`;
+      } else if (outcome.code === 'ALREADY_USED') {
+        errReply = `⚠️ এই TrxID (${trxId}) ইতিমধ্যেই অন্য অর্ডারে ব্যবহার করা হয়েছে। অনুগ্রহ করে নতুন পেমেন্টের সঠিক TrxID পাঠান।`;
+      } else {
+        errReply = `❌ পাঠানো টাকার পরিমাণ (৳${outcome.receivedAmount}) প্যাকেজের মূল্যের (৳${selected.price}) চেয়ে কম! অনুগ্রহ করে সঠিক পরিমাণ টাকা পাঠিয়ে নতুন TrxID দিন।`;
+      }
+      pushSessionHistory(session, 'model', errReply);
+      await sendTelegramReply(token, chatId, errReply, businessConnectionId);
+      return false;
+    }
+
+    session.step = 'IDLE';
+    session.selected = undefined;
+    session.playerUid = undefined;
+    botSessions.set(sessionKey, session);
+
+    const distResult = await dispatchDistributorIfEnabled({
+      orderNumber: outcome.orderNumber,
+      productId: selected.productId,
+      productName: selected.productName,
+      packageId: selected.packageId,
+      packageName: selected.packageName,
+      playerUid,
+      amount: selected.price,
+    });
+
+    const store = readStore();
+    appendServerLog(
+      store,
+      'telegram_bot',
+      'TELEGRAM_AUTO_ORDER',
+      `Order ${outcome.orderNumber} completed via ${outcome.methodName} TrxID ${trxId} (৳${selected.price})`,
+    );
+    writeStore(store);
+
+    await sendAdminNotificationEmail(
+      `Telegram Auto-Order ${outcome.orderNumber} — ${selected.productName}`,
+      [
+        {label: 'Order Number', value: outcome.orderNumber},
+        {label: 'Source', value: 'Telegram Business Bot (Auto-Verified)'},
+        {label: 'Product', value: selected.productName},
+        {label: 'Package', value: selected.packageName},
+        {label: 'Order Amount', value: `৳${selected.price}`},
+        {label: 'SMS Verified Paid', value: `৳${outcome.paidAmount} (${outcome.methodName})`},
+        {label: 'TrxID', value: trxId},
+        {label: 'Player UID', value: playerUid},
+        {label: 'Customer', value: `${customerName} (${tgUid})`},
+        {
+          label: 'Distributor API',
+          value: distResult.dispatched ? `Dispatched (${distResult.statusText})` : 'Not enabled / Manual',
+        },
+        {label: 'Order Status', value: 'completed'},
+        {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
+      ],
+      'telegram_bot',
+    );
+
+    await sendTelegramOrderStatusUpdate({
+      orderNumber: outcome.orderNumber,
+      orderStatus: 'completed',
+      paymentStatus: 'verified',
+      productName: selected.productName,
+      packageName: selected.packageName,
+      playerUid,
+      totalAmount: selected.price,
+      paymentMethodName: outcome.methodName,
+      trxId,
+      customerUid: tgUid,
+      chatId,
+      businessConnectionId,
+    });
+    pushSessionHistory(
+      session,
+      'model',
+      `Order ${outcome.orderNumber} completed for ${selected.packageName} (UID: ${playerUid}, TrxID: ${trxId}).`,
+    );
+    return true;
+  } catch (err) {
+    console.error('Telegram auto-order verification error:', err instanceof Error ? err.message : err);
+    await sendTelegramReply(
+      token,
+      chatId,
+      '⚠️ অর্ডার প্রসেস করার সময় সমস্যা হয়েছে। অনুগ্রহ করে কিছুক্ষণ পর আবার TrxID পাঠান অথবা এডমিনের সাথে যোগাযোগ করুন।',
+      businessConnectionId,
+    );
+    return false;
+  }
+}
+
+interface GeminiAssistantDecision {
+  reply: string;
+  action: 'NONE' | 'SHOW_LIST' | 'SELECT_PACKAGE' | 'SET_UID' | 'CHECK_TRXID' | 'CANCEL_ORDER';
+  selectedOptionIndex?: number;
+  extractedUid?: string;
+  extractedTrxId?: string;
+}
+
+async function askGeminiAssistant(params: {
+  rawText: string;
+  customerName: string;
+  session: BotSession;
+  liveCtx: TelegramBotLiveContext;
+}): Promise<GeminiAssistantDecision | null> {
+  const ai = getGeminiClient();
+  if (!ai) return null;
+
+  const {rawText, customerName, session, liveCtx} = params;
+
+  const packagesCatalogText =
+    liveCtx.options.length > 0
+      ? liveCtx.options
+          .map(
+            (o) =>
+              `#${o.index} | Product: ${o.productName} | Package: ${o.packageName} (${o.quantityLabel}) | Price: ৳${o.price}` +
+              (o.promoLabel ? ` | Tag: ${o.promoLabel}` : '') +
+              (o.productInstructions ? ` | Instructions: ${o.productInstructions}` : ''),
+          )
+          .join('\n')
+      : 'No active packages are currently listed in Firestore.';
+
+  const paymentMethodsText = [
+    liveCtx.bkashNumber ? `bKash (Send Money): ${liveCtx.bkashNumber}` : '',
+    liveCtx.nagadNumber ? `Nagad (Send Money): ${liveCtx.nagadNumber}` : '',
+    ...liveCtx.otherPaymentMethods
+      .filter((m) => {
+        const lower = m.name.toLowerCase();
+        return !lower.includes('bkash') && !lower.includes('nagad');
+      })
+      .map((m) => `${m.name} (${m.accountType}): ${m.accountNumber}`),
+  ]
+    .filter(Boolean)
+    .join('\n') || 'Payment numbers are being updated; direct customer to the website if needed.';
+
+  const recentOrdersText =
+    liveCtx.recentOrders.length > 0
+      ? liveCtx.recentOrders
+          .map(
+            (o) =>
+              `Order ${o.orderNumber}: ${o.productName} - ${o.packageName} | UID: ${o.playerUid} | ৳${o.totalAmount} | Payment: ${o.paymentStatus} | Status: ${o.orderStatus}` +
+              (o.voucherCode ? ` | Code: ${o.voucherCode}` : '') +
+              (o.adminNote ? ` | Note: ${o.adminNote}` : ''),
+          )
+          .join('\n')
+      : 'This customer has no recent Telegram orders in Firestore yet.';
+
+  const currentFlowText = [
+    `Current step: ${session.step}`,
+    session.selected
+      ? `Selected package: #${session.selected.index} ${session.selected.productName} - ${session.selected.packageName} (৳${session.selected.price})`
+      : 'Selected package: None',
+    session.playerUid ? `Entered Player UID: ${session.playerUid}` : 'Entered Player UID: None',
+  ].join('\n');
+
+  const historyText =
+    session.history.length > 0
+      ? session.history.map((h) => `${h.role === 'user' ? 'Customer' : 'Assistant'}: ${h.text}`).join('\n')
+      : 'No prior messages in this session.';
+
+  const systemInstruction = `You are the official, polite, helpful Bengali AI customer support & auto-order assistant for "${liveCtx.brandName}" (Munaf Topup).
+
+RULES & BEHAVIOR:
+1. Language: Reply warmly and naturally in Bengali by default (or match Banglish/English if the customer writes primarily in Banglish or English). Keep responses concise, well-formatted, and friendly for Telegram chat.
+2. Truthfulness: Answer questions using ONLY the LIVE WEBSITE DATA below. Never invent prices, packages, payment numbers, or order statuses that are not in the data.
+3. Website Info:
+   - Brand: ${liveCtx.brandName}
+   - Website: ${liveCtx.websiteUrl}
+   - Standard Delivery Time: Instant to 1-5 minutes after TrxID verification (automated SMS verification).
+   ${liveCtx.noticeText ? `- Live Store Notice: ${liveCtx.noticeText}` : ''}
+   ${liveCtx.supportInfo ? `- Support Contacts: ${liveCtx.supportInfo}` : ''}
+4. Active Payment Numbers:
+${paymentMethodsText}
+
+5. Live Products & Packages (USE THESE EXACT NUMBERS AND PRICES):
+${packagesCatalogText}
+
+6. This Customer's Recent Orders (private to this customer):
+${recentOrdersText}
+
+7. Active Order Conversation State:
+${currentFlowText}
+
+8. ACTION ROUTING (CRITICAL — ALWAYS CHOOSE THE RIGHT ACTION):
+- "SHOW_LIST": Customer asks for the price list, diamond list, rates, menu, or says they want to see packages / start an order without specifying a particular package yet. Include a clean numbered list of the live packages with ৳ prices in your reply.
+- "SELECT_PACKAGE": Customer picks or clearly requests to buy a specific package (either by index like "1", "১", "#2", "দুই নম্বর" OR by package name like "115 diamond", "weekly", "monthly", "level up pass"). Set "selectedOptionIndex" to that exact integer #index from section 5. If the same message ALSO includes a 5-15 digit Player UID, put the English-digit UID in "extractedUid".
+- "SET_UID": Customer is providing their 5-15 digit Game Player UID (convert Bengali digits ০-৯ to 0-9). Set "extractedUid" to the English digits only.
+- "CHECK_TRXID": Current step is AWAITING_TRXID (or customer has selected a package and UID) and the customer sends a Transaction ID (TrxID / TxnID) to verify their payment. Put the uppercase TrxID in "extractedTrxId".
+- "CANCEL_ORDER": Customer wants to cancel, stop, or restart the current order.
+- "NONE": Customer is asking a general question (prices of a single item without ordering, delivery time, UID instructions, payment method info, checking their recent order status, greeting, etc.). Keep the conversation smooth and helpful!`;
+
+  const userPrompt = `Customer Name: ${customerName}
+Recent Conversation:
+${historyText}
+
+Latest Customer Message:
+${rawText}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: GEMINI_BOT_MODEL,
+      contents: userPrompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            reply: {
+              type: Type.STRING,
+              description: 'Helpful natural response for the customer in Bengali/Banglish/English.',
+            },
+            action: {
+              type: Type.STRING,
+              enum: ['NONE', 'SHOW_LIST', 'SELECT_PACKAGE', 'SET_UID', 'CHECK_TRXID', 'CANCEL_ORDER'],
+              description: 'Structured next state action for the order flow.',
+            },
+            selectedOptionIndex: {
+              type: Type.INTEGER,
+              description: '1-based index of the package selected from live products list.',
+            },
+            extractedUid: {
+              type: Type.STRING,
+              description: '5 to 15 digit Game Player UID normalized to English digits 0-9.',
+            },
+            extractedTrxId: {
+              type: Type.STRING,
+              description: 'Uppercase payment TrxID/TxnID provided by the customer.',
+            },
+          },
+          required: ['reply', 'action'],
+        },
+      },
+    });
+
+    const jsonText = (response.text ?? '').trim();
+    if (!jsonText) return null;
+    const parsed = JSON.parse(jsonText) as GeminiAssistantDecision;
+    if (!parsed || typeof parsed.reply !== 'string' || !parsed.reply.trim()) {
+      return null;
+    }
+    return parsed;
+  } catch (err) {
+    console.error('Gemini bot assistant error:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage): Promise<void> {
   const rawText = (msg.text || '').trim();
   if (!rawText) return;
@@ -1146,416 +1826,268 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
   const chatId = msg.chat.id;
   const businessConnectionId = msg.business_connection_id;
   const sessionKey = `${businessConnectionId || 'dm'}:${chatId}`;
-  const customerName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ').trim() ||
+  const customerName =
+    [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ').trim() ||
     msg.from?.username ||
     `Telegram User ${chatId}`;
-  const tgUidForRoute = `tg_${chatId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
-  void saveTelegramChatRoute(tgUidForRoute, chatId, businessConnectionId, customerName);
+  const tgUid = `tg_${chatId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+  void saveTelegramChatRoute(tgUid, chatId, businessConnectionId, customerName);
 
+  const session = getOrCreateBotSession(sessionKey, customerName);
+  pushSessionHistory(session, 'user', rawText);
+
+  const normalizedText = normalizeBengaliDigits(rawText).trim();
+
+  // 1. Explicit Cancel / Reset
   if (isCancelCommand(rawText)) {
-    botSessions.delete(sessionKey);
-    await sendTelegramReply(
-      token,
-      chatId,
-      '✅ আপনার চলমান অর্ডার প্রক্রিয়া বাতিল করা হয়েছে।\n\nনতুন অর্ডার করতে "দাম কত" অথবা "অর্ডার" লিখুন।',
-      businessConnectionId,
-    );
+    session.step = 'IDLE';
+    session.selected = undefined;
+    session.playerUid = undefined;
+    const cancelMsg =
+      '✅ আপনার চলমান অর্ডার প্রক্রিয়া বাতিল করা হয়েছে।\n\nনতুন অর্ডার করতে প্যাকেজের নাম লিখুন অথবা "দাম কত" লিখে লিস্ট দেখুন।';
+    pushSessionHistory(session, 'model', cancelMsg);
+    await sendTelegramReply(token, chatId, cancelMsg, businessConnectionId);
     return;
   }
 
-  if (isRateListTrigger(rawText)) {
-    try {
-      const options = await fetchActiveRateOptions();
-      if (options.length === 0) {
-        await sendTelegramReply(
-          token,
-          chatId,
-          '😔 দুঃখিত, এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।',
-          businessConnectionId,
-        );
-        return;
-      }
+  // 2. Direct TrxID fast-path when awaiting TrxID
+  if (session.step === 'AWAITING_TRXID' && session.selected && session.playerUid) {
+    const trimmedClean = normalizedText.trim();
+    const hasExplicitTrxLabel = /(?:trx\s*id|txnid|txn\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,64})/i.test(
+      trimmedClean,
+    );
+    const nonTrxWords = new Set(['price', 'list', 'order', 'topup', 'cancel', 'bkash', 'nagad', 'hello', 'help', 'status', 'uid']);
+    const looksLikeBareTrxId =
+      /^[a-zA-Z0-9_-]{5,40}$/.test(trimmedClean) &&
+      !nonTrxWords.has(trimmedClean.toLowerCase()) &&
+      (/[a-zA-Z]/.test(trimmedClean) || trimmedClean.length >= 8);
 
-      const lines: string[] = ['💎 আজকের টপআপ ও ডায়মন্ড রেট লিস্ট:', ''];
-      let lastProduct = '';
-      for (const opt of options) {
-        if (opt.productName !== lastProduct) {
-          if (lastProduct) lines.push('');
-          lines.push(`🎮 ${opt.productName}`);
-          lastProduct = opt.productName;
-        }
-        lines.push(`${opt.index}. ${opt.packageName} — ৳${opt.price}`);
-      }
-      lines.push('');
-      lines.push('👉 অর্ডার করতে পছন্দের প্যাকেজের নম্বর (যেমন: 1) লিখে পাঠান।');
-      lines.push('❌ বাতিল করতে "বাতিল" লিখুন।');
-
-      botSessions.set(sessionKey, {
-        step: 'AWAITING_PACKAGE',
-        options,
+    if (hasExplicitTrxLabel || looksLikeBareTrxId) {
+      await verifyAndCompleteTelegramOrder({
+        token,
+        chatId,
+        businessConnectionId,
+        sessionKey,
+        session,
+        selected: session.selected,
+        playerUid: session.playerUid,
+        rawTrxInput: rawText,
         customerName,
-        updatedAt: Date.now(),
       });
-
-      await sendTelegramReply(token, chatId, lines.join('\n'), businessConnectionId);
-    } catch (err) {
-      console.error('Telegram rate list error:', err instanceof Error ? err.message : err);
-      await sendTelegramReply(
-        token,
-        chatId,
-        '⚠️ এই মুহূর্তে প্যাকেজ লিস্ট লোড করা যাচ্ছে না। অনুগ্রহ করে একটু পর আবার "দাম কত" লিখুন অথবা আমাদের ওয়েবসাইট থেকে অর্ডার করুন।',
-        businessConnectionId,
-      );
+      return;
     }
-    return;
   }
 
-  const session = botSessions.get(sessionKey);
-
-  if (session?.step === 'AWAITING_PACKAGE' && session.options) {
-    const cleanedNum = rawText.replace(/^#/, '').trim();
-    if (!/^\d{1,3}$/.test(cleanedNum)) {
-      await sendTelegramReply(
-        token,
-        chatId,
-        `❌ অনুগ্রহ করে তালিকা থেকে সঠিক প্যাকেজের নম্বর (১ থেকে ${session.options.length}) লিখে পাঠান।\nনতুন লিস্ট দেখতে "দাম কত" লিখুন।`,
-        businessConnectionId,
+  // 3. Direct 5-15 digit UID fast-path when awaiting UID (supports Bengali ০-৯ & English 0-9)
+  if (session.step === 'AWAITING_UID' && session.selected) {
+    const uidClean = normalizedText.replace(/\s+/g, '');
+    if (/^\d{5,15}$/.test(uidClean)) {
+      session.playerUid = uidClean;
+      session.step = 'AWAITING_TRXID';
+      botSessions.set(sessionKey, session);
+      const {bkashNumber, nagadNumber} = await resolveBotPaymentNumbers();
+      const summaryReply = formatPaymentSummaryPrompt(
+        session.selected,
+        uidClean,
+        bkashNumber,
+        nagadNumber,
       );
+      pushSessionHistory(session, 'model', summaryReply);
+      await sendTelegramReply(token, chatId, summaryReply, businessConnectionId);
       return;
     }
-    const idx = Number.parseInt(cleanedNum, 10);
-    const selected = session.options.find((o) => o.index === idx);
-    if (!selected) {
-      await sendTelegramReply(
-        token,
-        chatId,
-        `❌ ${idx} নম্বরে কোনো প্যাকেজ নেই। ১ থেকে ${session.options.length} এর মধ্যে একটি নম্বর দিন।`,
-        businessConnectionId,
-      );
-      return;
-    }
-
-    session.selected = selected;
-    session.step = 'AWAITING_UID';
-    session.updatedAt = Date.now();
-    botSessions.set(sessionKey, session);
-
-    await sendTelegramReply(
-      token,
-      chatId,
-      [
-        '✅ আপনি সিলেক্ট করেছেন:',
-        `🎮 প্রোডাক্ট: ${selected.productName}`,
-        `💎 প্যাকেজ: ${selected.packageName}`,
-        `💰 মূল্য: ৳${selected.price}`,
-        '',
-        '👉 এখন আপনার গেম Player UID (৫ থেকে ১৫ ডিজিটের সংখ্যা) লিখে পাঠান:',
-      ].join('\n'),
-      businessConnectionId,
-    );
-    return;
   }
 
-  if (session?.step === 'AWAITING_UID' && session.selected) {
-    const uidClean = rawText.replace(/\s+/g, '');
-    if (!/^\d{5,15}$/.test(uidClean)) {
-      await sendTelegramReply(
-        token,
-        chatId,
-        '❌ ভুল Player UID! অনুগ্রহ করে শুধুমাত্র ৫ থেকে ১৫ ডিজিটের সঠিক গেম UID পাঠান (যেমন: 123456789)।',
-        businessConnectionId,
-      );
-      return;
-    }
-
-    session.playerUid = uidClean;
-    session.step = 'AWAITING_TRXID';
-    session.updatedAt = Date.now();
-    botSessions.set(sessionKey, session);
-
-    const {bkashNumber, nagadNumber} = await resolveBotPaymentNumbers();
-    const paymentLines: string[] = [];
-    if (bkashNumber) paymentLines.push(`• bKash (Send Money): ${bkashNumber}`);
-    if (nagadNumber) paymentLines.push(`• Nagad (Send Money): ${nagadNumber}`);
-    if (paymentLines.length === 0) {
-      paymentLines.push('• পেমেন্ট নম্বর এখনো সেট করা হয়নি — এডমিনের সাথে যোগাযোগ করুন।');
-    }
-
-    await sendTelegramReply(
-      token,
-      chatId,
-      [
-        '📋 অর্ডার সামারি:',
-        `🎮 প্রোডাক্ট: ${session.selected.productName}`,
-        `💎 প্যাকেজ: ${session.selected.packageName}`,
-        `🆔 Player UID: ${uidClean}`,
-        `💰 মোট মূল্য: ৳${session.selected.price}`,
-        '',
-        '💳 নিচের যেকোনো নম্বরে Send Money করুন:',
-        ...paymentLines,
-        '',
-        `উপরের নম্বরে ঠিক ৳${session.selected.price} Send Money করে শুধুমাত্র আপনার Transaction ID (TrxID) লিখে পাঠান।`,
-        '(যেমন: 9B4X2K7M1P)',
-      ].join('\n'),
-      businessConnectionId,
-    );
-    return;
-  }
-
-  if (session?.step === 'AWAITING_TRXID' && session.selected && session.playerUid) {
-    if (!adminDb) {
-      await sendTelegramReply(
-        token,
-        chatId,
-        '⚠️ পেমেন্ট ভেরিফিকেশন সিস্টেম সাময়িকভাবে অনুপলব্ধ। অনুগ্রহ করে একটু পর আবার চেষ্টা করুন।',
-        businessConnectionId,
-      );
-      return;
-    }
-
-    // Extract TrxID whether user sends bare TrxID or copies "TrxID: ABC123"
-    const embeddedMatch = rawText.match(
-      /(?:trx\s*id|txnid|txn\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,64})/i,
-    );
-    const candidate = embeddedMatch?.[1] ? embeddedMatch[1] : rawText.trim();
-    const trxId = candidate.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
-
-    if (trxId.length < 4 || trxId.length > 64 || /\s/.test(candidate.trim())) {
-      await sendTelegramReply(
-        token,
-        chatId,
-        '❌ অনুগ্রহ করে শুধুমাত্র সঠিক Transaction ID (TrxID) লিখে পাঠান (যেমন: 9B4X2K7M1P)।',
-        businessConnectionId,
-      );
-      return;
-    }
-
-    const selected = session.selected;
-    const playerUid = session.playerUid;
-    const tgUid = `tg_${chatId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
-
-    try {
-      const outcome = await adminDb.runTransaction(async (tx) => {
-        const smsRef = adminDb!.collection('sms_payments').doc(trxId);
-        const smsSnap = await tx.get(smsRef);
-
-        if (!smsSnap.exists) {
-          return {ok: false as const, code: 'NOT_FOUND' as const};
-        }
-
-        const smsData = smsSnap.data() as {
-          amount?: number;
-          method?: string;
-          used?: boolean;
-        };
-
-        if (smsData.used === true) {
-          return {ok: false as const, code: 'ALREADY_USED' as const};
-        }
-
-        const paidAmount = Number(smsData.amount || 0);
-        if (paidAmount < selected.price) {
-          return {
-            ok: false as const,
-            code: 'INSUFFICIENT_AMOUNT' as const,
-            receivedAmount: paidAmount,
-          };
-        }
-
-        const methodName = smsData.method === 'Nagad' ? 'Nagad' : 'bKash';
-        const methodId = methodName.toLowerCase();
-        const trxKey = `${methodId}_${trxId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
-        const trxRegRef = adminDb!.collection('trxRegistry').doc(trxKey);
-        const trxRegSnap = await tx.get(trxRegRef);
-        if (trxRegSnap.exists) {
-          return {ok: false as const, code: 'ALREADY_USED' as const};
-        }
-
-        const orderId = `ord_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
-        const orderNumber = `SV-${Math.floor(100000 + Math.random() * 900000)}`;
-        const now = FieldValue.serverTimestamp();
-        const maskedUid =
-          playerUid.length > 4 ? `${playerUid.slice(0, 2)}***${playerUid.slice(-2)}` : playerUid;
-
-        tx.update(smsRef, {
-          used: true,
-          usedAt: now,
-          usedOrderNumber: orderNumber,
-        });
-
-        tx.set(adminDb!.collection('orders').doc(orderId), {
-          id: orderId,
-          orderNumber,
-          customerUid: tgUid,
-          customerName: customerName.slice(0, 100) || `Telegram User ${chatId}`,
-          customerEmail: '',
-          customerPhone: tgUid.slice(0, 30),
-          productId: selected.productId,
-          productName: selected.productName.slice(0, 120),
-          productImage: selected.productImage.slice(0, 1000),
-          packageId: selected.packageId,
-          packageName: selected.packageName.slice(0, 120),
-          quantityLabel: (selected.quantityLabel || selected.packageName).slice(0, 80),
-          unitPrice: selected.price,
-          totalAmount: selected.price,
-          playerUid,
-          serverId: '',
-          paymentType: 'manual',
-          paymentMethodId: methodId,
-          paymentMethodName: methodName,
-          senderNumber: 'Telegram',
-          trxId,
-          trxKey,
-          screenshotUrl: '',
-          voucherCode: '',
-          walletRefunded: false,
-          paymentStatus: 'verified',
-          orderStatus: 'completed',
-          adminNote: `Auto-verified via ${methodName} SMS (৳${paidAmount}) on Telegram Business Bot`,
-          notificationMessage: 'Payment verified automatically via Telegram Business Bot. Order completed!',
-          createdAt: now,
-          updatedAt: now,
-          completedAt: now,
-        });
-
-        tx.set(adminDb!.collection('orderTracking').doc(orderNumber), {
-          orderNumber,
-          productName: selected.productName.slice(0, 120),
-          packageName: selected.packageName.slice(0, 120),
-          playerUidMasked: maskedUid,
-          paymentStatus: 'verified',
-          orderStatus: 'completed',
-          notificationMessage: 'Payment verified automatically via Telegram Business Bot. Order completed!',
-          createdAt: now,
-          updatedAt: now,
-        });
-
-        tx.set(trxRegRef, {
-          trxKey,
-          trxId,
-          orderId,
-          customerUid: tgUid,
-          paymentMethodId: methodId,
-          amount: selected.price,
-          status: 'verified',
-          createdAt: now,
-        });
-
-        return {
-          ok: true as const,
-          orderId,
-          orderNumber,
-          methodName,
-          paidAmount,
-        };
-      });
-
-      if (!outcome.ok) {
-        if (outcome.code === 'NOT_FOUND') {
-          await sendTelegramReply(
-            token,
-            chatId,
-            `❌ দুঃখিত! "${trxId}" ট্রানজ্যাকশন আইডিটি এখনো আমাদের সিস্টেমে পাওয়া যায়নি।\n\nটাকা পাঠিয়ে থাকলে ১০-১৫ সেকেন্ড অপেক্ষা করে সঠিক TrxID টি আবার পাঠান।`,
-            businessConnectionId,
-          );
-        } else if (outcome.code === 'ALREADY_USED') {
-          await sendTelegramReply(
-            token,
-            chatId,
-            `⚠️ এই TrxID (${trxId}) ইতিমধ্যেই অন্য অর্ডারে ব্যবহার করা হয়েছে। অনুগ্রহ করে নতুন পেমেন্টের সঠিক TrxID পাঠান।`,
-            businessConnectionId,
-          );
-        } else {
-          await sendTelegramReply(
-            token,
-            chatId,
-            `❌ পাঠানো টাকার পরিমাণ (৳${outcome.receivedAmount}) প্যাকেজের মূল্যের (৳${selected.price}) চেয়ে কম! অনুগ্রহ করে সঠিক পরিমাণ টাকা পাঠিয়ে নতুন TrxID দিন।`,
-            businessConnectionId,
-          );
-        }
+  // 4. Direct numbered package selection fast-path (e.g., "1", "১", "#2", "#২")
+  const numberOnlyMatch = normalizedText.match(/^#?(\d{1,3})$/);
+  if (numberOnlyMatch && (session.step === 'AWAITING_PACKAGE' || session.step === 'IDLE')) {
+    const options =
+      session.options && session.options.length > 0 ? session.options : await fetchActiveRateOptions();
+    if (options.length > 0) {
+      session.options = options;
+      const idx = Number.parseInt(numberOnlyMatch[1], 10);
+      const selected = options.find((o) => o.index === idx);
+      if (selected) {
+        session.selected = selected;
+        session.step = 'AWAITING_UID';
+        botSessions.set(sessionKey, session);
+        const prompt = formatPackageSelectedPrompt(selected);
+        pushSessionHistory(session, 'model', prompt);
+        await sendTelegramReply(token, chatId, prompt, businessConnectionId);
         return;
       }
+      if (session.step === 'AWAITING_PACKAGE') {
+        const errReply = `❌ ${idx} নম্বরে কোনো প্যাকেজ নেই। অনুগ্রহ করে ১ থেকে ${options.length} এর মধ্যে একটি নম্বর দিন অথবা প্যাকেজের নাম লিখুন।`;
+        pushSessionHistory(session, 'model', errReply);
+        await sendTelegramReply(token, chatId, errReply, businessConnectionId);
+        return;
+      }
+    }
+  }
 
-      botSessions.delete(sessionKey);
+  // 5. Fetch Live Website Knowledge Context from Firestore + Env
+  const liveCtx = await fetchTelegramBotLiveContext(tgUid);
+  if (liveCtx.options.length > 0) {
+    session.options = liveCtx.options;
+  }
 
-      const distResult = await dispatchDistributorIfEnabled({
-        orderNumber: outcome.orderNumber,
-        productId: selected.productId,
-        productName: selected.productName,
-        packageId: selected.packageId,
-        packageName: selected.packageName,
-        playerUid,
-        amount: selected.price,
-      });
+  // 6. Ask Google Gemini AI Assistant with full live context & structured action routing
+  const aiDecision = await askGeminiAssistant({
+    rawText,
+    customerName,
+    session,
+    liveCtx,
+  });
 
-      const store = readStore();
-      appendServerLog(
-        store,
-        'telegram_bot',
-        'TELEGRAM_AUTO_ORDER',
-        `Order ${outcome.orderNumber} completed via ${outcome.methodName} TrxID ${trxId} (৳${selected.price})`,
-      );
-      writeStore(store);
+  if (aiDecision) {
+    if (aiDecision.action === 'CANCEL_ORDER') {
+      session.step = 'IDLE';
+      session.selected = undefined;
+      session.playerUid = undefined;
+      botSessions.set(sessionKey, session);
+      pushSessionHistory(session, 'model', aiDecision.reply);
+      await sendTelegramReply(token, chatId, aiDecision.reply, businessConnectionId);
+      return;
+    }
 
-      await sendAdminNotificationEmail(
-        `Telegram Auto-Order ${outcome.orderNumber} — ${selected.productName}`,
-        [
-          {label: 'Order Number', value: outcome.orderNumber},
-          {label: 'Source', value: 'Telegram Business Bot (Auto-Verified)'},
-          {label: 'Product', value: selected.productName},
-          {label: 'Package', value: selected.packageName},
-          {label: 'Order Amount', value: `৳${selected.price}`},
-          {label: 'SMS Verified Paid', value: `৳${outcome.paidAmount} (${outcome.methodName})`},
-          {label: 'TrxID', value: trxId},
-          {label: 'Player UID', value: playerUid},
-          {label: 'Customer', value: `${customerName} (${tgUid})`},
-          {
-            label: 'Distributor API',
-            value: distResult.dispatched ? `Dispatched (${distResult.statusText})` : 'Not enabled / Manual',
-          },
-          {label: 'Order Status', value: 'completed'},
-          {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
-        ],
-        'telegram_bot',
-      );
+    if (aiDecision.action === 'SHOW_LIST') {
+      if (liveCtx.options.length > 0) {
+        session.step = 'AWAITING_PACKAGE';
+        session.options = liveCtx.options;
+        botSessions.set(sessionKey, session);
+      }
+      pushSessionHistory(session, 'model', aiDecision.reply);
+      await sendTelegramReply(token, chatId, aiDecision.reply, businessConnectionId);
+      return;
+    }
 
-      await sendTelegramOrderStatusUpdate({
-        orderNumber: outcome.orderNumber,
-        orderStatus: 'completed',
-        paymentStatus: 'verified',
-        productName: selected.productName,
-        packageName: selected.packageName,
-        playerUid,
-        totalAmount: selected.price,
-        paymentMethodName: outcome.methodName,
-        trxId,
-        customerUid: tgUid,
-        chatId,
-        businessConnectionId,
-      });
-    } catch (err) {
-      console.error('Telegram auto-order verification error:', err instanceof Error ? err.message : err);
-      await sendTelegramReply(
+    if (aiDecision.action === 'SELECT_PACKAGE' && typeof aiDecision.selectedOptionIndex === 'number') {
+      const selected = liveCtx.options.find((o) => o.index === aiDecision.selectedOptionIndex);
+      if (selected) {
+        session.selected = selected;
+        session.options = liveCtx.options;
+        const maybeUid = aiDecision.extractedUid
+          ? normalizeBengaliDigits(aiDecision.extractedUid).replace(/\D/g, '')
+          : '';
+        if (/^\d{5,15}$/.test(maybeUid)) {
+          session.playerUid = maybeUid;
+          session.step = 'AWAITING_TRXID';
+          botSessions.set(sessionKey, session);
+          const summaryReply = formatPaymentSummaryPrompt(
+            selected,
+            maybeUid,
+            liveCtx.bkashNumber,
+            liveCtx.nagadNumber,
+          );
+          pushSessionHistory(session, 'model', summaryReply);
+          await sendTelegramReply(token, chatId, summaryReply, businessConnectionId);
+          return;
+        }
+        session.playerUid = undefined;
+        session.step = 'AWAITING_UID';
+        botSessions.set(sessionKey, session);
+        const uidPrompt = formatPackageSelectedPrompt(selected);
+        pushSessionHistory(session, 'model', uidPrompt);
+        await sendTelegramReply(token, chatId, uidPrompt, businessConnectionId);
+        return;
+      }
+    }
+
+    if (aiDecision.action === 'SET_UID' && session.selected) {
+      const extractedUid = aiDecision.extractedUid
+        ? normalizeBengaliDigits(aiDecision.extractedUid).replace(/\D/g, '')
+        : '';
+      if (/^\d{5,15}$/.test(extractedUid)) {
+        session.playerUid = extractedUid;
+        session.step = 'AWAITING_TRXID';
+        botSessions.set(sessionKey, session);
+        const summaryReply = formatPaymentSummaryPrompt(
+          session.selected,
+          extractedUid,
+          liveCtx.bkashNumber,
+          liveCtx.nagadNumber,
+        );
+        pushSessionHistory(session, 'model', summaryReply);
+        await sendTelegramReply(token, chatId, summaryReply, businessConnectionId);
+        return;
+      }
+    }
+
+    if (
+      aiDecision.action === 'CHECK_TRXID' &&
+      session.selected &&
+      session.playerUid &&
+      aiDecision.extractedTrxId
+    ) {
+      await verifyAndCompleteTelegramOrder({
         token,
         chatId,
-        '⚠️ অর্ডার প্রসেস করার সময় সমস্যা হয়েছে। অনুগ্রহ করে কিছুক্ষণ পর আবার TrxID পাঠান অথবা এডমিনের সাথে যোগাযোগ করুন।',
         businessConnectionId,
-      );
+        sessionKey,
+        session,
+        selected: session.selected,
+        playerUid: session.playerUid,
+        rawTrxInput: aiDecision.extractedTrxId,
+        customerName,
+      });
+      return;
     }
+
+    // Default AI response (answers any question using live context while preserving current order step)
+    botSessions.set(sessionKey, session);
+    pushSessionHistory(session, 'model', aiDecision.reply);
+    await sendTelegramReply(token, chatId, aiDecision.reply, businessConnectionId);
     return;
   }
 
-  // Fallback polite Bengali greeting
-  await sendTelegramReply(
-    token,
-    chatId,
-    [
-      '👋 আসসালামু আলাইকুম! আমাদের অটোমেটেড টপআপ সার্ভিসে স্বাগতম।',
-      '',
-      '💎 আজকের ডায়মন্ড ও প্যাকেজের রেট লিস্ট দেখতে এবং অর্ডার করতে অনুগ্রহ করে "দাম কত" অথবা "অর্ডার" লিখে পাঠান।',
-    ].join('\n'),
-    businessConnectionId,
-  );
+  // 7. Graceful Deterministic Fallback (if GEMINI_API_KEY is unset or Gemini API temporarily unreachable)
+  if (isRateListTrigger(rawText)) {
+    if (liveCtx.options.length === 0) {
+      await sendTelegramReply(
+        token,
+        chatId,
+        `😔 দুঃখিত, ${liveCtx.brandName}-এ এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। আমাদের ওয়েবসাইট ভিজিট করুন: ${liveCtx.websiteUrl}`,
+        businessConnectionId,
+      );
+      return;
+    }
+    session.step = 'AWAITING_PACKAGE';
+    session.options = liveCtx.options;
+    botSessions.set(sessionKey, session);
+    const listText = formatFallbackRateList(liveCtx.options, liveCtx.brandName);
+    pushSessionHistory(session, 'model', listText);
+    await sendTelegramReply(token, chatId, listText, businessConnectionId);
+    return;
+  }
+
+  if (session.step === 'AWAITING_UID' && session.selected) {
+    await sendTelegramReply(
+      token,
+      chatId,
+      '❌ ভুল Player UID! অনুগ্রহ করে শুধুমাত্র ৫ থেকে ১৫ ডিজিটের সঠিক গেম UID পাঠান (যেমন: 123456789)।',
+      businessConnectionId,
+    );
+    return;
+  }
+
+  if (session.step === 'AWAITING_TRXID' && session.selected && session.playerUid) {
+    await sendTelegramReply(
+      token,
+      chatId,
+      '❌ অনুগ্রহ করে পেমেন্ট সম্পন্ন করে শুধুমাত্র আপনার Transaction ID (TrxID) লিখে পাঠান (যেমন: 9B4X2K7M1P)।',
+      businessConnectionId,
+    );
+    return;
+  }
+
+  const fallbackGreeting = [
+    `👋 আসসালামু আলাইকুম! ${liveCtx.brandName}-এ স্বাগতম।`,
+    '',
+    '💎 আজকের ডায়মন্ড ও প্যাকেজের রেট লিস্ট দেখতে এবং অর্ডার করতে "দাম কত" অথবা "অর্ডার" লিখে পাঠান।',
+    `🌐 ওয়েবসাইট: ${liveCtx.websiteUrl}`,
+  ].join('\n');
+  pushSessionHistory(session, 'model', fallbackGreeting);
+  await sendTelegramReply(token, chatId, fallbackGreeting, businessConnectionId);
 }
 
 function startTelegramBusinessBot(): void {
@@ -2305,6 +2837,8 @@ async function startServer(): Promise<void> {
       telegramBotProcessedUpdates: telegramBotState.processedUpdates,
       telegramBotLastPollAt: telegramBotState.lastPollAt,
       telegramBotLastError: telegramBotState.lastError,
+      geminiConfigured: Boolean((process.env.GEMINI_API_KEY || '').trim()),
+      geminiModel: GEMINI_BOT_MODEL,
       bkashNumberMasked: maskPhone(process.env.BKASH_NUMBER || ''),
       nagadNumberMasked: maskPhone(process.env.NAGAD_NUMBER || ''),
     });
@@ -2398,49 +2932,3 @@ async function startServer(): Promise<void> {
 }
 
 void startServer();
-
-// Telegram Business Auto-Reply Bot
-const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-
-if (TG_TOKEN) {
-  let lastUpdateId = 0;
-
-  const pollTelegramUpdates = async () => {
-    try {
-      const res = await fetch(
-        `https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=25&allowed_updates=["business_message"]`
-      );
-      const data = await res.json();
-
-      if (data.ok && Array.isArray(data.result)) {
-        for (const update of data.result) {
-          lastUpdateId = update.update_id;
-          const msg = update.business_message;
-
-          if (msg && msg.text && !msg.from?.is_bot && msg.business_connection_id) {
-            const replyText =
-              "আসসালামু আলাইকুম! Munaf Topup-এ স্বাগতম।\n" +
-              "আপনার মেসেজটি আমরা পেয়েছি, খুব শীঘ্রই আমাদের অ্যাডমিন আপনার সাথে যোগাযোগ করবেন।";
-
-            await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                chat_id: msg.chat.id,
-                text: replyText,
-                business_connection_id: msg.business_connection_id,
-              }),
-            });
-          }
-        }
-      }
-    } catch (err) {
-      console.error("Telegram Bot Polling Error:", err);
-      await new Promise((r) => setTimeout(r, 5000));
-    }
-    setImmediate(pollTelegramUpdates);
-  };
-
-  pollTelegramUpdates();
-  console.log("Telegram Business Bot started...");
-}

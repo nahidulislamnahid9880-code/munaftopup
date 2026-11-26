@@ -33,3 +33,7 @@ services:
         sync: false
       - key: NAGAD_NUMBER
         sync: false
+      - key: WEBSITE_URL
+        value: https://munaftopup.onrender.com
+      - key: GEMINI_API_KEY
+        sync: false
