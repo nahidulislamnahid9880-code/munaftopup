@@ -7,6 +7,7 @@ import {
   KeyRound,
   LogIn,
   LogOut,
+  Megaphone,
   Package,
   PlusCircle,
   Search,
@@ -60,17 +61,47 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
-      {/* Slim dismissible notice bar controlled by Admin */}
+      {/* Larger 3D scrolling dismissible notice bar controlled by Admin */}
       {siteSettings.noticeActive && siteSettings.noticeText && !noticeDismissed && (
-        <div className="bg-slate-900 text-slate-100 text-xs px-3 sm:px-6 py-1.5 border-b border-slate-800">
-          <div className="max-w-[1248px] mx-auto w-full flex items-center justify-between gap-3">
-            <p className="truncate font-medium">{siteSettings.noticeText}</p>
+        <div
+          role="region"
+          aria-label="Store announcement"
+          className="notice-bar-3d text-slate-100 min-h-[54px] sm:min-h-[64px] py-2 px-3 sm:px-6 border-b border-slate-800/90 flex items-center">
+          <div className="max-w-[1248px] mx-auto w-full flex items-center gap-2.5 sm:gap-4 min-w-0">
+            <span className="notice-3d-badge shrink-0 inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold uppercase tracking-wider text-white">
+              <Megaphone className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <span className="hidden sm:inline">Notice</span>
+            </span>
+
+            <div className="notice-3d-stage flex-1 min-w-0 overflow-hidden rounded-xl py-2 sm:py-2.5 border border-slate-700/70">
+              <div className="notice-3d-plane">
+                <div className="notice-marquee-track">
+                  <div className="notice-marquee-segment">
+                    <span className="notice-3d-text text-sm sm:text-base font-bold whitespace-nowrap tracking-wide">
+                      {siteSettings.noticeText}
+                    </span>
+                    <span className="notice-3d-sep text-cyan-400 text-xs" aria-hidden="true">
+                      ◆
+                    </span>
+                  </div>
+                  <div
+                    className="notice-marquee-segment notice-marquee-segment-clone"
+                    aria-hidden="true">
+                    <span className="notice-3d-text text-sm sm:text-base font-bold whitespace-nowrap tracking-wide">
+                      {siteSettings.noticeText}
+                    </span>
+                    <span className="notice-3d-sep text-cyan-400 text-xs">◆</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={() => setNoticeDismissed(true)}
               aria-label="Dismiss announcement"
-              className="text-slate-400 hover:text-white shrink-0 p-0.5 cursor-pointer">
-              <X className="w-3.5 h-3.5" />
+              className="text-slate-300 hover:text-white shrink-0 p-2 rounded-lg hover:bg-slate-800/80 transition-colors cursor-pointer">
+              <X className="w-4 h-4 sm:w-[18px] sm:h-[18px]" />
             </button>
           </div>
         </div>

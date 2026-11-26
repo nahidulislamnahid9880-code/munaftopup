@@ -1,10 +1,14 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
   Bot,
   KeyRound,
   Mail,
+  MessageSquarePlus,
   Plus,
+  RotateCcw,
   Save,
   Send,
   Server,
@@ -42,6 +46,54 @@ interface ServerStaffItem {
   hasPassword: boolean;
 }
 
+type TelegramQuickReplyAction = 'reply' | 'show_list' | 'order_status' | 'request_agent';
+
+interface TelegramQuickReplyPreset {
+  id: string;
+  label: string;
+  replyText: string;
+  action: TelegramQuickReplyAction;
+  active: boolean;
+}
+
+const DEFAULT_TELEGRAM_QUICK_REPLIES: TelegramQuickReplyPreset[] = [
+  {
+    id: 'payment_received',
+    label: 'Payment Received',
+    replyText: '✅ আপনার পেমেন্ট রিসিভ হয়েছে! আমাদের টিম দ্রুত ভেরিফাই করে আপনার অর্ডার কমপ্লিট করছে।',
+    action: 'reply',
+    active: true,
+  },
+  {
+    id: 'order_processing',
+    label: 'Order Processing',
+    replyText: '⏳ আপনার অর্ডারটি বর্তমানে প্রসেসিং অবস্থায় আছে। সাধারণত ১–৫ মিনিটের মধ্যে ডেলিভারি সম্পন্ন হয়।',
+    action: 'reply',
+    active: true,
+  },
+  {
+    id: 'rate_list',
+    label: '💎 Rate List',
+    replyText: 'আজকের প্যাকেজ ও ডায়মন্ড রেট লিস্ট নিচে দেখুন:',
+    action: 'show_list',
+    active: true,
+  },
+  {
+    id: 'my_orders',
+    label: '🧾 My Orders',
+    replyText: 'আপনার সাম্প্রতিক অর্ডারের অবস্থা নিচে দেওয়া হলো:',
+    action: 'order_status',
+    active: true,
+  },
+  {
+    id: 'support_agent',
+    label: '👨‍💼 Support Agent',
+    replyText: '🙋‍♂️ আপনার অনুরোধটি এডমিনের কাছে পাঠানো হয়েছে। কিছুক্ষণের মধ্যে আমাদের এজেন্ট আপনার সাথে যোগাযোগ করবেন।',
+    action: 'request_agent',
+    active: true,
+  },
+];
+
 interface SystemSettingsForm {
   smtpHost: string;
   smtpPort: number;
@@ -56,6 +108,8 @@ interface SystemSettingsForm {
   distributorApiKey: string;
   hasDistributorApiKey: boolean;
   distributorEnabled: boolean;
+  telegramQuickRepliesEnabled: boolean;
+  telegramQuickReplies: TelegramQuickReplyPreset[];
 }
 
 const DEFAULT_PERMS: StaffPermissions = {
@@ -90,7 +144,7 @@ export function AdminSettings() {
   const [newStaffPerms, setNewStaffPerms] = useState<StaffPermissions>({...DEFAULT_PERMS});
   const [staffMsg, setStaffMsg] = useState('');
 
-  // SMTP & Distributor API
+  // SMTP, Distributor API & Telegram Quick-Replies
   const [sysForm, setSysForm] = useState<SystemSettingsForm>({
     smtpHost: 'smtp.gmail.com',
     smtpPort: 587,
@@ -105,7 +159,12 @@ export function AdminSettings() {
     distributorApiKey: '',
     hasDistributorApiKey: false,
     distributorEnabled: false,
+    telegramQuickRepliesEnabled: true,
+    telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
   });
+  const [newQuickLabel, setNewQuickLabel] = useState('');
+  const [newQuickAction, setNewQuickAction] = useState<TelegramQuickReplyAction>('reply');
+  const [newQuickReplyText, setNewQuickReplyText] = useState('');
   const [sysMsg, setSysMsg] = useState('');
   const [sysErr, setSysErr] = useState('');
   const [testingEmail, setTestingEmail] = useState(false);
@@ -153,6 +212,10 @@ export function AdminSettings() {
           ...d.settings,
           smtpPassword: '',
           distributorApiKey: '',
+          telegramQuickRepliesEnabled: d.settings.telegramQuickRepliesEnabled !== false,
+          telegramQuickReplies: Array.isArray(d.settings.telegramQuickReplies)
+            ? d.settings.telegramQuickReplies
+            : prev.telegramQuickReplies,
         }));
       }
       if (logsRes.ok) {
@@ -264,6 +327,75 @@ export function AdminSettings() {
     }
   };
 
+  const handleAddQuickReply = () => {
+    const label = newQuickLabel.trim().slice(0, 40);
+    if (!label) {
+      setSysErr('Please enter a quick-reply button label.');
+      return;
+    }
+    setSysErr('');
+    const baseId =
+      label
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 26) || 'preset';
+    const uniqueId = `${baseId}_${Date.now().toString(36).slice(-4)}`;
+    const nextItem: TelegramQuickReplyPreset = {
+      id: uniqueId,
+      label,
+      action: newQuickAction,
+      replyText: newQuickReplyText.trim(),
+      active: true,
+    };
+    setSysForm((prev) => ({
+      ...prev,
+      telegramQuickReplies: [...prev.telegramQuickReplies, nextItem],
+    }));
+    setNewQuickLabel('');
+    setNewQuickAction('reply');
+    setNewQuickReplyText('');
+  };
+
+  const handleUpdateQuickReply = (
+    id: string,
+    patch: Partial<TelegramQuickReplyPreset>,
+  ) => {
+    setSysForm((prev) => ({
+      ...prev,
+      telegramQuickReplies: prev.telegramQuickReplies.map((item) =>
+        item.id === id ? {...item, ...patch} : item,
+      ),
+    }));
+  };
+
+  const handleMoveQuickReply = (index: number, delta: -1 | 1) => {
+    setSysForm((prev) => {
+      const target = index + delta;
+      if (target < 0 || target >= prev.telegramQuickReplies.length) return prev;
+      const copy = [...prev.telegramQuickReplies];
+      const [moved] = copy.splice(index, 1);
+      copy.splice(target, 0, moved);
+      return {...prev, telegramQuickReplies: copy};
+    });
+  };
+
+  const handleDeleteQuickReply = (id: string) => {
+    setSysForm((prev) => ({
+      ...prev,
+      telegramQuickReplies: prev.telegramQuickReplies.filter((item) => item.id !== id),
+    }));
+  };
+
+  const handleRestoreDefaultQuickReplies = () => {
+    setSysForm((prev) => ({
+      ...prev,
+      telegramQuickRepliesEnabled: true,
+      telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
+    }));
+    setSysMsg('Default quick-reply presets restored in editor. Click Save to apply.');
+  };
+
   const handleSaveSystemSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSysMsg('');
@@ -277,7 +409,7 @@ export function AdminSettings() {
     if (!res.ok) {
       setSysErr(data.error || 'Failed to save system settings');
     } else {
-      setSysMsg('Server SMTP & Distributor API settings saved securely.');
+      setSysMsg('Server settings & Telegram quick-reply presets saved securely.');
       void loadServerData();
     }
   };
@@ -671,6 +803,207 @@ export function AdminSettings() {
                   className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                 />
               </div>
+            </div>
+
+            <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-bold font-display flex items-center gap-2">
+                    <MessageSquarePlus className="w-4 h-4 text-blue-600" /> Telegram Bot Quick-Reply Buttons (Inline Keyboard)
+                  </h2>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                    Configure preset inline keyboard buttons (e.g. Payment Received, Order Processing) presented to customers inside Telegram messages.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRestoreDefaultQuickReplies}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer">
+                  <RotateCcw className="w-3.5 h-3.5" /> Restore Defaults
+                </button>
+              </div>
+
+              <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sysForm.telegramQuickRepliesEnabled}
+                  onChange={(e) =>
+                    setSysForm({...sysForm, telegramQuickRepliesEnabled: e.target.checked})
+                  }
+                />
+                Show Active Quick-Reply Inline Keyboard Buttons on Telegram Bot Messages
+              </label>
+
+              {/* Preset Editor List */}
+              <div className="space-y-3">
+                {sysForm.telegramQuickReplies.map((preset, index) => (
+                  <div
+                    key={preset.id}
+                    className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-[11px] font-mono font-bold text-slate-500 tabular-nums">
+                          #{index + 1}
+                        </span>
+                        <label className="inline-flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={preset.active}
+                            onChange={(e) =>
+                              handleUpdateQuickReply(preset.id, {active: e.target.checked})
+                            }
+                          />
+                          Active
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveQuickReply(index, -1)}
+                          disabled={index === 0}
+                          title="Move up"
+                          className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-40 hover:bg-white dark:hover:bg-slate-900 cursor-pointer">
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveQuickReply(index, 1)}
+                          disabled={index === sysForm.telegramQuickReplies.length - 1}
+                          title="Move down"
+                          className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-40 hover:bg-white dark:hover:bg-slate-900 cursor-pointer">
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteQuickReply(preset.id)}
+                          title="Remove preset"
+                          className="p-1.5 rounded-md text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                          Button Label (Max 40 chars)
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={40}
+                          value={preset.label}
+                          onChange={(e) =>
+                            handleUpdateQuickReply(preset.id, {label: e.target.value})
+                          }
+                          placeholder="e.g. Payment Received"
+                          className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                          Button Tap Action
+                        </label>
+                        <select
+                          value={preset.action}
+                          onChange={(e) =>
+                            handleUpdateQuickReply(preset.id, {
+                              action: e.target.value as TelegramQuickReplyAction,
+                            })
+                          }
+                          className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+                          <option value="reply">Send Custom Quick-Reply Message</option>
+                          <option value="show_list">Show Live Products &amp; Rate List</option>
+                          <option value="order_status">Show Customer Recent Order Status</option>
+                          <option value="request_agent">Notify Admin &amp; Escalate to Agent</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                        Quick-Reply Text Sent on Tap {preset.action === 'show_list' || preset.action === 'order_status' ? '(Optional intro)' : ''}
+                      </label>
+                      <textarea
+                        rows={2}
+                        maxLength={1000}
+                        value={preset.replyText}
+                        onChange={(e) =>
+                          handleUpdateQuickReply(preset.id, {replyText: e.target.value})
+                        }
+                        placeholder="Message sent to customer when they tap this Telegram button..."
+                        className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                      />
+                    </div>
+                  </div>
+                ))}
+
+                {sysForm.telegramQuickReplies.length === 0 && (
+                  <p className="text-xs text-slate-500 py-3">
+                    No quick-reply presets configured. Add one below or restore defaults.
+                  </p>
+                )}
+              </div>
+
+              {/* Add New Quick-Reply Button */}
+              <div className="p-3.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 space-y-3">
+                <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Add New Quick-Reply Button
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    maxLength={40}
+                    value={newQuickLabel}
+                    onChange={(e) => setNewQuickLabel(e.target.value)}
+                    placeholder="Button label (e.g. Payment Received)"
+                    className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                  <select
+                    value={newQuickAction}
+                    onChange={(e) => setNewQuickAction(e.target.value as TelegramQuickReplyAction)}
+                    className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950">
+                    <option value="reply">Send Custom Quick-Reply Message</option>
+                    <option value="show_list">Show Live Products &amp; Rate List</option>
+                    <option value="order_status">Show Customer Recent Order Status</option>
+                    <option value="request_agent">Notify Admin &amp; Escalate to Agent</option>
+                  </select>
+                </div>
+                <textarea
+                  rows={2}
+                  maxLength={1000}
+                  value={newQuickReplyText}
+                  onChange={(e) => setNewQuickReplyText(e.target.value)}
+                  placeholder="Preset response text when tapped..."
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddQuickReply}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold cursor-pointer">
+                  <Plus className="w-3.5 h-3.5" /> Add Preset Button
+                </button>
+              </div>
+
+              {/* Telegram Inline Keyboard Live Preview */}
+              {sysForm.telegramQuickRepliesEnabled &&
+                sysForm.telegramQuickReplies.some((p) => p.active && p.label.trim()) && (
+                  <div className="p-3.5 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Telegram Inline Keyboard Preview
+                    </p>
+                    <div className="max-w-sm grid grid-cols-2 gap-1.5">
+                      {sysForm.telegramQuickReplies
+                        .filter((p) => p.active && p.label.trim())
+                        .map((p) => (
+                          <div
+                            key={p.id}
+                            className="px-2.5 py-2 rounded-md bg-slate-800 text-white text-xs font-medium text-center truncate border border-slate-700">
+                            {p.label}
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
             </div>
 
             {sysErr && <p className="text-xs text-red-600 font-medium">{sysErr}</p>}

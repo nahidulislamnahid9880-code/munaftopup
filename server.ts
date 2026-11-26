@@ -48,6 +48,54 @@ interface StoredStaff {
 
 const DEFAULT_NOTIFICATION_EMAIL = 'abdulmunafadmin@gmail.com';
 
+export type TelegramQuickReplyAction = 'reply' | 'show_list' | 'order_status' | 'request_agent';
+
+export interface TelegramQuickReplyPreset {
+  id: string;
+  label: string;
+  replyText: string;
+  action: TelegramQuickReplyAction;
+  active: boolean;
+}
+
+const DEFAULT_TELEGRAM_QUICK_REPLIES: TelegramQuickReplyPreset[] = [
+  {
+    id: 'payment_received',
+    label: 'Payment Received',
+    replyText: '✅ আপনার পেমেন্ট রিসিভ হয়েছে! আমাদের টিম দ্রুত ভেরিফাই করে আপনার অর্ডার কমপ্লিট করছে।',
+    action: 'reply',
+    active: true,
+  },
+  {
+    id: 'order_processing',
+    label: 'Order Processing',
+    replyText: '⏳ আপনার অর্ডারটি বর্তমানে প্রসেসিং অবস্থায় আছে। সাধারণত ১–৫ মিনিটের মধ্যে ডেলিভারি সম্পন্ন হয়।',
+    action: 'reply',
+    active: true,
+  },
+  {
+    id: 'rate_list',
+    label: '💎 Rate List',
+    replyText: 'আজকের প্যাকেজ ও ডায়মন্ড রেট লিস্ট নিচে দেখুন:',
+    action: 'show_list',
+    active: true,
+  },
+  {
+    id: 'my_orders',
+    label: '🧾 My Orders',
+    replyText: 'আপনার সাম্প্রতিক অর্ডারের অবস্থা নিচে দেওয়া হলো:',
+    action: 'order_status',
+    active: true,
+  },
+  {
+    id: 'support_agent',
+    label: '👨‍💼 Support Agent',
+    replyText: '🙋‍♂️ আপনার অনুরোধটি এডমিনের কাছে পাঠানো হয়েছে। কিছুক্ষণের মধ্যে আমাদের এজেন্ট আপনার সাথে যোগাযোগ করবেন।',
+    action: 'request_agent',
+    active: true,
+  },
+];
+
 interface SystemSettingsStore {
   smtpHost: string;
   smtpPort: number;
@@ -60,6 +108,8 @@ interface SystemSettingsStore {
   distributorMerchantId: string;
   distributorApiKey: string;
   distributorEnabled: boolean;
+  telegramQuickRepliesEnabled: boolean;
+  telegramQuickReplies: TelegramQuickReplyPreset[];
   updatedAt: string;
 }
 
@@ -223,10 +273,53 @@ function defaultStore(): AdminStoreData {
       distributorMerchantId: '',
       distributorApiKey: '',
       distributorEnabled: false,
+      telegramQuickRepliesEnabled: true,
+      telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
       updatedAt: now,
     },
     serverLogs: [],
   };
+}
+
+function normalizeQuickRepliesInput(raw: unknown): TelegramQuickReplyPreset[] {
+  if (!Array.isArray(raw)) {
+    return DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p}));
+  }
+  const seenIds = new Set<string>();
+  const validActions = new Set<TelegramQuickReplyAction>(['reply', 'show_list', 'order_status', 'request_agent']);
+  const out: TelegramQuickReplyPreset[] = [];
+
+  for (let i = 0; i < Math.min(raw.length, 20); i++) {
+    const item = raw[i] as Partial<TelegramQuickReplyPreset> | null;
+    if (!item || typeof item !== 'object') continue;
+    const label = String(item.label || '').trim().slice(0, 40);
+    if (!label) continue;
+    let id = String(item.id || label)
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 32);
+    if (!id) id = `preset_${i + 1}`;
+    while (seenIds.has(id)) {
+      id = `${id.slice(0, 26)}_${i + 1}`;
+    }
+    seenIds.add(id);
+
+    const action: TelegramQuickReplyAction = validActions.has(item.action as TelegramQuickReplyAction)
+      ? (item.action as TelegramQuickReplyAction)
+      : 'reply';
+    const replyText = String(item.replyText || '').trim().slice(0, 1000);
+    const active = item.active !== false;
+
+    out.push({
+      id,
+      label,
+      replyText,
+      action,
+      active,
+    });
+  }
+  return out;
 }
 
 function readStore(): AdminStoreData {
@@ -243,8 +336,16 @@ function readStore(): AdminStoreData {
     }
     if (!parsed.systemSettings) {
       parsed.systemSettings = defaultStore().systemSettings;
-    } else if (!parsed.systemSettings.notificationEmail) {
-      parsed.systemSettings.notificationEmail = DEFAULT_NOTIFICATION_EMAIL;
+    } else {
+      if (!parsed.systemSettings.notificationEmail) {
+        parsed.systemSettings.notificationEmail = DEFAULT_NOTIFICATION_EMAIL;
+      }
+      if (typeof parsed.systemSettings.telegramQuickRepliesEnabled !== 'boolean') {
+        parsed.systemSettings.telegramQuickRepliesEnabled = true;
+      }
+      if (!Array.isArray(parsed.systemSettings.telegramQuickReplies)) {
+        parsed.systemSettings.telegramQuickReplies = DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p}));
+      }
     }
     if (!Array.isArray(parsed.serverLogs)) parsed.serverLogs = [];
     return parsed;
@@ -930,10 +1031,24 @@ interface BotSession {
   updatedAt: number;
 }
 
+interface TelegramCallbackQuery {
+  id: string;
+  from: {
+    id: number;
+    is_bot?: boolean;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+  };
+  message?: TelegramMessage;
+  data?: string;
+}
+
 interface TelegramUpdate {
   update_id: number;
   business_message?: TelegramMessage;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 interface TelegramMessage {
@@ -1056,11 +1171,30 @@ async function sendTelegramTyping(
   await callTelegramApi(token, 'sendChatAction', payload, 4000).catch(() => null);
 }
 
+function buildQuickReplyInlineKeyboard(): Record<string, unknown> | undefined {
+  const store = readStore();
+  const s = store.systemSettings;
+  if (!s.telegramQuickRepliesEnabled) return undefined;
+  const activePresets = (s.telegramQuickReplies || []).filter((p) => p.active && p.label.trim().length > 0);
+  if (activePresets.length === 0) return undefined;
+
+  const inline_keyboard: Array<Array<{text: string; callback_data: string}>> = [];
+  for (let i = 0; i < activePresets.length; i += 2) {
+    const row = activePresets.slice(i, i + 2).map((p) => ({
+      text: p.label.trim().slice(0, 40),
+      callback_data: `qr:${p.id}`.slice(0, 64),
+    }));
+    inline_keyboard.push(row);
+  }
+  return {inline_keyboard};
+}
+
 async function sendTelegramReply(
   token: string,
   chatId: number,
   text: string,
   businessConnectionId?: string,
+  replyMarkup?: Record<string, unknown>,
 ): Promise<void> {
   // Split messages safely under Telegram's 4096 char limit
   const chunks: string[] = [];
@@ -1073,13 +1207,16 @@ async function sendTelegramReply(
   }
   if (remaining) chunks.push(remaining);
 
-  for (const chunk of chunks) {
+  for (let idx = 0; idx < chunks.length; idx++) {
     const payload: Record<string, unknown> = {
       chat_id: chatId,
-      text: chunk,
+      text: chunks[idx],
     };
     if (businessConnectionId) {
       payload.business_connection_id = businessConnectionId;
+    }
+    if (replyMarkup && idx === chunks.length - 1) {
+      payload.reply_markup = replyMarkup;
     }
     await callTelegramApi(token, 'sendMessage', payload, 15000);
   }
@@ -1276,15 +1413,22 @@ export async function sendTelegramOrderStatusUpdate(
   }
 
   const messageText = lines.join('\n');
+  const quickReplyMarkup = buildQuickReplyInlineKeyboard();
 
   try {
-    await sendTelegramReply(token, dest.chatId, messageText, dest.businessConnectionId);
+    await sendTelegramReply(
+      token,
+      dest.chatId,
+      messageText,
+      dest.businessConnectionId,
+      quickReplyMarkup,
+    );
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // If business connection expired/invalid, try direct DM fallback once
     if (dest.businessConnectionId && /business_connection/i.test(errMsg)) {
       try {
-        await sendTelegramReply(token, dest.chatId, messageText);
+        await sendTelegramReply(token, dest.chatId, messageText, undefined, quickReplyMarkup);
       } catch (fallbackErr) {
         const fbMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
         const store = readStore();
@@ -2381,7 +2525,13 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
     const cancelMsg =
       '✅ আপনার চলমান অর্ডার প্রক্রিয়া বাতিল করা হয়েছে।\n\nনতুন অর্ডার করতে প্যাকেজের নাম লিখুন অথবা "দাম কত" লিখে লিস্ট দেখুন।';
     pushSessionHistory(session, 'model', cancelMsg);
-    await sendTelegramReply(token, chatId, cancelMsg, businessConnectionId);
+    await sendTelegramReply(
+      token,
+      chatId,
+      cancelMsg,
+      businessConnectionId,
+      buildQuickReplyInlineKeyboard(),
+    );
     return;
   }
 
@@ -2508,7 +2658,13 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
     if (shared.options.length === 0) {
       const noPkgMsg = `😔 দুঃখিত, ${shared.brandName}-এ এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। আমাদের ওয়েবসাইট ভিজিট করুন: ${WEBSITE_URL}`;
       pushSessionHistory(session, 'model', noPkgMsg);
-      await sendTelegramReply(token, chatId, noPkgMsg, businessConnectionId);
+      await sendTelegramReply(
+        token,
+        chatId,
+        noPkgMsg,
+        businessConnectionId,
+        buildQuickReplyInlineKeyboard(),
+      );
       return;
     }
     session.step = 'AWAITING_PACKAGE';
@@ -2516,7 +2672,13 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
     botSessions.set(sessionKey, session);
     const listText = formatFallbackRateList(shared.options, shared.brandName);
     pushSessionHistory(session, 'model', listText);
-    await sendTelegramReply(token, chatId, listText, businessConnectionId);
+    await sendTelegramReply(
+      token,
+      chatId,
+      listText,
+      businessConnectionId,
+      buildQuickReplyInlineKeyboard(),
+    );
     return;
   }
 
@@ -2644,14 +2806,149 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
 
     botSessions.set(sessionKey, session);
     pushSessionHistory(session, 'model', aiDecision.reply);
-    await sendTelegramReply(token, chatId, aiDecision.reply, businessConnectionId);
+    await sendTelegramReply(
+      token,
+      chatId,
+      aiDecision.reply,
+      businessConnectionId,
+      buildQuickReplyInlineKeyboard(),
+    );
     return;
   }
 
   // 8. Graceful Static Helpful Menu Fallback (if GEMINI_API_KEY unset, 429 quota error, or Gemini unreachable)
   const staticMenu = formatStaticHelpfulMenu(liveCtx);
   pushSessionHistory(session, 'model', staticMenu);
-  await sendTelegramReply(token, chatId, staticMenu, businessConnectionId);
+  await sendTelegramReply(
+    token,
+    chatId,
+    staticMenu,
+    businessConnectionId,
+    buildQuickReplyInlineKeyboard(),
+  );
+}
+
+async function handleTelegramCallbackQuery(
+  token: string,
+  cb: TelegramCallbackQuery,
+): Promise<void> {
+  // Always dismiss the Telegram loading spinner immediately
+  await callTelegramApi(token, 'answerCallbackQuery', {callback_query_id: cb.id}, 8000).catch(() => null);
+
+  const chatId = cb.message?.chat.id || cb.from.id;
+  if (!Number.isSafeInteger(chatId) || chatId === 0) return;
+
+  const businessConnectionId = cb.message?.business_connection_id;
+  const sessionKey = `${businessConnectionId || 'dm'}:${chatId}`;
+  const customerName =
+    [cb.from.first_name, cb.from.last_name].filter(Boolean).join(' ').trim() ||
+    cb.from.username ||
+    `Telegram User ${chatId}`;
+  const tgUid = `tg_${chatId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+  void saveTelegramChatRoute(tgUid, chatId, businessConnectionId, customerName);
+
+  cleanupExpiredBotSessions();
+  const session = getOrCreateBotSession(sessionKey, customerName);
+  const data = (cb.data || '').trim();
+  const quickReplies = readStore().systemSettings.telegramQuickReplies || [];
+  const presetId = data.startsWith('qr:') ? data.slice(3) : data;
+  const preset = quickReplies.find((p) => p.id === presetId && p.active);
+
+  if (!preset) {
+    const liveCtx = await fetchTelegramBotLiveContext(tgUid);
+    const fallback = formatStaticHelpfulMenu(liveCtx);
+    await sendTelegramReply(
+      token,
+      chatId,
+      fallback,
+      businessConnectionId,
+      buildQuickReplyInlineKeyboard(),
+    );
+    return;
+  }
+
+  pushSessionHistory(session, 'user', `[Quick Button: ${preset.label}]`);
+
+  if (preset.action === 'show_list') {
+    const shared = await getBotSharedStoreSnapshot();
+    if (shared.options.length > 0) {
+      session.step = 'AWAITING_PACKAGE';
+      session.options = shared.options;
+      botSessions.set(sessionKey, session);
+      const listText = formatFallbackRateList(shared.options, shared.brandName);
+      pushSessionHistory(session, 'model', listText);
+      await sendTelegramReply(
+        token,
+        chatId,
+        listText,
+        businessConnectionId,
+        buildQuickReplyInlineKeyboard(),
+      );
+    } else {
+      const noPkgMsg = `😔 দুঃখিত, ${shared.brandName}-এ এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। ওয়েবসাইট: ${WEBSITE_URL}`;
+      await sendTelegramReply(
+        token,
+        chatId,
+        noPkgMsg,
+        businessConnectionId,
+        buildQuickReplyInlineKeyboard(),
+      );
+    }
+    return;
+  }
+
+  if (preset.action === 'order_status') {
+    const liveCtx = await fetchTelegramBotLiveContext(tgUid);
+    const lines: string[] = [];
+    if (liveCtx.recentOrders.length === 0) {
+      lines.push('🧾 আপনার সাম্প্রতিক কোনো টেলিগ্রাম অর্ডার পাওয়া যায়নি।');
+      lines.push('');
+      lines.push('নতুন অর্ডার করতে "লিস্ট" লিখুন অথবা নিচের Rate List বাটনে ক্লিক করুন।');
+    } else {
+      lines.push('🧾 আপনার সাম্প্রতিক অর্ডারসমূহ:');
+      lines.push('');
+      for (const o of liveCtx.recentOrders) {
+        lines.push(
+          `• ${o.orderNumber} — ${o.productName} (${o.packageName}) | ৳${o.totalAmount} | UID: ${o.playerUid} | স্ট্যাটাস: ${o.orderStatus}`,
+        );
+        if (o.voucherCode) lines.push(`  🔑 কোড: ${o.voucherCode}`);
+      }
+    }
+    const statusMsg = lines.join('\n');
+    pushSessionHistory(session, 'model', statusMsg);
+    await sendTelegramReply(
+      token,
+      chatId,
+      statusMsg,
+      businessConnectionId,
+      buildQuickReplyInlineKeyboard(),
+    );
+    return;
+  }
+
+  if (preset.action === 'request_agent') {
+    await escalateToHumanAgent({
+      token,
+      chatId,
+      businessConnectionId,
+      customerName,
+      tgUid,
+      rawText: `[Quick Reply Button] ${preset.label}`,
+      session,
+      customReply: preset.replyText.trim() || undefined,
+    });
+    return;
+  }
+
+  const replyText = preset.replyText.trim() || preset.label;
+  pushSessionHistory(session, 'model', replyText);
+  await sendTelegramReply(
+    token,
+    chatId,
+    replyText,
+    businessConnectionId,
+    buildQuickReplyInlineKeyboard(),
+  );
 }
 
 const ADMIN_SMS_FORWARDER_CHAT_ID = Number(process.env.SMS_FORWARDER_CHAT_ID || 8139244263);
@@ -2743,7 +3040,7 @@ function startTelegramBusinessBot(): void {
           {
             offset,
             timeout: 25,
-            allowed_updates: ['business_message', 'message'],
+            allowed_updates: ['business_message', 'message', 'callback_query'],
           },
           35000,
         );
@@ -2753,6 +3050,15 @@ function startTelegramBusinessBot(): void {
 
         for (const upd of updates) {
           offset = Math.max(offset, upd.update_id + 1);
+          if (upd.callback_query && !upd.callback_query.from?.is_bot) {
+            const cb = upd.callback_query;
+            const cbChatId = cb.message?.chat.id || cb.from.id;
+            const cbConn = cb.message?.business_connection_id || 'dm';
+            telegramBotState.processedUpdates += 1;
+            enqueueChatWork(`cb:${cbConn}:${cbChatId}`, () => handleTelegramCallbackQuery(token, cb));
+            continue;
+          }
+
           const msg = upd.business_message || upd.message;
           const msgText = (msg?.text || msg?.caption || '').trim();
           if (!msg || !msgText) continue;
@@ -3323,6 +3629,10 @@ async function startServer(): Promise<void> {
         distributorMerchantId: s.distributorMerchantId,
         hasDistributorApiKey: Boolean(s.distributorApiKey),
         distributorEnabled: s.distributorEnabled,
+        telegramQuickRepliesEnabled: s.telegramQuickRepliesEnabled !== false,
+        telegramQuickReplies: Array.isArray(s.telegramQuickReplies)
+          ? s.telegramQuickReplies
+          : DEFAULT_TELEGRAM_QUICK_REPLIES,
         updatedAt: s.updatedAt,
       },
     });
@@ -3358,6 +3668,11 @@ async function startServer(): Promise<void> {
     const rawUser = String(body.smtpUser ?? prev.smtpUser).trim();
     const safeUser = rawUser === '(Configured via ENV)' ? prev.smtpUser : rawUser.slice(0, 160);
 
+    const nextQuickReplies =
+      body.telegramQuickReplies !== undefined
+        ? normalizeQuickRepliesInput(body.telegramQuickReplies)
+        : prev.telegramQuickReplies || DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p}));
+
     store.systemSettings = {
       smtpHost: String(body.smtpHost ?? prev.smtpHost ?? 'smtp.gmail.com').trim().slice(0, 160),
       smtpPort: Math.min(65535, Math.max(1, Number(body.smtpPort ?? prev.smtpPort) || 587)),
@@ -3370,17 +3685,26 @@ async function startServer(): Promise<void> {
       distributorMerchantId: String(body.distributorMerchantId ?? prev.distributorMerchantId).trim().slice(0, 120),
       distributorApiKey: body.distributorApiKey ? String(body.distributorApiKey) : prev.distributorApiKey,
       distributorEnabled: Boolean(body.distributorEnabled ?? prev.distributorEnabled),
+      telegramQuickRepliesEnabled:
+        body.telegramQuickRepliesEnabled !== undefined
+          ? Boolean(body.telegramQuickRepliesEnabled)
+          : prev.telegramQuickRepliesEnabled !== false,
+      telegramQuickReplies: nextQuickReplies,
       updatedAt: new Date().toISOString(),
     };
     appendServerLog(
       store,
       req.adminSession!.email,
       'SYSTEM_SETTINGS_UPDATED',
-      `Updated SMTP (${store.systemSettings.notificationEmail}) and Distributor API configuration`,
+      `Updated SMTP (${store.systemSettings.notificationEmail}), Distributor API, and Telegram Quick Replies (${nextQuickReplies.length})`,
     );
     writeStore(store);
 
-    res.json({ok: true});
+    res.json({
+      ok: true,
+      telegramQuickReplies: store.systemSettings.telegramQuickReplies,
+      telegramQuickRepliesEnabled: store.systemSettings.telegramQuickRepliesEnabled,
+    });
   });
 
   app.post('/api/admin/test-email', requireAdmin('settings'), async (req: AuthedRequest, res) => {
@@ -3656,28 +3980,39 @@ async function expireStalePendingOrders(): Promise<void> {
           const customerUid = String(fresh.customerUid || '').trim();
           const totalAmount = Number(fresh.totalAmount || 0);
           const isWalletOrder = fresh.paymentType === 'wallet' || fresh.paymentMethodId === 'wallet';
-          let refundedAmount = 0;
+          const freshOrderNumber = String(fresh.orderNumber || orderNumber || '').trim();
 
-          if (isWalletOrder && !fresh.walletRefunded && totalAmount > 0 && customerUid) {
-            const custRef = adminDb!.collection('customers').doc(customerUid);
-            const custSnap = await tx.get(custRef);
-            if (custSnap.exists) {
-              const curBal = Number((custSnap.data() as {walletBalance?: number}).walletBalance || 0);
-              const nextBal = Number((curBal + totalAmount).toFixed(2));
-              tx.update(custRef, {
-                walletBalance: nextBal,
-                updatedAt: now,
-              });
-              refundedAmount = totalAmount;
-            }
+          // Execute ALL transaction reads before any writes
+          const needsWalletRefundCheck =
+            isWalletOrder && !fresh.walletRefunded && totalAmount > 0 && Boolean(customerUid);
+          const custRef = needsWalletRefundCheck
+            ? adminDb!.collection('customers').doc(customerUid)
+            : null;
+          const trackingRef = freshOrderNumber
+            ? adminDb!.collection('orderTracking').doc(freshOrderNumber)
+            : null;
+
+          const [custSnap, trackingSnap] = await Promise.all([
+            custRef ? tx.get(custRef) : Promise.resolve(null),
+            trackingRef ? tx.get(trackingRef) : Promise.resolve(null),
+          ]);
+
+          // Execute ALL transaction writes after all reads
+          let refundedAmount = 0;
+          if (custRef && custSnap?.exists) {
+            const curBal = Number((custSnap.data() as {walletBalance?: number}).walletBalance || 0);
+            const nextBal = Number((curBal + totalAmount).toFixed(2));
+            tx.update(custRef, {
+              walletBalance: nextBal,
+              updatedAt: now,
+            });
+            refundedAmount = totalAmount;
           }
 
           const expiryNote =
             refundedAmount > 0
               ? `Order automatically expired after 30 minutes pending; ৳${refundedAmount} refunded to wallet.`
               : 'Order automatically expired after remaining pending for more than 30 minutes.';
-          const trackingRef = orderNumber ? adminDb!.collection('orderTracking').doc(orderNumber) : null;
-          const trackingSnap = trackingRef ? await tx.get(trackingRef) : null;
 
           const orderPatch: Record<string, unknown> = {
             orderStatus: 'expired',
