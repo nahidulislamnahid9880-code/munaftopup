@@ -872,6 +872,7 @@ async function dispatchDistributorIfEnabled(params: {
 const WEBSITE_URL = (process.env.WEBSITE_URL || 'https://munaftopup.onrender.com').trim();
 const GEMINI_BOT_MODEL = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
 const GEMINI_FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash'] as const;
+let geminiQuotaCooldownUntil = 0;
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -953,6 +954,7 @@ interface TelegramMessage {
     username?: string;
   };
   text?: string;
+  caption?: string;
 }
 
 interface TelegramBotState {
@@ -1592,14 +1594,23 @@ async function resolveBotPaymentNumbers(): Promise<{bkashNumber: string; nagadNu
 }
 
 function isRateListTrigger(text: string): boolean {
-  const lower = text.toLowerCase();
+  const lower = text.trim().toLowerCase();
+  if (lower === '/start' || lower === '/menu' || lower === '/list' || lower === '/price') {
+    return true;
+  }
+  if (/\b(status|track)\b|স্ট্যাটাস|অবস্থা|কোথায়|কোথায়|কই|হয়েছে কি|হয়েছে কি/i.test(lower)) {
+    return false;
+  }
   const keywords = [
     'দাম কত',
     'দাম',
     'লিস্ট',
     'রেট',
+    'মেনু',
+    'প্যাকেজ',
     'price',
     'list',
+    'menu',
     'অর্ডার',
     'টপআপ',
     'টপ আপ',
@@ -1612,7 +1623,14 @@ function isRateListTrigger(text: string): boolean {
 
 function isCancelCommand(text: string): boolean {
   const lower = text.trim().toLowerCase();
-  return lower === 'বাতিল' || lower === 'cancel' || lower === '/cancel' || lower === '/reset';
+  return (
+    lower === 'বাতিল' ||
+    lower === 'ক্যানসেল' ||
+    lower === 'cancel' ||
+    lower === 'cancel order' ||
+    lower === '/cancel' ||
+    lower === '/reset'
+  );
 }
 
 function isHumanAgentRequest(text: string): boolean {
@@ -1757,6 +1775,91 @@ function formatFallbackRateList(options: BotPackageOption[], brandName: string):
   lines.push('👉 অর্ডার করতে পছন্দের প্যাকেজের নম্বর (যেমন: 1 বা ১) অথবা প্যাকেজের নাম লিখে পাঠান।');
   lines.push('❌ বাতিল করতে "বাতিল" লিখুন।');
   return lines.join('\n');
+}
+
+function formatStaticHelpfulMenu(liveCtx: TelegramBotLiveContext): string {
+  const paymentLines: string[] = [];
+  if (liveCtx.bkashNumber) paymentLines.push(`• bKash (Send Money): ${liveCtx.bkashNumber}`);
+  if (liveCtx.nagadNumber) paymentLines.push(`• Nagad (Send Money): ${liveCtx.nagadNumber}`);
+
+  return [
+    `👋 আসসালামু আলাইকুম! ${liveCtx.brandName}-এ স্বাগতম।`,
+    '',
+    '📌 দ্রুত সার্ভিস মেনু (২৪/৭ অটোমেটেড):',
+    '• "দাম কত" বা "লিস্ট" — আজকের প্যাকেজ ও ডায়মন্ড রেট দেখতে',
+    '• প্যাকেজ নম্বর (যেমন: 1, 2) বা প্যাকেজের নাম — অর্ডার শুরু করতে',
+    '• "এজেন্ট" — এডমিনের সাথে কথা বলতে',
+    ...(paymentLines.length > 0 ? ['', '💳 পেমেন্ট নম্বর:', ...paymentLines] : []),
+    '',
+    `🌐 ওয়েবসাইট: ${liveCtx.websiteUrl}`,
+  ].join('\n');
+}
+
+function extractPlayerUidFromText(rawText: string): string | null {
+  const normalized = normalizeBengaliDigits(rawText).trim();
+  if (!normalized) return null;
+
+  const compact = normalized.replace(/\s+/g, '');
+  if (/^\d{5,15}$/.test(compact)) {
+    return compact;
+  }
+
+  const labeledMatch = normalized.match(
+    /(?:uid|player\s*id|game\s*id|id)\s*(?:হলো|হল|is|:|#|=|-|\s)*(\d{5,15})\b/i,
+  );
+  if (labeledMatch?.[1]) {
+    return labeledMatch[1];
+  }
+
+  const digitTokens = normalized.match(/\b\d{5,15}\b/g);
+  if (digitTokens && digitTokens.length === 1) {
+    return digitTokens[0];
+  }
+
+  return null;
+}
+
+function matchDeterministicPackage(normalizedText: string, options: BotPackageOption[]): BotPackageOption | null {
+  if (!normalizedText || options.length === 0) return null;
+  const trimmed = normalizedText.trim();
+
+  // 1. Explicit numeric selection (e.g., "1", "#2", "2.", "3 নং", "option 4")
+  const numMatch = trimmed.match(
+    /^(?:#|option\s*|pkg\s*|package\s*|প্যাকেজ\s*)?(\d{1,3})(?:\s*(?:নং|নাম্বার|নম্বর|no|\.|[)]|নম্বরটি))?$/i,
+  );
+  if (numMatch?.[1]) {
+    const idx = Number.parseInt(numMatch[1], 10);
+    return options.find((o) => o.index === idx) || null;
+  }
+
+  // 2. Exact match on packageName or quantityLabel
+  const cleanLower = trimmed.toLowerCase();
+  const exactMatch = options.find(
+    (o) =>
+      o.packageName.toLowerCase() === cleanLower ||
+      o.quantityLabel.toLowerCase() === cleanLower ||
+      `${o.productName} ${o.packageName}`.toLowerCase() === cleanLower,
+  );
+  if (exactMatch) return exactMatch;
+
+  // 3. Unique partial match when text is specific enough (>= 3 chars)
+  if (cleanLower.length >= 3 && !/^(diamond|diamonds|ডায়মন্ড|ডায়মন্ড|topup|টপআপ)$/i.test(cleanLower)) {
+    const partialMatches = options.filter((o) => {
+      const pkg = o.packageName.toLowerCase();
+      const qty = o.quantityLabel.toLowerCase();
+      const combined = `${o.productName} ${o.packageName}`.toLowerCase();
+      return (
+        pkg.includes(cleanLower) ||
+        qty.includes(cleanLower) ||
+        (cleanLower.length >= 5 && combined.includes(cleanLower))
+      );
+    });
+    if (partialMatches.length === 1) {
+      return partialMatches[0];
+    }
+  }
+
+  return null;
 }
 
 async function verifyAndCompleteTelegramOrder(params: {
@@ -2029,7 +2132,11 @@ async function askGeminiAssistant(params: {
 }): Promise<GeminiAssistantDecision | null> {
   const ai = getGeminiClient();
   if (!ai) {
-    console.warn('[Telegram AI] GEMINI_API_KEY is not configured; using deterministic fallback.');
+    console.warn('[Telegram AI] GEMINI_API_KEY is not configured; using static menu fallback.');
+    return null;
+  }
+  if (Date.now() < geminiQuotaCooldownUntil) {
+    console.warn('[Telegram AI] Gemini 429 quota cooldown active; using static menu fallback.');
     return null;
   }
 
@@ -2206,13 +2313,21 @@ ${rawText}`;
         typeof err === 'object' && err !== null && 'status' in err
           ? Number((err as {status?: unknown}).status)
           : NaN;
+      const isQuota429 =
+        errStatus === 429 || /\b429\b|RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg);
       const isRetryableModelOrLoadError =
+        isQuota429 ||
         errStatus === 404 ||
         errStatus === 503 ||
         /\b(404|503)\b|NOT_FOUND|UNAVAILABLE|is not found|high demand|overloaded|service unavailable|timeout/i.test(
           msg,
         );
       console.error(`Gemini bot assistant error (${modelName}):`, msg);
+      if (isQuota429) {
+        geminiQuotaCooldownUntil = Date.now() + 60 * 1000;
+        console.warn(`[Telegram AI] Gemini 429 quota hit on "${modelName}"; falling back gracefully.`);
+        return null;
+      }
       if (isRetryableModelOrLoadError && i + 1 < modelsToTry.length) {
         const reasonTag = /timeout/i.test(msg)
           ? 'timeout'
@@ -2231,7 +2346,7 @@ ${rawText}`;
 }
 
 async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage): Promise<void> {
-  const rawText = (msg.text || '').trim();
+  const rawText = (msg.text || msg.caption || '').trim();
   if (!rawText) return;
 
   cleanupExpiredBotSessions();
@@ -2251,11 +2366,12 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
 
   const normalizedText = normalizeBengaliDigits(rawText).trim();
 
-  // 1. Explicit Cancel / Reset
+  // 1. Deterministic Cancel / Reset (No Gemini)
   if (isCancelCommand(rawText)) {
     session.step = 'IDLE';
     session.selected = undefined;
     session.playerUid = undefined;
+    botSessions.set(sessionKey, session);
     const cancelMsg =
       '✅ আপনার চলমান অর্ডার প্রক্রিয়া বাতিল করা হয়েছে।\n\nনতুন অর্ডার করতে প্যাকেজের নাম লিখুন অথবা "দাম কত" লিখে লিস্ট দেখুন।';
     pushSessionHistory(session, 'model', cancelMsg);
@@ -2263,7 +2379,7 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
     return;
   }
 
-  // 1b. Human Agent / Admin Escalation
+  // 2. Deterministic Human Agent / Admin Escalation (No Gemini)
   if (isHumanAgentRequest(rawText)) {
     await escalateToHumanAgent({
       token,
@@ -2277,8 +2393,32 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
     return;
   }
 
-  // 2. Direct TrxID fast-path when awaiting TrxID (extracts TrxID from bare text OR full pasted SMS)
+  // 3. Deterministic TrxID Payment Verification Step (No Gemini)
   if (session.step === 'AWAITING_TRXID' && session.selected && session.playerUid) {
+    if (isRateListTrigger(rawText)) {
+      const shared = await getBotSharedStoreSnapshot();
+      session.selected = undefined;
+      session.playerUid = undefined;
+      if (shared.options.length > 0) {
+        session.step = 'AWAITING_PACKAGE';
+        session.options = shared.options;
+        botSessions.set(sessionKey, session);
+        const listText = formatFallbackRateList(shared.options, shared.brandName);
+        pushSessionHistory(session, 'model', listText);
+        await sendTelegramReply(token, chatId, listText, businessConnectionId);
+      } else {
+        session.step = 'IDLE';
+        botSessions.set(sessionKey, session);
+        await sendTelegramReply(
+          token,
+          chatId,
+          `😔 দুঃখিত, ${shared.brandName}-এ এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। ওয়েবসাইট: ${WEBSITE_URL}`,
+          businessConnectionId,
+        );
+      }
+      return;
+    }
+
     const extractedTrx = extractCustomerTrxId(rawText);
     if (extractedTrx) {
       await verifyAndCompleteTelegramOrder({
@@ -2294,12 +2434,46 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
       });
       return;
     }
+
+    const trxHintReply = [
+      '❌ সঠিক Transaction ID (TrxID) পাওয়া যায়নি।',
+      '',
+      `অনুগ্রহ করে ৳${session.selected.price} Send Money করে শুধুমাত্র আপনার TrxID (যেমন: 9B4X2K7M1P) অথবা সম্পূর্ণ পেমেন্ট SMS কপি করে পাঠান।`,
+      '❌ অর্ডার বাতিল করতে "বাতিল" লিখুন।',
+    ].join('\n');
+    pushSessionHistory(session, 'model', trxHintReply);
+    await sendTelegramReply(token, chatId, trxHintReply, businessConnectionId);
+    return;
   }
 
-  // 3. Direct 5-15 digit UID fast-path when awaiting UID (supports Bengali ০-৯ & English 0-9)
+  // 4. Deterministic Player UID Step (No Gemini)
   if (session.step === 'AWAITING_UID' && session.selected) {
-    const uidClean = normalizedText.replace(/\s+/g, '');
-    if (/^\d{5,15}$/.test(uidClean)) {
+    if (isRateListTrigger(rawText)) {
+      const shared = await getBotSharedStoreSnapshot();
+      session.selected = undefined;
+      session.playerUid = undefined;
+      if (shared.options.length > 0) {
+        session.step = 'AWAITING_PACKAGE';
+        session.options = shared.options;
+        botSessions.set(sessionKey, session);
+        const listText = formatFallbackRateList(shared.options, shared.brandName);
+        pushSessionHistory(session, 'model', listText);
+        await sendTelegramReply(token, chatId, listText, businessConnectionId);
+      } else {
+        session.step = 'IDLE';
+        botSessions.set(sessionKey, session);
+        await sendTelegramReply(
+          token,
+          chatId,
+          `😔 দুঃখিত, ${shared.brandName}-এ এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। ওয়েবসাইট: ${WEBSITE_URL}`,
+          businessConnectionId,
+        );
+      }
+      return;
+    }
+
+    const uidClean = extractPlayerUidFromText(rawText);
+    if (uidClean) {
       session.playerUid = uidClean;
       session.step = 'AWAITING_TRXID';
       botSessions.set(sessionKey, session);
@@ -2314,49 +2488,85 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
       await sendTelegramReply(token, chatId, summaryReply, businessConnectionId);
       return;
     }
+
+    const uidErrReply =
+      '❌ ভুল Player UID! অনুগ্রহ করে শুধুমাত্র ৫ থেকে ১৫ ডিজিটের সঠিক গেম UID পাঠান (যেমন: 123456789)।\n❌ বাতিল করতে "বাতিল" লিখুন।';
+    pushSessionHistory(session, 'model', uidErrReply);
+    await sendTelegramReply(token, chatId, uidErrReply, businessConnectionId);
+    return;
   }
 
-  // 4. Direct numbered package selection fast-path (e.g., "1", "১", "#2", "#২")
-  const numberOnlyMatch = normalizedText.match(/^#?(\d{1,3})$/);
-  if (numberOnlyMatch && (session.step === 'AWAITING_PACKAGE' || session.step === 'IDLE')) {
-    const options =
-      session.options && session.options.length > 0 ? session.options : await fetchActiveRateOptions();
-    if (options.length > 0) {
-      session.options = options;
+  // 5. Deterministic Rate List / Menu Trigger (No Gemini)
+  if (isRateListTrigger(rawText)) {
+    const shared = await getBotSharedStoreSnapshot();
+    if (shared.options.length === 0) {
+      const noPkgMsg = `😔 দুঃখিত, ${shared.brandName}-এ এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। আমাদের ওয়েবসাইট ভিজিট করুন: ${WEBSITE_URL}`;
+      pushSessionHistory(session, 'model', noPkgMsg);
+      await sendTelegramReply(token, chatId, noPkgMsg, businessConnectionId);
+      return;
+    }
+    session.step = 'AWAITING_PACKAGE';
+    session.options = shared.options;
+    botSessions.set(sessionKey, session);
+    const listText = formatFallbackRateList(shared.options, shared.brandName);
+    pushSessionHistory(session, 'model', listText);
+    await sendTelegramReply(token, chatId, listText, businessConnectionId);
+    return;
+  }
+
+  // 6. Deterministic Package Selection (in AWAITING_PACKAGE or IDLE — No Gemini)
+  const cachedOrLiveOptions =
+    session.options && session.options.length > 0 ? session.options : await fetchActiveRateOptions();
+  if (cachedOrLiveOptions.length > 0) {
+    session.options = cachedOrLiveOptions;
+    const matchedPkg = matchDeterministicPackage(normalizedText, cachedOrLiveOptions);
+    if (matchedPkg) {
+      session.selected = matchedPkg;
+      session.playerUid = undefined;
+      session.step = 'AWAITING_UID';
+      botSessions.set(sessionKey, session);
+      const prompt = formatPackageSelectedPrompt(matchedPkg);
+      pushSessionHistory(session, 'model', prompt);
+      await sendTelegramReply(token, chatId, prompt, businessConnectionId);
+      return;
+    }
+
+    const numberOnlyMatch = normalizedText.match(/^#?(\d{1,3})$/);
+    if (numberOnlyMatch && session.step === 'AWAITING_PACKAGE') {
       const idx = Number.parseInt(numberOnlyMatch[1], 10);
-      const selected = options.find((o) => o.index === idx);
-      if (selected) {
-        session.selected = selected;
-        session.step = 'AWAITING_UID';
-        botSessions.set(sessionKey, session);
-        const prompt = formatPackageSelectedPrompt(selected);
-        pushSessionHistory(session, 'model', prompt);
-        await sendTelegramReply(token, chatId, prompt, businessConnectionId);
-        return;
-      }
-      if (session.step === 'AWAITING_PACKAGE') {
-        const errReply = `❌ ${idx} নম্বরে কোনো প্যাকেজ নেই। অনুগ্রহ করে ১ থেকে ${options.length} এর মধ্যে একটি নম্বর দিন অথবা প্যাকেজের নাম লিখুন।`;
-        pushSessionHistory(session, 'model', errReply);
-        await sendTelegramReply(token, chatId, errReply, businessConnectionId);
-        return;
-      }
+      const errReply = `❌ ${idx} নম্বরে কোনো প্যাকেজ নেই। অনুগ্রহ করে ১ থেকে ${cachedOrLiveOptions.length} এর মধ্যে একটি নম্বর দিন অথবা "বাতিল" লিখুন।`;
+      pushSessionHistory(session, 'model', errReply);
+      await sendTelegramReply(token, chatId, errReply, businessConnectionId);
+      return;
+    }
+
+    if (session.step === 'AWAITING_PACKAGE') {
+      const pkgHintReply = `👉 অনুগ্রহ করে লিস্ট থেকে পছন্দের প্যাকেজের নম্বর (১ থেকে ${cachedOrLiveOptions.length}) অথবা প্যাকেজের নাম লিখুন।\n📋 আবার লিস্ট দেখতে "লিস্ট" এবং বাতিল করতে "বাতিল" লিখুন।`;
+      pushSessionHistory(session, 'model', pkgHintReply);
+      await sendTelegramReply(token, chatId, pkgHintReply, businessConnectionId);
+      return;
     }
   }
 
-  // 5. Show instant typing indicator and fetch Live Website Knowledge Context (cached 60s)
+  // 7. General Conversational Fallback -> Gemini API (Only in IDLE for general questions)
   void sendTelegramTyping(token, chatId, businessConnectionId);
   const liveCtx = await fetchTelegramBotLiveContext(tgUid);
   if (liveCtx.options.length > 0) {
     session.options = liveCtx.options;
   }
 
-  // 6. Ask Google Gemini AI Assistant with full live context & structured action routing
-  const aiDecision = await askGeminiAssistant({
-    rawText,
-    customerName,
-    session,
-    liveCtx,
-  });
+  let aiDecision: GeminiAssistantDecision | null = null;
+  try {
+    aiDecision = await askGeminiAssistant({
+      rawText,
+      customerName,
+      session,
+      liveCtx,
+    });
+  } catch (err) {
+    console.error('[Telegram AI] Unexpected error; using static menu fallback:', err instanceof Error ? err.message : err);
+    aiDecision = null;
+  }
 
   if (aiDecision) {
     if (aiDecision.action === 'REQUEST_AGENT') {
@@ -2426,107 +2636,22 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
       }
     }
 
-    if (aiDecision.action === 'SET_UID' && session.selected) {
-      const extractedUid = aiDecision.extractedUid
-        ? normalizeBengaliDigits(aiDecision.extractedUid).replace(/\D/g, '')
-        : '';
-      if (/^\d{5,15}$/.test(extractedUid)) {
-        session.playerUid = extractedUid;
-        session.step = 'AWAITING_TRXID';
-        botSessions.set(sessionKey, session);
-        const summaryReply = formatPaymentSummaryPrompt(
-          session.selected,
-          extractedUid,
-          liveCtx.bkashNumber,
-          liveCtx.nagadNumber,
-        );
-        pushSessionHistory(session, 'model', summaryReply);
-        await sendTelegramReply(token, chatId, summaryReply, businessConnectionId);
-        return;
-      }
-    }
-
-    if (
-      aiDecision.action === 'CHECK_TRXID' &&
-      session.selected &&
-      session.playerUid &&
-      aiDecision.extractedTrxId
-    ) {
-      await verifyAndCompleteTelegramOrder({
-        token,
-        chatId,
-        businessConnectionId,
-        sessionKey,
-        session,
-        selected: session.selected,
-        playerUid: session.playerUid,
-        rawTrxInput: aiDecision.extractedTrxId,
-        customerName,
-      });
-      return;
-    }
-
-    // Default AI response (answers any question using live context while preserving current order step)
     botSessions.set(sessionKey, session);
     pushSessionHistory(session, 'model', aiDecision.reply);
     await sendTelegramReply(token, chatId, aiDecision.reply, businessConnectionId);
     return;
   }
 
-  // 7. Graceful Deterministic Fallback (if GEMINI_API_KEY is unset or Gemini API temporarily unreachable)
-  if (isRateListTrigger(rawText)) {
-    if (liveCtx.options.length === 0) {
-      await sendTelegramReply(
-        token,
-        chatId,
-        `😔 দুঃখিত, ${liveCtx.brandName}-এ এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। আমাদের ওয়েবসাইট ভিজিট করুন: ${liveCtx.websiteUrl}`,
-        businessConnectionId,
-      );
-      return;
-    }
-    session.step = 'AWAITING_PACKAGE';
-    session.options = liveCtx.options;
-    botSessions.set(sessionKey, session);
-    const listText = formatFallbackRateList(liveCtx.options, liveCtx.brandName);
-    pushSessionHistory(session, 'model', listText);
-    await sendTelegramReply(token, chatId, listText, businessConnectionId);
-    return;
-  }
-
-  if (session.step === 'AWAITING_UID' && session.selected) {
-    await sendTelegramReply(
-      token,
-      chatId,
-      '❌ ভুল Player UID! অনুগ্রহ করে শুধুমাত্র ৫ থেকে ১৫ ডিজিটের সঠিক গেম UID পাঠান (যেমন: 123456789)।',
-      businessConnectionId,
-    );
-    return;
-  }
-
-  if (session.step === 'AWAITING_TRXID' && session.selected && session.playerUid) {
-    await sendTelegramReply(
-      token,
-      chatId,
-      '❌ অনুগ্রহ করে পেমেন্ট সম্পন্ন করে শুধুমাত্র আপনার Transaction ID (TrxID) লিখে পাঠান (যেমন: 9B4X2K7M1P)।',
-      businessConnectionId,
-    );
-    return;
-  }
-
-  const fallbackGreeting = [
-    `👋 আসসালামু আলাইকুম! ${liveCtx.brandName}-এ স্বাগতম।`,
-    '',
-    '💎 আজকের ডায়মন্ড ও প্যাকেজের রেট লিস্ট দেখতে এবং অর্ডার করতে "দাম কত" অথবা "অর্ডার" লিখে পাঠান।',
-    `🌐 ওয়েবসাইট: ${liveCtx.websiteUrl}`,
-  ].join('\n');
-  pushSessionHistory(session, 'model', fallbackGreeting);
-  await sendTelegramReply(token, chatId, fallbackGreeting, businessConnectionId);
+  // 8. Graceful Static Helpful Menu Fallback (if GEMINI_API_KEY unset, 429 quota error, or Gemini unreachable)
+  const staticMenu = formatStaticHelpfulMenu(liveCtx);
+  pushSessionHistory(session, 'model', staticMenu);
+  await sendTelegramReply(token, chatId, staticMenu, businessConnectionId);
 }
 
 const ADMIN_SMS_FORWARDER_CHAT_ID = Number(process.env.SMS_FORWARDER_CHAT_ID || 8139244263);
 
 async function handleAdminSmsForwarderMessage(token: string, msg: TelegramMessage): Promise<void> {
-  const fullText = (msg.text || '').trim();
+  const fullText = (msg.text || msg.caption || '').trim();
   const {smsBody, hintSender} = extractSmsPayloadFromForwarderMessage(fullText);
 
   try {
@@ -2593,9 +2718,11 @@ function startTelegramBusinessBot(): void {
 
   const runLoop = async () => {
     try {
+      // Ensure polling mode is unobstructed (24/7 getUpdates reliability)
+      await callTelegramApi(token, 'deleteWebhook', {drop_pending_updates: false}, 15000).catch(() => null);
       const me = await callTelegramApi<{id: number; username?: string}>(token, 'getMe', undefined, 15000);
       telegramBotState.username = me.username || '';
-      console.log(`Telegram Business Bot active (@${telegramBotState.username || 'bot'})`);
+      console.log(`Telegram Business Bot 24/7 active (@${telegramBotState.username || 'bot'})`);
     } catch (err) {
       telegramBotState.lastError = err instanceof Error ? err.message : String(err);
       console.error('Telegram Bot getMe failed:', telegramBotState.lastError);
@@ -2621,14 +2748,15 @@ function startTelegramBusinessBot(): void {
         for (const upd of updates) {
           offset = Math.max(offset, upd.update_id + 1);
           const msg = upd.business_message || upd.message;
-          if (!msg || !msg.text) continue;
+          const msgText = (msg?.text || msg?.caption || '').trim();
+          if (!msg || !msgText) continue;
           if (msg.from?.is_bot) continue;
 
-          // Intercept Admin SMS Forwarder messages containing TrxID / TxnId (Chat ID 8139244263)
+          // Intercept Admin SMS Forwarder messages containing TrxID / TxnId (Chat ID 8139244263) — NEVER calls Gemini
           const isFromSmsForwarder =
             !msg.business_connection_id &&
             (msg.chat.id === ADMIN_SMS_FORWARDER_CHAT_ID || msg.from?.id === ADMIN_SMS_FORWARDER_CHAT_ID);
-          if (isFromSmsForwarder && /(?:trx\s*id|txnid|txn\s*id|transaction\s*id)/i.test(msg.text)) {
+          if (isFromSmsForwarder && /(?:trx\s*id|txnid|txn\s*id|transaction\s*id)/i.test(msgText)) {
             telegramBotState.processedUpdates += 1;
             enqueueChatWork(`sms:${msg.chat.id}`, () => handleAdminSmsForwarderMessage(token, msg));
             continue;
@@ -2658,6 +2786,15 @@ function startTelegramBusinessBot(): void {
   };
 
   void runLoop();
+
+  // Optional 24/7 production keep-alive self-ping (when running on Render or explicit SELF_PING_URL)
+  const keepAliveBaseUrl = (process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL || '').trim();
+  if (process.env.NODE_ENV === 'production' && keepAliveBaseUrl) {
+    const cleanUrl = keepAliveBaseUrl.replace(/\/$/, '');
+    setInterval(() => {
+      fetch(`${cleanUrl}/api/health`).catch(() => null);
+    }, 10 * 60 * 1000).unref();
+  }
 }
 
 async function startServer(): Promise<void> {
@@ -2672,9 +2809,13 @@ async function startServer(): Promise<void> {
     next();
   }, express.static(UPLOADS_DIR));
 
-  // Health endpoint
+  // Health endpoint (also used for 24/7 uptime monitoring)
   app.get('/api/health', (_req, res) => {
-    res.json({ok: true});
+    res.json({
+      ok: true,
+      botRunning: telegramBotState.running,
+      lastPollAt: telegramBotState.lastPollAt || null,
+    });
   });
 
   // Customer / Admin file upload
