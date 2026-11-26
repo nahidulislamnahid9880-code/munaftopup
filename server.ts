@@ -7,7 +7,7 @@ import express, {type NextFunction, type Request, type Response} from 'express';
 import {cert, getApp, getApps, initializeApp as initializeAdminApp, type ServiceAccount} from 'firebase-admin/app';
 import {getAuth as getAdminAuth} from 'firebase-admin/auth';
 import {FieldValue, getFirestore, type Firestore} from 'firebase-admin/firestore';
-import {GoogleGenAI, Type} from '@google/genai';
+import {GoogleGenAI, ThinkingLevel, Type} from '@google/genai';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 
@@ -627,7 +627,7 @@ function parsePaymentSms(rawText: string, hintSender?: string, hintMethod?: stri
 
   const combinedHints = `${hintSender || ''} ${hintMethod || ''} ${normalized}`.toLowerCase();
   let method: 'bKash' | 'Nagad' | null = null;
-  if (combinedHints.includes('nagad')) {
+  if (combinedHints.includes('nagad') || combinedHints.includes('16216')) {
     method = 'Nagad';
   } else if (combinedHints.includes('bkash')) {
     method = 'bKash';
@@ -640,7 +640,7 @@ function parsePaymentSms(rawText: string, hintSender?: string, hintMethod?: stri
   if (!method) return null;
 
   const trxMatch = normalized.match(
-    /(?:trx\s*id|txnid|txn\s*id|transaction\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,32})/i,
+    /(?:trx\s*id|txnid|txn\s*id|transaction\s*id)\s*(?:is|:|#|-|\s)*([a-zA-Z0-9_-]{4,32})/i,
   );
   if (!trxMatch || !trxMatch[1]) return null;
   const trxId = trxMatch[1].replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
@@ -673,6 +673,143 @@ function parsePaymentSms(rawText: string, hintSender?: string, hintMethod?: stri
   if (!(amount > 0)) return null;
 
   return {amount, trxId, method};
+}
+
+function extractSmsPayloadFromForwarderMessage(fullText: string): {
+  smsBody: string;
+  hintSender?: string;
+} {
+  const trimmed = fullText.trim();
+  const senderMatch = trimmed.match(/(?:^|\n)\s*(?:sender|from)\s*[:\-]\s*([^\n]+)/i);
+  const hintSender = senderMatch?.[1]?.trim();
+
+  const messageMatch = trimmed.match(/(?:^|\n)\s*(?:message|sms|body|text)\s*[:\-]\s*([\s\S]+)/i);
+  if (messageMatch?.[1]?.trim()) {
+    return {
+      smsBody: messageMatch[1].trim(),
+      hintSender,
+    };
+  }
+  return {
+    smsBody: trimmed,
+    hintSender,
+  };
+}
+
+async function recordSmsPaymentInFirestore(params: {
+  rawText: string;
+  hintSender?: string;
+  hintMethod?: string;
+  source?: 'sms_webhook' | 'telegram_forwarder';
+}): Promise<
+  | {
+      ok: true;
+      duplicate: boolean;
+      used: boolean;
+      parsed: ParsedSmsPayment;
+    }
+  | {
+      ok: false;
+      status: number;
+      error: string;
+    }
+> {
+  if (!adminDb) {
+    return {ok: false, status: 503, error: 'Firebase Admin Firestore is not initialized'};
+  }
+
+  const parsed = parsePaymentSms(params.rawText, params.hintSender, params.hintMethod);
+  if (!parsed) {
+    return {ok: false, status: 400, error: 'Could not extract bKash/Nagad amount and TrxID from SMS'};
+  }
+
+  const docRef = adminDb.collection('sms_payments').doc(parsed.trxId);
+  const result = await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(docRef);
+    if (snap.exists) {
+      const existing = snap.data() as {used?: boolean};
+      return {duplicate: true, used: Boolean(existing.used)};
+    }
+    tx.set(docRef, {
+      trxId: parsed.trxId,
+      amount: parsed.amount,
+      method: parsed.method,
+      rawText: params.rawText.slice(0, 2000),
+      used: false,
+      receivedAt: FieldValue.serverTimestamp(),
+    });
+    return {duplicate: false, used: false};
+  });
+
+  if (!result.duplicate) {
+    const store = readStore();
+    appendServerLog(
+      store,
+      params.source || 'sms_webhook',
+      'SMS_PAYMENT_RECORDED',
+      `${parsed.method} ৳${parsed.amount} · TrxID ${parsed.trxId} (${params.source || 'sms_webhook'})`,
+    );
+    writeStore(store);
+  }
+
+  return {
+    ok: true,
+    duplicate: result.duplicate,
+    used: result.used,
+    parsed,
+  };
+}
+
+function extractCustomerTrxId(rawInput: string): string | null {
+  const normalizedInput = normalizeBengaliDigits(rawInput).replace(/\s+/g, ' ').trim();
+  if (!normalizedInput) return null;
+
+  // 1. Explicit TrxID / TxnID label inside a bare or full-SMS text
+  const explicitMatch = normalizedInput.match(
+    /(?:trx\s*id|txn\s*id|txnid|transaction\s*id)\s*(?:is|হলো|হল|:|#|-|\s)*([a-zA-Z0-9_-]{5,40})\b/i,
+  );
+  if (explicitMatch?.[1]) {
+    const cleaned = explicitMatch[1].replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
+    if (cleaned.length >= 4 && cleaned.length <= 64) {
+      return cleaned;
+    }
+  }
+
+  // 2. Clean bare TrxID (single token)
+  const nonTrxWords = new Set([
+    'price',
+    'list',
+    'order',
+    'topup',
+    'cancel',
+    'bkash',
+    'nagad',
+    'hello',
+    'help',
+    'status',
+    'uid',
+    'admin',
+    'agent',
+  ]);
+  if (
+    /^[a-zA-Z0-9_-]{5,40}$/.test(normalizedInput) &&
+    !nonTrxWords.has(normalizedInput.toLowerCase()) &&
+    (/[a-zA-Z]/.test(normalizedInput) || normalizedInput.length >= 8)
+  ) {
+    return normalizedInput.toUpperCase();
+  }
+
+  // 3. Full SMS / multi-word fallback: extract a mixed alphanumeric code (e.g., 9B4X2K7M1P, BKA123456)
+  const mixedTokens = normalizedInput.match(/\b(?=[a-zA-Z0-9]*[a-zA-Z])(?=[a-zA-Z0-9]*\d)[a-zA-Z0-9]{6,24}\b/g);
+  if (mixedTokens && mixedTokens.length > 0) {
+    const ignoredPattern = /^(?:tk\d+|bdt\d+|\d+tk|\d+bdt|\d{1,2}(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d{0,4}|\d{1,2}am|\d{1,2}pm)$/i;
+    const candidate = mixedTokens.find((tok) => !ignoredPattern.test(tok));
+    if (candidate) {
+      return candidate.toUpperCase();
+    }
+  }
+
+  return null;
 }
 
 async function dispatchDistributorIfEnabled(params: {
@@ -900,6 +1037,21 @@ async function callTelegramApi<T>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function sendTelegramTyping(
+  token: string,
+  chatId: number,
+  businessConnectionId?: string,
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    chat_id: chatId,
+    action: 'typing',
+  };
+  if (businessConnectionId) {
+    payload.business_connection_id = businessConnectionId;
+  }
+  await callTelegramApi(token, 'sendChatAction', payload, 4000).catch(() => null);
 }
 
 async function sendTelegramReply(
@@ -1161,66 +1313,175 @@ export async function sendTelegramOrderStatusUpdate(
   return {sent: true};
 }
 
-async function fetchActiveRateOptions(): Promise<BotPackageOption[]> {
-  if (!adminDb) {
-    return [];
+interface BotSharedStoreCache {
+  fetchedAt: number;
+  brandName: string;
+  noticeText: string;
+  supportInfo: string;
+  options: BotPackageOption[];
+  bkashNumber: string;
+  nagadNumber: string;
+  otherPaymentMethods: Array<{name: string; accountNumber: string; accountType: string; instructions: string}>;
+}
+
+const BOT_STORE_CACHE_TTL_MS = 60 * 1000;
+let botSharedStoreCache: BotSharedStoreCache | null = null;
+let botSharedStoreInflight: Promise<BotSharedStoreCache> | null = null;
+
+async function getBotSharedStoreSnapshot(forceRefresh = false): Promise<BotSharedStoreCache> {
+  const now = Date.now();
+  if (!forceRefresh && botSharedStoreCache && now - botSharedStoreCache.fetchedAt < BOT_STORE_CACHE_TTL_MS) {
+    return botSharedStoreCache;
   }
-  try {
-    const snap = await adminDb.collection('products').where('active', '==', true).get();
-    const products = snap.docs
-      .map((d) => d.data() as {
-        id?: string;
-        name?: string;
-        shortDescription?: string;
-        instructions?: string;
-        images?: string[];
-        requiresUid?: boolean;
-        uidLabel?: string;
-        displayOrder?: number;
-        packages?: Array<{
+  if (botSharedStoreInflight) {
+    return botSharedStoreInflight;
+  }
+
+  botSharedStoreInflight = (async (): Promise<BotSharedStoreCache> => {
+    const snapCache: BotSharedStoreCache = {
+      fetchedAt: Date.now(),
+      brandName: 'Munaf Topup',
+      noticeText: '',
+      supportInfo: '',
+      options: botSharedStoreCache?.options || [],
+      bkashNumber: (process.env.BKASH_NUMBER || '').trim(),
+      nagadNumber: (process.env.NAGAD_NUMBER || '').trim(),
+      otherPaymentMethods: [],
+    };
+
+    if (!adminDb) {
+      botSharedStoreCache = snapCache;
+      return snapCache;
+    }
+
+    const [productsRes, paymentMethodsRes, settingsRes] = await Promise.allSettled([
+      adminDb.collection('products').where('active', '==', true).get(),
+      adminDb.collection('paymentMethods').where('active', '==', true).get(),
+      adminDb.collection('settings').doc('storefront').get(),
+    ]);
+
+    if (productsRes.status === 'fulfilled') {
+      const products = productsRes.value.docs
+        .map((d) => d.data() as {
           id?: string;
           name?: string;
-          quantityLabel?: string;
-          price?: number;
-          originalPrice?: number;
-          promoLabel?: string;
-          active?: boolean;
+          shortDescription?: string;
+          instructions?: string;
+          images?: string[];
+          requiresUid?: boolean;
+          uidLabel?: string;
           displayOrder?: number;
-        }>;
-      })
-      .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0));
+          packages?: Array<{
+            id?: string;
+            name?: string;
+            quantityLabel?: string;
+            price?: number;
+            originalPrice?: number;
+            promoLabel?: string;
+            active?: boolean;
+            displayOrder?: number;
+          }>;
+        })
+        .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0));
 
-    const options: BotPackageOption[] = [];
-    let idx = 1;
-    for (const p of products) {
-      const productId = String(p.id || '').trim();
-      const productName = String(p.name || 'Product').trim();
-      const productImage = Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : '';
-      const pkgs = Array.isArray(p.packages)
-        ? [...p.packages]
-            .filter((pkg) => pkg && pkg.active !== false && Number(pkg.price) > 0)
-            .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0))
-        : [];
-      for (const pkg of pkgs) {
-        options.push({
-          index: idx++,
-          productId,
-          productName,
-          productDescription: String(p.shortDescription || '').trim(),
-          productInstructions: String(p.instructions || '').trim(),
-          productImage,
-          requiresUid: p.requiresUid !== false,
-          uidLabel: String(p.uidLabel || 'Player UID').trim(),
-          packageId: String(pkg.id || `pkg_${idx}`),
-          packageName: String(pkg.name || pkg.quantityLabel || 'Package').trim(),
-          quantityLabel: String(pkg.quantityLabel || pkg.name || '').trim(),
-          price: Number(pkg.price),
-          originalPrice: Number(pkg.originalPrice || 0),
-          promoLabel: String(pkg.promoLabel || '').trim(),
-        });
+      const options: BotPackageOption[] = [];
+      let idx = 1;
+      for (const p of products) {
+        const productId = String(p.id || '').trim();
+        const productName = String(p.name || 'Product').trim();
+        const productImage = Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : '';
+        const pkgs = Array.isArray(p.packages)
+          ? [...p.packages]
+              .filter((pkg) => pkg && pkg.active !== false && Number(pkg.price) > 0)
+              .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0))
+          : [];
+        for (const pkg of pkgs) {
+          options.push({
+            index: idx++,
+            productId,
+            productName,
+            productDescription: String(p.shortDescription || '').trim(),
+            productInstructions: String(p.instructions || '').trim(),
+            productImage,
+            requiresUid: p.requiresUid !== false,
+            uidLabel: String(p.uidLabel || 'Player UID').trim(),
+            packageId: String(pkg.id || `pkg_${idx}`),
+            packageName: String(pkg.name || pkg.quantityLabel || 'Package').trim(),
+            quantityLabel: String(pkg.quantityLabel || pkg.name || '').trim(),
+            price: Number(pkg.price),
+            originalPrice: Number(pkg.originalPrice || 0),
+            promoLabel: String(pkg.promoLabel || '').trim(),
+          });
+        }
+      }
+      snapCache.options = options;
+    }
+
+    if (paymentMethodsRes.status === 'fulfilled') {
+      for (const docSnap of paymentMethodsRes.value.docs) {
+        const d = docSnap.data() as {
+          name?: string;
+          accountNumber?: string;
+          accountType?: string;
+          instructions?: string;
+        };
+        const name = String(d.name || '').trim();
+        const accountNumber = String(d.accountNumber || '').trim();
+        const nameLower = name.toLowerCase();
+        if (!snapCache.bkashNumber && nameLower.includes('bkash') && accountNumber) {
+          snapCache.bkashNumber = accountNumber;
+        } else if (!snapCache.nagadNumber && nameLower.includes('nagad') && accountNumber) {
+          snapCache.nagadNumber = accountNumber;
+        }
+        if (name && accountNumber) {
+          snapCache.otherPaymentMethods.push({
+            name,
+            accountNumber,
+            accountType: String(d.accountType || 'Personal'),
+            instructions: String(d.instructions || '').trim(),
+          });
+        }
       }
     }
-    return options;
+
+    if (settingsRes.status === 'fulfilled' && settingsRes.value.exists) {
+      const s = settingsRes.value.data() as {
+        brandName?: string;
+        noticeText?: string;
+        noticeActive?: boolean;
+        contact?: {whatsapp?: string; telegram?: string; email?: string; supportHours?: string};
+      };
+      if (s.brandName && s.brandName.trim()) {
+        snapCache.brandName = s.brandName.trim();
+      }
+      if (s.noticeActive && s.noticeText) {
+        snapCache.noticeText = s.noticeText.trim();
+      }
+      if (s.contact) {
+        const parts = [
+          s.contact.whatsapp ? `WhatsApp: ${s.contact.whatsapp}` : '',
+          s.contact.telegram ? `Telegram: ${s.contact.telegram}` : '',
+          s.contact.email ? `Email: ${s.contact.email}` : '',
+          s.contact.supportHours ? `Hours: ${s.contact.supportHours}` : '',
+        ].filter(Boolean);
+        snapCache.supportInfo = parts.join(' | ');
+      }
+    }
+
+    snapCache.fetchedAt = Date.now();
+    botSharedStoreCache = snapCache;
+    return snapCache;
+  })().finally(() => {
+    botSharedStoreInflight = null;
+  });
+
+  return botSharedStoreInflight;
+}
+
+async function fetchActiveRateOptions(): Promise<BotPackageOption[]> {
+  try {
+    const shared = await getBotSharedStoreSnapshot();
+    return shared.options;
   } catch (err) {
     console.error('fetchActiveRateOptions error:', err instanceof Error ? err.message : err);
     return [];
@@ -1251,83 +1512,29 @@ interface TelegramBotLiveContext {
 }
 
 async function fetchTelegramBotLiveContext(tgUid: string): Promise<TelegramBotLiveContext> {
+  const sharedPromise = getBotSharedStoreSnapshot();
+  const ordersPromise = adminDb
+    ? Promise.race([
+        adminDb.collection('orders').where('customerUid', '==', tgUid).get(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+      ]).catch(() => null)
+    : Promise.resolve(null);
+
+  const [shared, ordersSnap] = await Promise.all([sharedPromise, ordersPromise]);
+
   const ctx: TelegramBotLiveContext = {
-    brandName: 'Munaf Topup',
+    brandName: shared.brandName,
     websiteUrl: WEBSITE_URL,
-    noticeText: '',
-    supportInfo: '',
-    options: [],
-    bkashNumber: (process.env.BKASH_NUMBER || '').trim(),
-    nagadNumber: (process.env.NAGAD_NUMBER || '').trim(),
-    otherPaymentMethods: [],
+    noticeText: shared.noticeText,
+    supportInfo: shared.supportInfo,
+    options: shared.options,
+    bkashNumber: shared.bkashNumber,
+    nagadNumber: shared.nagadNumber,
+    otherPaymentMethods: shared.otherPaymentMethods,
     recentOrders: [],
   };
 
-  if (!adminDb) return ctx;
-
-  const [optionsResult, paymentMethodsResult, settingsResult, ordersResult] = await Promise.allSettled([
-    fetchActiveRateOptions(),
-    adminDb.collection('paymentMethods').where('active', '==', true).get(),
-    adminDb.collection('settings').doc('storefront').get(),
-    adminDb.collection('orders').where('customerUid', '==', tgUid).get(),
-  ]);
-
-  if (optionsResult.status === 'fulfilled') {
-    ctx.options = optionsResult.value;
-  }
-
-  if (paymentMethodsResult.status === 'fulfilled') {
-    for (const docSnap of paymentMethodsResult.value.docs) {
-      const d = docSnap.data() as {
-        name?: string;
-        accountNumber?: string;
-        accountType?: string;
-        instructions?: string;
-      };
-      const name = String(d.name || '').trim();
-      const accountNumber = String(d.accountNumber || '').trim();
-      const nameLower = name.toLowerCase();
-      if (!ctx.bkashNumber && nameLower.includes('bkash') && accountNumber) {
-        ctx.bkashNumber = accountNumber;
-      } else if (!ctx.nagadNumber && nameLower.includes('nagad') && accountNumber) {
-        ctx.nagadNumber = accountNumber;
-      }
-      if (name && accountNumber) {
-        ctx.otherPaymentMethods.push({
-          name,
-          accountNumber,
-          accountType: String(d.accountType || 'Personal'),
-          instructions: String(d.instructions || '').trim(),
-        });
-      }
-    }
-  }
-
-  if (settingsResult.status === 'fulfilled' && settingsResult.value.exists) {
-    const s = settingsResult.value.data() as {
-      brandName?: string;
-      noticeText?: string;
-      noticeActive?: boolean;
-      contact?: {whatsapp?: string; telegram?: string; email?: string; supportHours?: string};
-    };
-    if (s.brandName && s.brandName.trim()) {
-      ctx.brandName = s.brandName.trim();
-    }
-    if (s.noticeActive && s.noticeText) {
-      ctx.noticeText = s.noticeText.trim();
-    }
-    if (s.contact) {
-      const parts = [
-        s.contact.whatsapp ? `WhatsApp: ${s.contact.whatsapp}` : '',
-        s.contact.telegram ? `Telegram: ${s.contact.telegram}` : '',
-        s.contact.email ? `Email: ${s.contact.email}` : '',
-        s.contact.supportHours ? `Hours: ${s.contact.supportHours}` : '',
-      ].filter(Boolean);
-      ctx.supportInfo = parts.join(' | ');
-    }
-  }
-
-  if (ordersResult.status === 'fulfilled') {
+  if (ordersSnap && 'docs' in ordersSnap) {
     const toMs = (val: unknown): number => {
       if (!val) return 0;
       if (typeof (val as {toMillis?: () => number}).toMillis === 'function') {
@@ -1335,7 +1542,7 @@ async function fetchTelegramBotLiveContext(tgUid: string): Promise<TelegramBotLi
       }
       return 0;
     };
-    ctx.recentOrders = ordersResult.value.docs
+    ctx.recentOrders = ordersSnap.docs
       .map((d) => {
         const o = d.data() as Record<string, unknown>;
         return {
@@ -1576,14 +1783,9 @@ async function verifyAndCompleteTelegramOrder(params: {
     return false;
   }
 
-  const normalizedInput = normalizeBengaliDigits(rawTrxInput);
-  const embeddedMatch = normalizedInput.match(
-    /(?:trx\s*id|txnid|txn\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,64})/i,
-  );
-  const candidate = embeddedMatch?.[1] ? embeddedMatch[1] : normalizedInput.trim();
-  const trxId = candidate.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
+  const trxId = extractCustomerTrxId(rawTrxInput);
 
-  if (trxId.length < 4 || trxId.length > 64 || /\s/.test(candidate.trim())) {
+  if (!trxId) {
     await sendTelegramReply(
       token,
       chatId,
@@ -1924,14 +2126,14 @@ ${rawText}`;
 
   const modelsToTry = Array.from(new Set([GEMINI_BOT_MODEL, ...GEMINI_FALLBACK_MODELS]));
 
-  for (let i = 0; i < modelsToTry.length; i++) {
-    const modelName = modelsToTry[i];
-    try {
-      const response = await ai.models.generateContent({
+  const runAttempt = async (modelName: string, useThinkingLow: boolean) => {
+    return Promise.race([
+      ai.models.generateContent({
         model: modelName,
         contents: userPrompt,
         config: {
           systemInstruction,
+          ...(useThinkingLow ? {thinkingConfig: {thinkingLevel: ThinkingLevel.LOW}} : {}),
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -1969,7 +2171,27 @@ ${rawText}`;
             required: ['reply', 'action'],
           },
         },
-      });
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Gemini timeout after 8500ms (${modelName})`)), 8500),
+      ),
+    ]);
+  };
+
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const modelName = modelsToTry[i];
+    try {
+      let response;
+      try {
+        response = await runAttempt(modelName, true);
+      } catch (innerErr) {
+        const innerMsg = innerErr instanceof Error ? innerErr.message : String(innerErr);
+        if (/thinking/i.test(innerMsg) && !/\b(404|503)\b/i.test(innerMsg)) {
+          response = await runAttempt(modelName, false);
+        } else {
+          throw innerErr;
+        }
+      }
 
       const jsonText = (response.text ?? '').trim();
       if (!jsonText) return null;
@@ -1987,14 +2209,16 @@ ${rawText}`;
       const isRetryableModelOrLoadError =
         errStatus === 404 ||
         errStatus === 503 ||
-        /\b(404|503)\b|NOT_FOUND|UNAVAILABLE|is not found|high demand|overloaded|service unavailable/i.test(
+        /\b(404|503)\b|NOT_FOUND|UNAVAILABLE|is not found|high demand|overloaded|service unavailable|timeout/i.test(
           msg,
         );
       console.error(`Gemini bot assistant error (${modelName}):`, msg);
       if (isRetryableModelOrLoadError && i + 1 < modelsToTry.length) {
-        const reasonTag = errStatus === 503 || /\b503\b|UNAVAILABLE|high demand|overloaded/i.test(msg)
-          ? '503/high demand'
-          : '404/not found';
+        const reasonTag = /timeout/i.test(msg)
+          ? 'timeout'
+          : errStatus === 503 || /\b503\b|UNAVAILABLE|high demand|overloaded/i.test(msg)
+            ? '503/high demand'
+            : '404/not found';
         console.warn(
           `[Telegram AI] Model "${modelName}" failed (${reasonTag}); retrying with "${modelsToTry[i + 1]}".`,
         );
@@ -2053,19 +2277,10 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
     return;
   }
 
-  // 2. Direct TrxID fast-path when awaiting TrxID
+  // 2. Direct TrxID fast-path when awaiting TrxID (extracts TrxID from bare text OR full pasted SMS)
   if (session.step === 'AWAITING_TRXID' && session.selected && session.playerUid) {
-    const trimmedClean = normalizedText.trim();
-    const hasExplicitTrxLabel = /(?:trx\s*id|txnid|txn\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,64})/i.test(
-      trimmedClean,
-    );
-    const nonTrxWords = new Set(['price', 'list', 'order', 'topup', 'cancel', 'bkash', 'nagad', 'hello', 'help', 'status', 'uid']);
-    const looksLikeBareTrxId =
-      /^[a-zA-Z0-9_-]{5,40}$/.test(trimmedClean) &&
-      !nonTrxWords.has(trimmedClean.toLowerCase()) &&
-      (/[a-zA-Z]/.test(trimmedClean) || trimmedClean.length >= 8);
-
-    if (hasExplicitTrxLabel || looksLikeBareTrxId) {
+    const extractedTrx = extractCustomerTrxId(rawText);
+    if (extractedTrx) {
       await verifyAndCompleteTelegramOrder({
         token,
         chatId,
@@ -2074,7 +2289,7 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
         session,
         selected: session.selected,
         playerUid: session.playerUid,
-        rawTrxInput: rawText,
+        rawTrxInput: extractedTrx,
         customerName,
       });
       return;
@@ -2128,7 +2343,8 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
     }
   }
 
-  // 5. Fetch Live Website Knowledge Context from Firestore + Env
+  // 5. Show instant typing indicator and fetch Live Website Knowledge Context (cached 60s)
+  void sendTelegramTyping(token, chatId, businessConnectionId);
   const liveCtx = await fetchTelegramBotLiveContext(tgUid);
   if (liveCtx.options.length > 0) {
     session.options = liveCtx.options;
@@ -2307,6 +2523,48 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
   await sendTelegramReply(token, chatId, fallbackGreeting, businessConnectionId);
 }
 
+const ADMIN_SMS_FORWARDER_CHAT_ID = Number(process.env.SMS_FORWARDER_CHAT_ID || 8139244263);
+
+async function handleAdminSmsForwarderMessage(token: string, msg: TelegramMessage): Promise<void> {
+  const fullText = (msg.text || '').trim();
+  const {smsBody, hintSender} = extractSmsPayloadFromForwarderMessage(fullText);
+
+  try {
+    const result = await recordSmsPaymentInFirestore({
+      rawText: smsBody,
+      hintSender,
+      source: 'telegram_forwarder',
+    });
+
+    if (!result.ok) {
+      console.warn(`[Telegram SMS Forwarder] Could not parse SMS from chat ${msg.chat.id}: ${result.error}`);
+      await sendTelegramReply(
+        token,
+        msg.chat.id,
+        `⚠️ SMS পার্স করা যায়নি: ${result.error}`,
+      ).catch(() => null);
+      return;
+    }
+
+    const statusLine = result.duplicate
+      ? `ℹ️ Duplicate SMS (already recorded, used=${result.used})`
+      : '✅ SMS Payment Saved (Unused)';
+    await sendTelegramReply(
+      token,
+      msg.chat.id,
+      `${statusLine}\n💳 ${result.parsed.method} · ৳${result.parsed.amount}\n🔑 TrxID: ${result.parsed.trxId}`,
+    ).catch(() => null);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[Telegram SMS Forwarder] Firestore error:', errMsg);
+    await sendTelegramReply(
+      token,
+      msg.chat.id,
+      `❌ SMS পেমেন্ট সেভ ব্যর্থ হয়েছে: ${errMsg}`,
+    ).catch(() => null);
+  }
+}
+
 function startTelegramBusinessBot(): void {
   const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
   if (!token) {
@@ -2316,6 +2574,22 @@ function startTelegramBusinessBot(): void {
 
   telegramBotState.running = true;
   let offset = 0;
+  const chatQueues = new Map<string, Promise<void>>();
+
+  const enqueueChatWork = (queueKey: string, task: () => Promise<void>) => {
+    const prev = chatQueues.get(queueKey) || Promise.resolve();
+    const next = prev
+      .then(task)
+      .catch((err) => {
+        console.error(`[Telegram Bot] Handler error (${queueKey}):`, err instanceof Error ? err.message : err);
+      })
+      .finally(() => {
+        if (chatQueues.get(queueKey) === next) {
+          chatQueues.delete(queueKey);
+        }
+      });
+    chatQueues.set(queueKey, next);
+  };
 
   const runLoop = async () => {
     try {
@@ -2349,12 +2623,24 @@ function startTelegramBusinessBot(): void {
           const msg = upd.business_message || upd.message;
           if (!msg || !msg.text) continue;
           if (msg.from?.is_bot) continue;
+
+          // Intercept Admin SMS Forwarder messages containing TrxID / TxnId (Chat ID 8139244263)
+          const isFromSmsForwarder =
+            !msg.business_connection_id &&
+            (msg.chat.id === ADMIN_SMS_FORWARDER_CHAT_ID || msg.from?.id === ADMIN_SMS_FORWARDER_CHAT_ID);
+          if (isFromSmsForwarder && /(?:trx\s*id|txnid|txn\s*id|transaction\s*id)/i.test(msg.text)) {
+            telegramBotState.processedUpdates += 1;
+            enqueueChatWork(`sms:${msg.chat.id}`, () => handleAdminSmsForwarderMessage(token, msg));
+            continue;
+          }
+
           // In Telegram Business chats, only respond to incoming customer messages (not business owner's own replies)
           if (msg.business_connection_id && msg.from?.id && msg.from.id !== msg.chat.id) {
             continue;
           }
           telegramBotState.processedUpdates += 1;
-          await handleTelegramCustomerMessage(token, msg);
+          const queueKey = `${msg.business_connection_id || 'dm'}:${msg.chat.id}`;
+          enqueueChatWork(queueKey, () => handleTelegramCustomerMessage(token, msg));
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2997,49 +3283,27 @@ async function startServer(): Promise<void> {
 
     const hintSender = typeof req.body?.sender === 'string' ? req.body.sender : undefined;
     const hintMethod = typeof req.body?.method === 'string' ? req.body.method : undefined;
-    const parsed = parsePaymentSms(rawText, hintSender, hintMethod);
-    if (!parsed) {
-      res.status(400).json({error: 'Could not extract bKash/Nagad amount and TrxID from SMS'});
-      return;
-    }
 
     try {
-      const docRef = adminDb.collection('sms_payments').doc(parsed.trxId);
-      const result = await adminDb.runTransaction(async (tx) => {
-        const snap = await tx.get(docRef);
-        if (snap.exists) {
-          const existing = snap.data() as {used?: boolean};
-          return {duplicate: true, used: Boolean(existing.used)};
-        }
-        tx.set(docRef, {
-          trxId: parsed.trxId,
-          amount: parsed.amount,
-          method: parsed.method,
-          rawText: rawText.slice(0, 2000),
-          used: false,
-          receivedAt: FieldValue.serverTimestamp(),
-        });
-        return {duplicate: false, used: false};
+      const result = await recordSmsPaymentInFirestore({
+        rawText,
+        hintSender,
+        hintMethod,
+        source: 'sms_webhook',
       });
 
-      if (!result.duplicate) {
-        const store = readStore();
-        appendServerLog(
-          store,
-          'sms_webhook',
-          'SMS_PAYMENT_RECORDED',
-          `${parsed.method} ৳${parsed.amount} · TrxID ${parsed.trxId}`,
-        );
-        writeStore(store);
+      if (!result.ok) {
+        res.status(result.status).json({error: result.error});
+        return;
       }
 
       res.status(result.duplicate ? 200 : 201).json({
         ok: true,
         duplicate: result.duplicate,
         used: result.used,
-        trxId: parsed.trxId,
-        amount: parsed.amount,
-        method: parsed.method,
+        trxId: result.parsed.trxId,
+        amount: result.parsed.amount,
+        method: result.parsed.method,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
