@@ -35,6 +35,7 @@ import type {
   CustomerProfile,
   PaymentHistoryEntry,
   PaymentMethod,
+  SmsPaymentRecord,
   WalletTopup,
 } from '../../types';
 import {ImageUploadField} from '../../components/ImageUploadField';
@@ -70,7 +71,7 @@ export function PaymentsManager() {
   const {paymentMethods} = useStore();
   const canEdit = adminUser?.role === 'super_admin' || adminUser?.permissions.payments;
 
-  const [tab, setTab] = useState<'topups' | 'methods' | 'history' | 'trx'>('topups');
+  const [tab, setTab] = useState<'topups' | 'methods' | 'sms' | 'history' | 'trx'>('topups');
   const [editing, setEditing] = useState<PaymentMethod | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -78,6 +79,7 @@ export function PaymentsManager() {
   const [topupNotes, setTopupNotes] = useState<Record<string, string>>({});
 
   const [topups, setTopups] = useState<WalletTopup[]>([]);
+  const [smsPayments, setSmsPayments] = useState<SmsPaymentRecord[]>([]);
   const [history, setHistory] = useState<PaymentHistoryEntry[]>([]);
   const [trxEntries, setTrxEntries] = useState<
     Array<{trxKey: string; trxId: string; orderId: string; amount: number; status: string; createdAt: unknown}>
@@ -113,10 +115,16 @@ export function PaymentsManager() {
         ),
       (err) => handleFirestoreError(err, OperationType.LIST, 'trxRegistry'),
     );
+    const unsubSms = onSnapshot(
+      query(collection(db, 'sms_payments'), orderBy('receivedAt', 'desc')),
+      (snap) => setSmsPayments(snap.docs.map((d) => d.data() as SmsPaymentRecord)),
+      (err) => handleFirestoreError(err, OperationType.LIST, 'sms_payments'),
+    );
     return () => {
       unsubTopups();
       unsubHist();
       unsubTrx();
+      unsubSms();
     };
   }, [firebaseUser, canEdit]);
 
@@ -318,6 +326,16 @@ export function PaymentsManager() {
                   : 'text-slate-600 dark:text-slate-400'
               }`}>
               Payment Numbers ({paymentMethods.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('sms')}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap ${
+                tab === 'sms'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}>
+              SMS Auto-Payments ({smsPayments.length})
             </button>
             <button
               type="button"
@@ -636,6 +654,59 @@ export function PaymentsManager() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Tab: SMS Auto-Payments */}
+        {tab === 'sms' && (
+          <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
+            {smsPayments.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-500">
+                No automated SMS payments received via /api/sms-webhook yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-xs text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">TrxID</th>
+                      <th className="px-4 py-3 font-medium">Method</th>
+                      <th className="px-4 py-3 font-medium">Amount</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Order Ref</th>
+                      <th className="px-4 py-3 font-medium">Received</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {smsPayments.map((sp) => (
+                      <tr key={sp.trxId}>
+                        <td className="px-4 py-3 font-mono font-semibold">{sp.trxId}</td>
+                        <td className="px-4 py-3 text-xs font-semibold">{sp.method}</td>
+                        <td className="px-4 py-3 font-semibold tabular-nums">
+                          {formatCurrency(sp.amount)}
+                        </td>
+                        <td className="px-4 py-3 text-xs font-semibold">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                              sp.used
+                                ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                                : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400'
+                            }`}>
+                            {sp.used ? 'Used' : 'Available'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-slate-500">
+                          {sp.usedOrderNumber || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-500 tabular-nums">
+                          {sp.receivedAt ? new Date(timestampToMillis(sp.receivedAt)).toLocaleString() : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 

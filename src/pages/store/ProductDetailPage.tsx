@@ -130,8 +130,8 @@ export function ProductDetailPage() {
         </div>
 
         {/* Top Product Heading Card */}
-        <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 flex items-center gap-3.5 sm:gap-4 shadow-xs">
-          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
+        <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-5 flex items-center gap-3.5 sm:gap-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden bg-slate-100 border-[1.5px] border-slate-200 shrink-0">
             <ImageWithFallback
               src={images[activeImgIdx] || images[0]}
               alt={product.name}
@@ -156,8 +156,8 @@ export function ProductDetailPage() {
           {/* Left / Main Purchase Column */}
           <form onSubmit={handleContinue} className="lg:col-span-8 space-y-4 sm:space-y-5">
             {/* Step 1: Select Recharge */}
-            <div className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-3.5 shadow-sm">
-              <div className="flex items-center justify-between gap-2">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-5 space-y-3.5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+              <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
                 <div className="flex items-center gap-2.5">
                   <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white text-xs font-extrabold flex items-center justify-center shrink-0 shadow-2xs">
                     1
@@ -193,10 +193,10 @@ export function ProductDetailPage() {
                         key={pkg.id}
                         type="button"
                         onClick={() => setSelectedPkgId(pkg.id)}
-                        className={`w-full text-left px-3 py-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-2 shadow-2xs ${
+                        className={`w-full text-left px-3 py-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-between gap-2 shadow-2xs ${
                           isSelected
-                            ? 'border-cyan-500 bg-cyan-50/75 ring-1 ring-cyan-500/40'
-                            : 'border-slate-200 bg-white hover:border-slate-300'
+                            ? 'border-2 border-cyan-500 bg-cyan-50/75 ring-2 ring-cyan-500/20'
+                            : 'border-[1.5px] border-slate-200/95 bg-white hover:border-slate-300'
                         }`}>
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           {isSelected ? (
@@ -252,8 +252,8 @@ export function ProductDetailPage() {
             </div>
 
             {/* Step 2: Account Info */}
-            <div className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-3.5 shadow-sm">
-              <div className="flex items-center gap-2.5">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-5 space-y-3.5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+              <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
                 <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white text-xs font-extrabold flex items-center justify-center shrink-0 shadow-2xs">
                   2
                 </span>
@@ -268,7 +268,7 @@ export function ProductDetailPage() {
                   <button
                     type="button"
                     onClick={() => setPlayerUid(savedUid)}
-                    className="px-3 py-1 rounded-full border border-cyan-400 bg-cyan-50/50 text-xs font-mono font-semibold text-slate-800 hover:bg-cyan-100/60 cursor-pointer">
+                    className="px-3 py-1 rounded-full border-[1.5px] border-cyan-400 bg-cyan-50/60 text-xs font-mono font-semibold text-slate-800 hover:bg-cyan-100/70 cursor-pointer">
                     {savedUid}
                   </button>
                 </div>
@@ -286,7 +286,7 @@ export function ProductDetailPage() {
                       value={playerUid}
                       onChange={(e) => setPlayerUid(e.target.value)}
                       placeholder="Enter Player UID"
-                      className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                     />
                   </div>
                 )}
@@ -300,7 +300,7 @@ export function ProductDetailPage() {
                       <select
                         value={serverId}
                         onChange={(e) => setServerId(e.target.value)}
-                        className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500">
+                        className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors">
                         {product.serverOptions.map((opt) => (
                           <option key={opt} value={opt}>
                             {opt}
@@ -314,7 +314,7 @@ export function ProductDetailPage() {
                         value={serverId}
                         onChange={(e) => setServerId(e.target.value)}
                         placeholder="Enter Server ID"
-                        className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500"
+                        className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                       />
                     )}
                   </div>
@@ -322,7 +322,7 @@ export function ProductDetailPage() {
               </div>
 
               {formError && (
-                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-medium text-red-700">
+                <div className="p-3 rounded-xl bg-red-50 border-[1.5px] border-red-200 text-xs font-medium text-red-700">
                   {formError}
                 </div>
               )}
@@ -330,8 +330,8 @@ export function ProductDetailPage() {
 
             {/* Step 3: Order Summary & Continue CTA */}
             {selectedPackage && (
-              <div className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-4 shadow-sm">
-                <div className="flex items-center gap-2.5">
+              <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-5 space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+                <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
                   <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white text-xs font-extrabold flex items-center justify-center shrink-0 shadow-2xs">
                     3
                   </span>
@@ -339,7 +339,7 @@ export function ProductDetailPage() {
                     Order Summary
                   </h2>
                 </div>
-                <div className="rounded-xl bg-slate-50 border border-slate-200/80 p-3.5 space-y-2 text-xs sm:text-sm">
+                <div className="rounded-xl bg-slate-50/90 border-[1.5px] border-slate-200/90 p-3.5 space-y-2 text-xs sm:text-sm">
                   <div className="flex justify-between gap-3">
                     <span className="text-slate-500">Selected Package</span>
                     <span className="font-bold text-slate-900 text-right">{selectedPackage.name}</span>
@@ -366,7 +366,7 @@ export function ProductDetailPage() {
 
                 <button
                   type="submit"
-                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-cyan-600 hover:to-blue-600 text-white text-sm font-bold transition-all cursor-pointer shadow-sm">
+                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-cyan-600 hover:to-blue-600 border border-slate-800 text-white text-sm font-bold transition-all cursor-pointer shadow-sm">
                   Continue to Checkout <ArrowRight className="w-4 h-4" />
                 </button>
                 <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5">
@@ -380,8 +380,8 @@ export function ProductDetailPage() {
           {/* Right Column: Gallery & Order Instructions */}
           <div className="lg:col-span-4 space-y-4 lg:sticky lg:top-20">
             {images.length > 1 && (
-              <div className="rounded-2xl bg-white border border-slate-200 p-3 space-y-2 shadow-xs">
-                <div className="aspect-square rounded-xl overflow-hidden bg-slate-100">
+              <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-3 space-y-2 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+                <div className="aspect-square rounded-xl overflow-hidden bg-slate-100 border border-slate-200/80">
                   <ImageWithFallback
                     src={images[activeImgIdx] || images[0]}
                     alt={product.name}
@@ -395,7 +395,7 @@ export function ProductDetailPage() {
                       type="button"
                       onClick={() => setActiveImgIdx(idx)}
                       className={`w-12 h-12 rounded-lg overflow-hidden border-2 shrink-0 cursor-pointer ${
-                        activeImgIdx === idx ? 'border-cyan-500' : 'border-transparent opacity-70'
+                        activeImgIdx === idx ? 'border-cyan-500' : 'border-slate-200 opacity-75'
                       }`}>
                       <ImageWithFallback src={img} alt={`${product.name} ${idx + 1}`} className="w-full h-full object-cover" />
                     </button>
@@ -404,8 +404,8 @@ export function ProductDetailPage() {
               </div>
             )}
 
-            <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 space-y-3 shadow-xs">
-              <h2 className="text-sm font-bold text-slate-900 font-display flex items-center gap-2">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-5 space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+              <h2 className="text-sm font-bold text-slate-900 font-display flex items-center gap-2 border-b border-slate-100 pb-2.5">
                 <Info className="w-4 h-4 text-cyan-600" />
                 Top-Up Instructions
               </h2>
@@ -413,7 +413,7 @@ export function ProductDetailPage() {
                 {product.instructions || 'Enter your accurate Player UID and select a package to proceed.'}
               </p>
               {product.description && (
-                <div className="pt-3 border-t border-slate-100">
+                <div className="pt-3 border-t border-slate-200/80">
                   <h3 className="text-xs font-semibold text-slate-500 mb-1">Details</h3>
                   <p className="text-xs sm:text-sm text-slate-600 whitespace-pre-line leading-relaxed">
                     {product.description}

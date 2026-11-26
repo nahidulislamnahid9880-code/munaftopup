@@ -119,7 +119,7 @@ export function HomePage() {
       <div className="max-w-[1248px] mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-6 sm:space-y-8">
         {/* 1200x450 Exact Proportioned Hero Banner */}
         {currentBanner && (
-          <section className="relative rounded-2xl sm:rounded-3xl overflow-hidden border border-slate-200/80 bg-slate-950 shadow-[0_18px_45px_rgba(15,23,42,0.14)]">
+          <section className="relative rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-slate-900/15 ring-1 ring-cyan-500/25 bg-slate-950 shadow-[0_20px_50px_rgba(15,23,42,0.16)]">
             <Link
               to={currentBanner.linkUrl?.startsWith('#') ? '/' : currentBanner.linkUrl || '/'}
               onClick={(e) => {
@@ -202,8 +202,8 @@ export function HomePage() {
         {/* Value & Trust Strip */}
         <section aria-label="Service highlights">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
-            <div className="rounded-2xl bg-white border border-slate-200/80 px-3.5 py-3 flex items-center gap-3 shadow-2xs">
-              <div className="w-9 h-9 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
+              <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                 <Zap className="w-4 h-4" />
               </div>
               <div className="min-w-0">
@@ -211,8 +211,8 @@ export function HomePage() {
                 <p className="text-[11px] text-slate-500 truncate">Direct in-game delivery</p>
               </div>
             </div>
-            <div className="rounded-2xl bg-white border border-slate-200/80 px-3.5 py-3 flex items-center gap-3 shadow-2xs">
-              <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200/70 text-emerald-600 flex items-center justify-center shrink-0">
                 <Wallet className="w-4 h-4" />
               </div>
               <div className="min-w-0">
@@ -220,8 +220,8 @@ export function HomePage() {
                 <p className="text-[11px] text-slate-500 truncate">Verified fast checkout</p>
               </div>
             </div>
-            <div className="rounded-2xl bg-white border border-slate-200/80 px-3.5 py-3 flex items-center gap-3 shadow-2xs">
-              <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
+              <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-200/70 text-blue-600 flex items-center justify-center shrink-0">
                 <ShieldCheck className="w-4 h-4" />
               </div>
               <div className="min-w-0">
@@ -229,8 +229,8 @@ export function HomePage() {
                 <p className="text-[11px] text-slate-500 truncate">No password needed</p>
               </div>
             </div>
-            <div className="rounded-2xl bg-white border border-slate-200/80 px-3.5 py-3 flex items-center gap-3 shadow-2xs">
-              <div className="w-9 h-9 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
+              <div className="w-9 h-9 rounded-xl bg-sky-50 border border-sky-200/70 text-sky-600 flex items-center justify-center shrink-0">
                 <Clock className="w-4 h-4" />
               </div>
               <div className="min-w-0">
@@ -243,7 +243,7 @@ export function HomePage() {
 
         {/* Search & Category Filter Bar */}
         <section id="categories">
-          <div className="rounded-2xl bg-white border border-slate-200/90 p-2 sm:p-2.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-2 sm:p-2.5 shadow-[0_6px_20px_-6px_rgba(15,23,42,0.06)] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="relative flex-1 sm:max-w-xs">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
@@ -251,7 +251,7 @@ export function HomePage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search games or passes..."
-                className="w-full pl-10 pr-3.5 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 bg-slate-50/70 text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
+                className="w-full pl-10 pr-3.5 py-2 text-xs sm:text-sm rounded-xl border-[1.5px] border-slate-300/90 bg-slate-50/70 text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
               />
             </div>
 
@@ -260,10 +260,10 @@ export function HomePage() {
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('all')}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
+                  className={`px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
                     selectedCategory === 'all'
-                      ? 'bg-slate-900 text-white shadow-xs'
-                      : 'bg-slate-100/80 text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+                      ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                      : 'bg-slate-50 border-slate-200/90 text-slate-600 hover:text-slate-900 hover:border-slate-300'
                   }`}>
                   All Categories
                 </button>
@@ -272,10 +272,10 @@ export function HomePage() {
                     key={cat.id}
                     type="button"
                     onClick={() => setSelectedCategory(cat.id)}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
+                    className={`px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
                       selectedCategory === cat.id
-                        ? 'bg-gradient-to-r from-cyan-500 to-teal-500 text-white shadow-sm shadow-cyan-500/20'
-                        : 'bg-slate-100/80 text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+                        ? 'bg-gradient-to-r from-cyan-500 to-teal-500 border-cyan-400 text-white shadow-sm shadow-cyan-500/20'
+                        : 'bg-slate-50 border-slate-200/90 text-slate-600 hover:text-slate-900 hover:border-slate-300'
                     }`}>
                     {cat.name}
                   </button>
@@ -300,7 +300,7 @@ export function HomePage() {
               </div>
             </div>
           ) : !catalogInitialized && products.length === 0 ? (
-            <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-3 shadow-xs">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
               <h2 className="text-lg font-bold text-slate-900 font-display">
                 Storefront Ready for Initial Catalog Setup
               </h2>
@@ -316,7 +316,7 @@ export function HomePage() {
               </div>
             </div>
           ) : categorySections.length === 0 ? (
-            <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-1.5 shadow-xs">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center space-y-1.5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
               <p className="text-sm font-semibold text-slate-900">No matching products found</p>
               <p className="text-xs text-slate-500">
                 Try clearing your search or selecting All Categories.
@@ -325,7 +325,7 @@ export function HomePage() {
           ) : (
             categorySections.map((group) => (
               <div key={group.id} className="space-y-4 sm:space-y-5">
-                <div className="flex items-end justify-between gap-4 border-b border-slate-200/80 pb-3">
+                <div className="flex items-end justify-between gap-4 border-b-[1.5px] border-slate-200/90 pb-3">
                   <div className="space-y-1">
                     <h2 className="text-lg sm:text-2xl font-extrabold text-slate-900 font-display tracking-tight">
                       {group.name}
@@ -357,8 +357,8 @@ export function HomePage() {
                       <Link
                         key={product.id}
                         to={`/product/${product.slug}`}
-                        className="group rounded-2xl bg-white border border-slate-200/80 p-1.5 sm:p-2 shadow-xs hover:shadow-[0_14px_30px_rgba(8,145,178,0.14)] hover:border-cyan-400 hover:-translate-y-0.5 transition-all duration-200 flex flex-col text-center focus:outline-none">
-                        <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-100">
+                        className="group rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] p-1.5 sm:p-2 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] hover:shadow-[0_14px_30px_rgba(8,145,178,0.16)] hover:border-cyan-500 hover:ring-cyan-500/25 hover:-translate-y-0.5 transition-all duration-200 flex flex-col text-center focus:outline-none">
+                        <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-100 border border-slate-200/70">
                           <ImageWithFallback
                             src={product.images?.[0]}
                             alt={product.name}
@@ -395,8 +395,8 @@ export function HomePage() {
               {activePromos.map((promo) => (
                 <div
                   key={promo.id}
-                  className="rounded-2xl bg-white border border-slate-200/90 overflow-hidden grid grid-cols-5 items-stretch shadow-xs hover:shadow-md transition-shadow">
-                  <div className="col-span-2 bg-slate-900">
+                  className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] hover:border-cyan-400 overflow-hidden grid grid-cols-5 items-stretch shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] transition-all">
+                  <div className="col-span-2 bg-slate-900 border-r border-slate-200/80">
                     <ImageWithFallback
                       src={promo.imageUrl}
                       alt={promo.title}
@@ -420,7 +420,7 @@ export function HomePage() {
         )}
 
         {/* Customer Support Banner: WhatsApp & Telegram Buttons */}
-        <section className="rounded-2xl sm:rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 text-white p-5 sm:p-8 border border-slate-800 shadow-md">
+        <section className="rounded-2xl sm:rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 text-white p-5 sm:p-8 border-[1.5px] border-cyan-500/35 ring-1 ring-white/10 shadow-[0_14px_34px_-8px_rgba(15,23,42,0.28)]">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
             <div className="space-y-1.5 max-w-xl">
               <div className="flex items-center gap-2 text-cyan-400 text-xs font-bold">
@@ -441,14 +441,14 @@ export function HomePage() {
                   href={whatsappHref}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-900/30 transition-all cursor-pointer whitespace-nowrap">
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <WhatsAppIcon className="w-5 h-5" />
                   <span>WhatsApp Support</span>
                 </a>
               ) : (
                 <Link
                   to="/account?tab=support"
-                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-900/30 transition-all cursor-pointer whitespace-nowrap">
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <WhatsAppIcon className="w-5 h-5" />
                   <span>WhatsApp Support</span>
                 </Link>
@@ -459,14 +459,14 @@ export function HomePage() {
                   href={telegramHref}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs sm:text-sm font-bold shadow-lg shadow-sky-900/30 transition-all cursor-pointer whitespace-nowrap">
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sky-500 hover:bg-sky-400 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-sky-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <TelegramIcon className="w-5 h-5" />
                   <span>Telegram Support</span>
                 </a>
               ) : (
                 <Link
                   to="/account?tab=support"
-                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs sm:text-sm font-bold shadow-lg shadow-sky-900/30 transition-all cursor-pointer whitespace-nowrap">
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sky-500 hover:bg-sky-400 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-sky-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <TelegramIcon className="w-5 h-5" />
                   <span>Telegram Support</span>
                 </Link>
@@ -479,8 +479,8 @@ export function HomePage() {
         {siteSettings.homepageSections?.showHowItWorks && (
           <section className="pt-2">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-2xs">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+              <div className="bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)]">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                   <Zap className="w-4 h-4" />
                 </div>
                 <div>
@@ -490,8 +490,8 @@ export function HomePage() {
                   </p>
                 </div>
               </div>
-              <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-2xs">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+              <div className="bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)]">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                   <ShieldCheck className="w-4 h-4" />
                 </div>
                 <div>
@@ -501,8 +501,8 @@ export function HomePage() {
                   </p>
                 </div>
               </div>
-              <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-2xs">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+              <div className="bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)]">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                   <Sparkles className="w-4 h-4" />
                 </div>
                 <div>

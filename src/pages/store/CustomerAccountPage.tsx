@@ -243,8 +243,8 @@ export function CustomerAccountPage() {
     return (
       <StoreLayout>
         <div className="max-w-md mx-auto px-4 py-16">
-          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-4 shadow-xs">
-            <div className="w-12 h-12 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center mx-auto">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+            <div className="w-12 h-12 rounded-2xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center mx-auto">
               <User className="w-6 h-6" />
             </div>
             <h1 className="text-xl font-bold text-slate-900 font-display">My Profile</h1>
@@ -254,7 +254,7 @@ export function CustomerAccountPage() {
             <button
               type="button"
               onClick={() => void signInCustomerWithGoogle()}
-              className="w-full px-5 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer transition-colors">
+              className="w-full px-5 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-sm font-semibold cursor-pointer transition-colors">
               Sign in with Google
             </button>
           </div>
@@ -272,7 +272,7 @@ export function CustomerAccountPage() {
     <StoreLayout>
       <div className="max-w-3xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5">
         {/* User Profile Header */}
-        <div className="flex items-start justify-between gap-4 pb-3 border-b border-slate-200">
+        <div className="flex items-start justify-between gap-4 pb-3 border-b-[1.5px] border-slate-200/90">
           <div className="space-y-0.5 min-w-0">
             <h1 className="text-2xl font-extrabold text-slate-900 font-display truncate">
               {customerProfile?.displayName || firebaseUser.displayName || 'Customer'}
@@ -290,17 +290,17 @@ export function CustomerAccountPage() {
           <button
             type="button"
             onClick={() => void signOutCustomer()}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer shrink-0">
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border-[1.5px] border-slate-200/95 hover:border-red-300 bg-white hover:bg-red-50/40 text-xs font-semibold text-slate-700 cursor-pointer shrink-0 transition-colors">
             <LogOut className="w-3.5 h-3.5" /> Sign Out
           </button>
         </div>
 
-        {/* Current Wallet Balance Card (Matching Screenshot 4) */}
-        <div className="rounded-2xl bg-slate-100/90 border border-slate-200 p-5 text-center space-y-3">
+        {/* Current Wallet Balance Card */}
+        <div className="rounded-2xl bg-slate-100/90 border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-5 text-center space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
           <span className="text-xs sm:text-sm font-medium text-slate-600 block">
             Current Balance
           </span>
-          <div className="inline-flex items-center justify-center px-6 py-2.5 rounded-xl bg-white border border-slate-200 shadow-2xs">
+          <div className="inline-flex items-center justify-center px-6 py-2.5 rounded-xl bg-white border-[1.5px] border-cyan-300/80 shadow-xs">
             <span className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-display tabular-nums">
               {formatCurrency(walletBalance)}
             </span>
@@ -308,61 +308,69 @@ export function CustomerAccountPage() {
           <div className="flex items-center justify-center gap-3 pt-1">
             <Link
               to="/add-money"
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-bold transition-colors">
+              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-xs sm:text-sm font-bold transition-colors">
               <PlusCircle className="w-4 h-4" /> Add Money
             </Link>
             <Link
               to="/orders"
-              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-bold transition-colors">
+              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-white border-[1.5px] border-slate-300 hover:border-cyan-400 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-bold transition-colors">
               My Orders
             </Link>
           </div>
         </div>
 
         {/* Account Navigation Tabs */}
-        <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl overflow-x-auto">
+        <div className="flex items-center gap-1 p-1.5 bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] rounded-2xl overflow-x-auto shadow-2xs">
           <button
             type="button"
             onClick={() => switchTab('overview')}
-            className={`px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'overview' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            className={`px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap cursor-pointer transition-all ${
+              tab === 'overview'
+                ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}>
             Account Menu
           </button>
           <button
             type="button"
             onClick={() => switchTab('notifications')}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'notifications' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap cursor-pointer transition-all ${
+              tab === 'notifications'
+                ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}>
             <Bell className="w-3.5 h-3.5" /> Notifications ({unreadCount})
           </button>
           <button
             type="button"
             onClick={() => switchTab('support')}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'support' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap cursor-pointer transition-all ${
+              tab === 'support'
+                ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}>
             <MessageSquare className="w-3.5 h-3.5" /> Support ({tickets.length})
           </button>
           <button
             type="button"
             onClick={() => switchTab('profile')}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer ${
-              tab === 'profile' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap cursor-pointer transition-all ${
+              tab === 'profile'
+                ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}>
             <User className="w-3.5 h-3.5" /> Edit Profile
           </button>
         </div>
 
-        {/* Overview List Cards matching Screenshot 4 */}
+        {/* Overview List Cards */}
         {tab === 'overview' && (
           <div className="space-y-3">
             <Link
               to="/orders"
-              className="rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs">
+              className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 flex items-center justify-between gap-4 hover:border-cyan-500 transition-colors shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
               <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                   <Package className="w-5 h-5" />
                 </div>
                 <div>
@@ -377,9 +385,9 @@ export function CustomerAccountPage() {
 
             <Link
               to="/codes"
-              className="rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs">
+              className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 flex items-center justify-between gap-4 hover:border-cyan-500 transition-colors shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
               <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                   <KeyRound className="w-5 h-5" />
                 </div>
                 <div>
@@ -395,9 +403,9 @@ export function CustomerAccountPage() {
             <button
               type="button"
               onClick={() => switchTab('notifications')}
-              className="w-full text-left rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs cursor-pointer">
+              className="w-full text-left rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 flex items-center justify-between gap-4 hover:border-cyan-500 transition-colors shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] cursor-pointer">
               <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                   <Bell className="w-5 h-5" />
                 </div>
                 <div>
@@ -413,9 +421,9 @@ export function CustomerAccountPage() {
             <button
               type="button"
               onClick={() => switchTab('support')}
-              className="w-full text-left rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-4 hover:border-cyan-400 transition-colors shadow-xs cursor-pointer">
+              className="w-full text-left rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 flex items-center justify-between gap-4 hover:border-cyan-500 transition-colors shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] cursor-pointer">
               <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
                   <MessageSquare className="w-5 h-5" />
                 </div>
                 <div>
@@ -434,15 +442,15 @@ export function CustomerAccountPage() {
         {tab === 'notifications' && (
           <div className="space-y-3">
             {notifications.length === 0 ? (
-              <div className="rounded-2xl bg-white border border-slate-200 p-10 text-center text-sm text-slate-500">
+              <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-10 text-center text-sm text-slate-500 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
                 No notifications yet.
               </div>
             ) : (
               notifications.map((n) => (
                 <div
                   key={n.id}
-                  className={`rounded-2xl border p-4 flex items-start justify-between gap-4 ${
-                    n.read ? 'bg-white border-slate-200' : 'bg-cyan-50/50 border-cyan-200'
+                  className={`rounded-2xl border-[1.5px] p-4 flex items-start justify-between gap-4 shadow-2xs ${
+                    n.read ? 'bg-white border-slate-200/95' : 'bg-cyan-50/50 border-cyan-300'
                   }`}>
                   <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
@@ -464,7 +472,7 @@ export function CustomerAccountPage() {
                     <button
                       type="button"
                       onClick={() => void handleMarkNotifRead(n)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 shrink-0 cursor-pointer">
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border-[1.5px] border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 shrink-0 cursor-pointer">
                       <Check className="w-3.5 h-3.5" /> Read
                     </button>
                   )}
@@ -478,7 +486,7 @@ export function CustomerAccountPage() {
         {tab === 'support' && (
           <div className="space-y-5">
             {(whatsappHref || telegramHref) && (
-              <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+              <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
                 <div>
                   <h2 className="text-sm font-bold text-slate-900">Instant Live Support</h2>
                   <p className="text-xs text-slate-500">Chat directly with our support team on WhatsApp or Telegram.</p>
@@ -489,7 +497,7 @@ export function CustomerAccountPage() {
                       href={whatsappHref}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors">
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 text-white text-xs font-bold transition-colors">
                       <WhatsAppIcon className="w-4 h-4" /> WhatsApp
                     </a>
                   )}
@@ -498,7 +506,7 @@ export function CustomerAccountPage() {
                       href={telegramHref}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold transition-colors">
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 border border-sky-600 text-white text-xs font-bold transition-colors">
                       <TelegramIcon className="w-4 h-4" /> Telegram
                     </a>
                   )}
@@ -508,8 +516,8 @@ export function CustomerAccountPage() {
 
             <form
               onSubmit={handleCreateTicket}
-              className="rounded-2xl bg-white border border-slate-200 p-5 space-y-4 shadow-xs">
-              <h2 className="text-base font-bold text-slate-900 font-display">
+              className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-5 space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+              <h2 className="text-base font-bold text-slate-900 font-display border-b border-slate-100 pb-2.5">
                 Open Support Ticket
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -522,7 +530,7 @@ export function CustomerAccountPage() {
                     value={ticketOrder}
                     onChange={(e) => setTicketOrder(e.target.value)}
                     placeholder="Enter Order Number"
-                    className="w-full px-3 py-2 text-sm font-mono uppercase rounded-xl border border-slate-300"
+                    className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                   />
                 </div>
                 <div>
@@ -535,7 +543,7 @@ export function CustomerAccountPage() {
                     value={ticketSubject}
                     onChange={(e) => setTicketSubject(e.target.value)}
                     placeholder="Describe your issue briefly"
-                    className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
+                    className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                   />
                 </div>
               </div>
@@ -549,7 +557,7 @@ export function CustomerAccountPage() {
                   value={ticketMessage}
                   onChange={(e) => setTicketMessage(e.target.value)}
                   placeholder="Include your Player UID or TrxID if applicable..."
-                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
+                  className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                 />
               </div>
               {ticketError && <p className="text-xs text-red-600">{ticketError}</p>}
@@ -560,19 +568,19 @@ export function CustomerAccountPage() {
               )}
               <button
                 type="submit"
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-sm font-semibold cursor-pointer">
                 <Send className="w-4 h-4" /> Submit Ticket
               </button>
             </form>
 
             <div className="space-y-3">
               {tickets.length === 0 ? (
-                <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center text-sm text-slate-500">
+                <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center text-sm text-slate-500 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
                   No support tickets submitted.
                 </div>
               ) : (
                 tickets.map((t) => (
-                  <div key={t.id} className="rounded-2xl bg-white border border-slate-200 p-5 space-y-3">
+                  <div key={t.id} className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-5 space-y-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-bold text-slate-900">{t.subject}</h3>
@@ -585,14 +593,14 @@ export function CustomerAccountPage() {
                         <button
                           type="button"
                           onClick={() => void handleCloseTicket(t)}
-                          className="px-3 py-1 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">
+                          className="px-3 py-1 rounded-lg border-[1.5px] border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">
                           Close
                         </button>
                       )}
                     </div>
                     <p className="text-sm text-slate-700 whitespace-pre-line">{t.message}</p>
                     {t.adminReply && (
-                      <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-1">
+                      <div className="rounded-xl bg-slate-50 border-[1.5px] border-slate-200/90 p-3.5 space-y-1">
                         <span className="text-xs font-semibold text-cyan-700 block">
                           Support Reply ({t.repliedBy || 'Admin'})
                         </span>
@@ -610,15 +618,17 @@ export function CustomerAccountPage() {
         {tab === 'profile' && (
           <form
             onSubmit={handleSaveProfile}
-            className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 space-y-4 shadow-xs">
-            <h2 className="text-base font-bold text-slate-900 font-display">Profile Settings</h2>
+            className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-5 sm:p-6 space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+            <h2 className="text-base font-bold text-slate-900 font-display border-b border-slate-100 pb-2.5">
+              Profile Settings
+            </h2>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Display Name</label>
               <input
                 type="text"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
               />
             </div>
             <div>
@@ -628,13 +638,13 @@ export function CustomerAccountPage() {
                 value={editPhone}
                 onChange={(e) => setEditPhone(e.target.value)}
                 placeholder="Enter phone number"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300"
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
               />
             </div>
             {profileMsg && <p className="text-xs text-emerald-700 font-medium">{profileMsg}</p>}
             <button
               type="submit"
-              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
+              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-sm font-semibold cursor-pointer">
               Save Profile
             </button>
           </form>

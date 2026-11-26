@@ -4,8 +4,9 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import dotenv from 'dotenv';
 import express, {type NextFunction, type Request, type Response} from 'express';
-import {getApp, getApps, initializeApp as initializeAdminApp} from 'firebase-admin/app';
+import {cert, getApp, getApps, initializeApp as initializeAdminApp, type ServiceAccount} from 'firebase-admin/app';
 import {getAuth as getAdminAuth} from 'firebase-admin/auth';
+import {FieldValue, getFirestore, type Firestore} from 'firebase-admin/firestore';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 
@@ -97,21 +98,76 @@ const FULL_PERMISSIONS: StaffPermissions = {
   settings: true,
 };
 
-function getFirebaseProjectId(): string | null {
+interface FirebaseAppletConfig {
+  projectId?: string;
+  firestoreDatabaseId?: string;
+}
+
+function loadFirebaseAppletConfig(): FirebaseAppletConfig {
   try {
-    if (!fs.existsSync(CONFIG_PATH)) return null;
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) as {projectId?: string};
-    if (!raw.projectId || raw.projectId === 'remixed-project-id') return null;
-    return raw.projectId;
+    if (!fs.existsSync(CONFIG_PATH)) return {};
+    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) as FirebaseAppletConfig;
+    if (!raw.projectId || raw.projectId === 'remixed-project-id') return {};
+    return raw;
   } catch {
+    return {};
+  }
+}
+
+function parseServiceAccountFromEnv(): (ServiceAccount & {project_id?: string}) | null {
+  const rawEnv = (process.env.FIREBASE_SERVICE_ACCOUNT || '').trim();
+  if (!rawEnv) return null;
+  try {
+    const jsonText = rawEnv.startsWith('{')
+      ? rawEnv
+      : Buffer.from(rawEnv, 'base64').toString('utf8');
+    const parsed = JSON.parse(jsonText) as ServiceAccount & {
+      project_id?: string;
+      private_key?: string;
+      client_email?: string;
+    };
+    if (!parsed || typeof parsed !== 'object' || !parsed.client_email || !parsed.private_key) {
+      return null;
+    }
+    if (typeof parsed.private_key === 'string') {
+      parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+    }
+    return parsed;
+  } catch (err) {
+    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT env var:', err instanceof Error ? err.message : err);
     return null;
   }
 }
 
-const firebaseProjectId = getFirebaseProjectId();
+const appletConfig = loadFirebaseAppletConfig();
+const serviceAccountCreds = parseServiceAccountFromEnv();
+const firebaseProjectId: string | null =
+  serviceAccountCreds?.project_id || appletConfig.projectId || null;
+const firestoreDatabaseId: string =
+  (process.env.FIREBASE_DATABASE_ID || appletConfig.firestoreDatabaseId || '').trim();
+
+let adminDb: Firestore | null = null;
+let firebaseInitMode: 'service_account' | 'project_config' | 'unconfigured' = 'unconfigured';
+
 if (firebaseProjectId) {
-  const adminApp = getApps().length ? getApp() : initializeAdminApp({projectId: firebaseProjectId});
-  void adminApp;
+  try {
+    const adminApp = getApps().length
+      ? getApp()
+      : serviceAccountCreds
+        ? initializeAdminApp({
+            credential: cert(serviceAccountCreds),
+            projectId: firebaseProjectId,
+          })
+        : initializeAdminApp({projectId: firebaseProjectId});
+
+    adminDb =
+      firestoreDatabaseId && firestoreDatabaseId !== '(default)'
+        ? getFirestore(adminApp, firestoreDatabaseId)
+        : getFirestore(adminApp);
+    firebaseInitMode = serviceAccountCreds ? 'service_account' : 'project_config';
+  } catch (err) {
+    console.error('Firebase Admin initialization error:', err instanceof Error ? err.message : err);
+  }
 }
 
 let cachedSessionSecret: string | null = null;
@@ -495,6 +551,1078 @@ function saveUploadedFile(file: Express.Multer.File): string {
   }
   fs.writeFileSync(targetPath, file.buffer);
   return `/uploads/${safeFilename}`;
+}
+
+function timingSafeEqualsText(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+interface ParsedSmsPayment {
+  amount: number;
+  trxId: string;
+  method: 'bKash' | 'Nagad';
+}
+
+function parsePaymentSms(rawText: string, hintSender?: string, hintMethod?: string): ParsedSmsPayment | null {
+  const normalized = rawText.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+
+  const combinedHints = `${hintSender || ''} ${hintMethod || ''} ${normalized}`.toLowerCase();
+  let method: 'bKash' | 'Nagad' | null = null;
+  if (combinedHints.includes('nagad')) {
+    method = 'Nagad';
+  } else if (combinedHints.includes('bkash')) {
+    method = 'bKash';
+  } else if (/\btxnid\b/i.test(normalized) || /\bmoney received\b/i.test(normalized)) {
+    method = 'Nagad';
+  } else if (/\btrxid\b/i.test(normalized)) {
+    method = 'bKash';
+  }
+
+  if (!method) return null;
+
+  const trxMatch = normalized.match(
+    /(?:trx\s*id|txnid|txn\s*id|transaction\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,32})/i,
+  );
+  if (!trxMatch || !trxMatch[1]) return null;
+  const trxId = trxMatch[1].replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
+  if (trxId.length < 4 || trxId.length > 64) return null;
+
+  // Prefer explicit transaction amount phrases before Fee/Balance fields
+  const sanitizedForFallback = normalized
+    .replace(/(?:fee|charge|balance|bal)\s*:?\s*(?:tk|bdt|৳)?\.?\s*[\d,]+(?:\.\d{1,2})?/gi, ' ');
+
+  const amountPatterns: RegExp[] = [
+    /(?:you have received|received|cash[\s-]*in|send\s*money|payment|amount)\s*:?\s*(?:tk|bdt|৳)\.?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /(?:tk|bdt|৳)\.?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:from|received|has been received|successful)/i,
+    /(?:tk|bdt|৳)\.?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /([\d,]+(?:\.\d{1,2})?)\s*(?:tk|bdt|taka)\b/i,
+  ];
+
+  let amount = 0;
+  for (let i = 0; i < amountPatterns.length; i++) {
+    const target = i >= 2 ? sanitizedForFallback : normalized;
+    const m = target.match(amountPatterns[i]);
+    if (m && m[1]) {
+      const parsed = Number.parseFloat(m[1].replace(/,/g, ''));
+      if (Number.isFinite(parsed) && parsed > 0 && parsed <= 10000000) {
+        amount = Number(parsed.toFixed(2));
+        break;
+      }
+    }
+  }
+
+  if (!(amount > 0)) return null;
+
+  return {amount, trxId, method};
+}
+
+async function dispatchDistributorIfEnabled(params: {
+  orderNumber: string;
+  productId: string;
+  productName: string;
+  packageId: string;
+  packageName: string;
+  playerUid: string;
+  amount: number;
+}): Promise<{dispatched: boolean; statusText?: string}> {
+  const store = readStore();
+  const s = store.systemSettings;
+  if (!s.distributorEnabled || !s.distributorBaseUrl || !s.distributorApiKey) {
+    return {dispatched: false};
+  }
+
+  try {
+    const parsedUrl = new URL(s.distributorBaseUrl);
+    if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+      return {dispatched: false, statusText: 'Invalid distributor URL protocol'};
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    const res = await fetch(`${parsedUrl.toString().replace(/\/$/, '')}/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${s.distributorApiKey}`,
+        'X-Merchant-Id': s.distributorMerchantId || '',
+      },
+      body: JSON.stringify({
+        orderNumber: params.orderNumber,
+        productId: params.productId,
+        productName: params.productName,
+        packageId: params.packageId,
+        packageName: params.packageName,
+        playerUid: params.playerUid,
+        amount: params.amount,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    appendServerLog(
+      store,
+      'telegram_bot',
+      res.ok ? 'DISTRIBUTOR_DISPATCHED' : 'DISTRIBUTOR_FAILED',
+      `Order ${params.orderNumber} -> HTTP ${res.status}`,
+    );
+    writeStore(store);
+    return {dispatched: res.ok, statusText: `HTTP ${res.status}`};
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    appendServerLog(store, 'telegram_bot', 'DISTRIBUTOR_ERROR', `Order ${params.orderNumber}: ${msg}`);
+    writeStore(store);
+    return {dispatched: false, statusText: msg};
+  }
+}
+
+interface BotPackageOption {
+  index: number;
+  productId: string;
+  productName: string;
+  productImage: string;
+  packageId: string;
+  packageName: string;
+  quantityLabel: string;
+  price: number;
+}
+
+interface BotSession {
+  step: 'AWAITING_PACKAGE' | 'AWAITING_UID' | 'AWAITING_TRXID';
+  options?: BotPackageOption[];
+  selected?: BotPackageOption;
+  playerUid?: string;
+  customerName: string;
+  updatedAt: number;
+}
+
+interface TelegramUpdate {
+  update_id: number;
+  business_message?: TelegramMessage;
+  message?: TelegramMessage;
+}
+
+interface TelegramMessage {
+  message_id: number;
+  business_connection_id?: string;
+  from?: {
+    id: number;
+    is_bot?: boolean;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+  };
+  chat: {
+    id: number;
+    type?: string;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+  };
+  text?: string;
+}
+
+interface TelegramBotState {
+  running: boolean;
+  username: string;
+  lastError: string;
+  lastPollAt: string;
+  processedUpdates: number;
+}
+
+const telegramBotState: TelegramBotState = {
+  running: false,
+  username: '',
+  lastError: '',
+  lastPollAt: '',
+  processedUpdates: 0,
+};
+
+const botSessions = new Map<string, BotSession>();
+const BOT_SESSION_TTL_MS = 30 * 60 * 1000;
+
+function cleanupExpiredBotSessions(): void {
+  const cutoff = Date.now() - BOT_SESSION_TTL_MS;
+  for (const [key, sess] of botSessions.entries()) {
+    if (sess.updatedAt < cutoff) {
+      botSessions.delete(key);
+    }
+  }
+}
+
+async function callTelegramApi<T>(
+  token: string,
+  method: string,
+  payload?: Record<string, unknown>,
+  timeoutMs = 35000,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: payload ? 'POST' : 'GET',
+      headers: payload ? {'Content-Type': 'application/json'} : undefined,
+      body: payload ? JSON.stringify(payload) : undefined,
+      signal: controller.signal,
+    });
+    const json = (await res.json()) as {ok: boolean; result?: T; description?: string; error_code?: number};
+    if (!res.ok || !json.ok) {
+      const err = new Error(json.description || `Telegram API ${method} HTTP ${res.status}`) as Error & {
+        statusCode?: number;
+      };
+      err.statusCode = json.error_code || res.status;
+      throw err;
+    }
+    return json.result as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function sendTelegramReply(
+  token: string,
+  chatId: number,
+  text: string,
+  businessConnectionId?: string,
+): Promise<void> {
+  // Split messages safely under Telegram's 4096 char limit
+  const chunks: string[] = [];
+  let remaining = text.trim();
+  while (remaining.length > 3800) {
+    let splitIdx = remaining.lastIndexOf('\n', 3800);
+    if (splitIdx < 500) splitIdx = 3800;
+    chunks.push(remaining.slice(0, splitIdx));
+    remaining = remaining.slice(splitIdx).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+
+  for (const chunk of chunks) {
+    const payload: Record<string, unknown> = {
+      chat_id: chatId,
+      text: chunk,
+    };
+    if (businessConnectionId) {
+      payload.business_connection_id = businessConnectionId;
+    }
+    await callTelegramApi(token, 'sendMessage', payload, 15000);
+  }
+}
+
+const telegramChatRoutes = new Map<string, {chatId: number; businessConnectionId?: string}>();
+
+async function saveTelegramChatRoute(
+  customerUid: string,
+  chatId: number,
+  businessConnectionId: string | undefined,
+  customerName: string,
+): Promise<void> {
+  if (!customerUid || !Number.isFinite(chatId)) return;
+  telegramChatRoutes.set(customerUid, {chatId, businessConnectionId});
+  if (!adminDb) return;
+  try {
+    await adminDb.collection('telegram_chats').doc(customerUid).set(
+      {
+        customerUid,
+        chatId,
+        businessConnectionId: businessConnectionId || '',
+        customerName: customerName.slice(0, 100),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+  } catch {
+    // Non-fatal: in-memory route remains active
+  }
+}
+
+async function resolveTelegramDestination(
+  customerUid?: string,
+  explicitChatId?: number | string,
+  explicitBusinessConnId?: string,
+): Promise<{chatId: number | null; businessConnectionId?: string}> {
+  let chatId: number | null = null;
+  let businessConnectionId = explicitBusinessConnId?.trim() || undefined;
+
+  if (explicitChatId !== undefined && explicitChatId !== null && String(explicitChatId).trim() !== '') {
+    const parsed = Number(explicitChatId);
+    if (Number.isSafeInteger(parsed) && parsed !== 0) {
+      chatId = parsed;
+    }
+  }
+
+  const cleanUid = (customerUid || '').trim();
+  if (!chatId && cleanUid) {
+    const uidMatch = cleanUid.match(/^tg_(-?\d+)$/);
+    if (uidMatch?.[1]) {
+      const parsed = Number(uidMatch[1]);
+      if (Number.isSafeInteger(parsed) && parsed !== 0) {
+        chatId = parsed;
+      }
+    }
+  }
+
+  if (cleanUid) {
+    const cached = telegramChatRoutes.get(cleanUid);
+    if (cached) {
+      if (!chatId) chatId = cached.chatId;
+      if (!businessConnectionId && cached.businessConnectionId) {
+        businessConnectionId = cached.businessConnectionId;
+      }
+    }
+    if ((!chatId || !businessConnectionId) && adminDb) {
+      try {
+        const snap = await adminDb.collection('telegram_chats').doc(cleanUid).get();
+        if (snap.exists) {
+          const data = snap.data() as {chatId?: number; businessConnectionId?: string};
+          if (!chatId && typeof data.chatId === 'number' && Number.isSafeInteger(data.chatId)) {
+            chatId = data.chatId;
+          }
+          if (!businessConnectionId && typeof data.businessConnectionId === 'string' && data.businessConnectionId.trim()) {
+            businessConnectionId = data.businessConnectionId.trim();
+          }
+          if (chatId) {
+            telegramChatRoutes.set(cleanUid, {chatId, businessConnectionId});
+          }
+        }
+      } catch {
+        // Ignore Firestore lookup error and fall back to parsed tg_<chatId>
+      }
+    }
+  }
+
+  return {chatId, businessConnectionId};
+}
+
+export interface OrderStatusTelegramPayload {
+  orderNumber: string;
+  orderStatus: 'pending' | 'processing' | 'completed' | 'cancelled';
+  paymentStatus?: 'pending' | 'verified' | 'rejected';
+  productName: string;
+  packageName: string;
+  playerUid?: string;
+  totalAmount?: number;
+  paymentMethodName?: string;
+  trxId?: string;
+  voucherCode?: string;
+  note?: string;
+  customerUid?: string;
+  chatId?: number | string;
+  businessConnectionId?: string;
+}
+
+export async function sendTelegramOrderStatusUpdate(
+  params: OrderStatusTelegramPayload,
+): Promise<{sent: boolean; skipped?: boolean; reason?: string}> {
+  const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  if (!token) {
+    return {sent: false, skipped: true, reason: 'TELEGRAM_BOT_TOKEN is not configured'};
+  }
+
+  const dest = await resolveTelegramDestination(
+    params.customerUid,
+    params.chatId,
+    params.businessConnectionId,
+  );
+  if (!dest.chatId) {
+    return {sent: false, skipped: true, reason: 'No Telegram chat associated with this customer'};
+  }
+
+  let headline = '🔔 আপনার অর্ডারের স্ট্যাটাস আপডেট করা হয়েছে';
+  let statusBadge: string = params.orderStatus;
+
+  if (params.orderStatus === 'completed') {
+    headline =
+      params.paymentStatus === 'verified' && params.trxId
+        ? '🎉 আপনার পেমেন্ট ভেরিফাই হয়েছে এবং অর্ডার সফলভাবে সম্পন্ন হয়েছে!'
+        : '✅ আপনার অর্ডার সফলভাবে সম্পন্ন (Completed) হয়েছে!';
+    statusBadge = 'Completed ✅';
+  } else if (params.orderStatus === 'processing') {
+    headline =
+      params.paymentStatus === 'verified'
+        ? '💳 পেমেন্ট ভেরিফাই সম্পন্ন! আপনার টপ-আপ এখন প্রসেসিং হচ্ছে।'
+        : '⏳ আপনার অর্ডারটি প্রসেসিং (Processing) অবস্থায় রয়েছে।';
+    statusBadge = 'Processing ⏳';
+  } else if (params.orderStatus === 'cancelled') {
+    headline =
+      params.paymentStatus === 'rejected'
+        ? '❌ আপনার পেমেন্ট বাতিল/রিজেক্ট হওয়ায় অর্ডারটি ক্যানসেল করা হয়েছে।'
+        : '❌ আপনার অর্ডারটি ক্যানসেল (Cancelled) করা হয়েছে।';
+    statusBadge = 'Cancelled ❌';
+  } else if (params.orderStatus === 'pending') {
+    headline = '🕒 আপনার অর্ডারটি পেন্ডিং রিভিউতে রয়েছে।';
+    statusBadge = 'Pending 🕒';
+  }
+
+  const lines: string[] = [
+    headline,
+    '',
+    '🧾 অর্ডার বিবরণ:',
+    `• অর্ডার নম্বর: ${params.orderNumber}`,
+    `• প্রোডাক্ট: ${params.productName}`,
+    `• প্যাকেজ: ${params.packageName}`,
+  ];
+
+  if (params.playerUid) {
+    lines.push(`• Player UID: ${params.playerUid}`);
+  }
+  if (params.paymentMethodName) {
+    lines.push(`• পেমেন্ট মাধ্যম: ${params.paymentMethodName}`);
+  }
+  if (params.trxId) {
+    lines.push(`• TrxID: ${params.trxId}`);
+  }
+  if (typeof params.totalAmount === 'number' && params.totalAmount > 0) {
+    lines.push(`• মূল্য: ৳${params.totalAmount}`);
+  }
+  lines.push(`• স্ট্যাটাস: ${statusBadge}`);
+
+  if (params.voucherCode && params.voucherCode.trim()) {
+    lines.push('');
+    lines.push(`🔑 রিডিম / ভাউচার কোড:\n${params.voucherCode.trim()}`);
+  }
+  if (params.note && params.note.trim()) {
+    lines.push('');
+    lines.push(`💬 বার্তা: ${params.note.trim()}`);
+  }
+
+  lines.push('');
+  if (params.orderStatus === 'completed') {
+    lines.push('আমাদের সাথে থাকার জন্য ধন্যবাদ! নতুন অর্ডার করতে "অর্ডার" লিখুন।');
+  } else {
+    lines.push('যেকোনো সহায়তার জন্য এখানে মেসেজ করুন অথবা "অর্ডার" লিখে নতুন অর্ডার শুরু করুন।');
+  }
+
+  const messageText = lines.join('\n');
+
+  try {
+    await sendTelegramReply(token, dest.chatId, messageText, dest.businessConnectionId);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // If business connection expired/invalid, try direct DM fallback once
+    if (dest.businessConnectionId && /business_connection/i.test(errMsg)) {
+      try {
+        await sendTelegramReply(token, dest.chatId, messageText);
+      } catch (fallbackErr) {
+        const fbMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        const store = readStore();
+        appendServerLog(
+          store,
+          'telegram_bot',
+          'TELEGRAM_ORDER_NOTIFY_FAILED',
+          `Order ${params.orderNumber}: ${fbMsg}`,
+        );
+        writeStore(store);
+        return {sent: false, reason: fbMsg};
+      }
+    } else {
+      const store = readStore();
+      appendServerLog(
+        store,
+        'telegram_bot',
+        'TELEGRAM_ORDER_NOTIFY_FAILED',
+        `Order ${params.orderNumber}: ${errMsg}`,
+      );
+      writeStore(store);
+      return {sent: false, reason: errMsg};
+    }
+  }
+
+  const store = readStore();
+  appendServerLog(
+    store,
+    'telegram_bot',
+    'TELEGRAM_ORDER_NOTIFY_SENT',
+    `Order ${params.orderNumber} (${params.orderStatus}) notified to chat ${dest.chatId}`,
+  );
+  writeStore(store);
+  return {sent: true};
+}
+
+async function fetchActiveRateOptions(): Promise<BotPackageOption[]> {
+  if (!adminDb) {
+    throw new Error('Firestore Admin database is not configured');
+  }
+  const snap = await adminDb.collection('products').where('active', '==', true).get();
+  const products = snap.docs
+    .map((d) => d.data() as {
+      id?: string;
+      name?: string;
+      images?: string[];
+      displayOrder?: number;
+      packages?: Array<{
+        id?: string;
+        name?: string;
+        quantityLabel?: string;
+        price?: number;
+        active?: boolean;
+        displayOrder?: number;
+      }>;
+    })
+    .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0));
+
+  const options: BotPackageOption[] = [];
+  let idx = 1;
+  for (const p of products) {
+    const productId = String(p.id || '').trim();
+    const productName = String(p.name || 'Product').trim();
+    const productImage = Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : '';
+    const pkgs = Array.isArray(p.packages)
+      ? [...p.packages]
+          .filter((pkg) => pkg && pkg.active !== false && Number(pkg.price) > 0)
+          .sort((a, b) => Number(a.displayOrder ?? 0) - Number(b.displayOrder ?? 0))
+      : [];
+    for (const pkg of pkgs) {
+      options.push({
+        index: idx++,
+        productId,
+        productName,
+        productImage,
+        packageId: String(pkg.id || `pkg_${idx}`),
+        packageName: String(pkg.name || pkg.quantityLabel || 'Package').trim(),
+        quantityLabel: String(pkg.quantityLabel || pkg.name || '').trim(),
+        price: Number(pkg.price),
+      });
+    }
+  }
+  return options;
+}
+
+async function resolveBotPaymentNumbers(): Promise<{bkashNumber: string; nagadNumber: string}> {
+  let bkashNumber = (process.env.BKASH_NUMBER || '').trim();
+  let nagadNumber = (process.env.NAGAD_NUMBER || '').trim();
+
+  if ((!bkashNumber || !nagadNumber) && adminDb) {
+    try {
+      const snap = await adminDb.collection('paymentMethods').where('active', '==', true).get();
+      for (const docSnap of snap.docs) {
+        const d = docSnap.data() as {name?: string; accountNumber?: string};
+        const nameLower = String(d.name || '').toLowerCase();
+        if (!bkashNumber && nameLower.includes('bkash') && d.accountNumber) {
+          bkashNumber = String(d.accountNumber).trim();
+        }
+        if (!nagadNumber && nameLower.includes('nagad') && d.accountNumber) {
+          nagadNumber = String(d.accountNumber).trim();
+        }
+      }
+    } catch {
+      // keep env values
+    }
+  }
+
+  return {bkashNumber, nagadNumber};
+}
+
+function isRateListTrigger(text: string): boolean {
+  const lower = text.toLowerCase();
+  const keywords = [
+    'দাম কত',
+    'দাম',
+    'লিস্ট',
+    'রেট',
+    'price',
+    'list',
+    'অর্ডার',
+    'টপআপ',
+    'টপ আপ',
+    'order',
+    'topup',
+    'rate',
+  ];
+  return keywords.some((kw) => lower.includes(kw));
+}
+
+function isCancelCommand(text: string): boolean {
+  const lower = text.trim().toLowerCase();
+  return lower === 'বাতিল' || lower === 'cancel' || lower === '/cancel' || lower === '/reset';
+}
+
+async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage): Promise<void> {
+  const rawText = (msg.text || '').trim();
+  if (!rawText) return;
+
+  cleanupExpiredBotSessions();
+
+  const chatId = msg.chat.id;
+  const businessConnectionId = msg.business_connection_id;
+  const sessionKey = `${businessConnectionId || 'dm'}:${chatId}`;
+  const customerName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ').trim() ||
+    msg.from?.username ||
+    `Telegram User ${chatId}`;
+  const tgUidForRoute = `tg_${chatId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+  void saveTelegramChatRoute(tgUidForRoute, chatId, businessConnectionId, customerName);
+
+  if (isCancelCommand(rawText)) {
+    botSessions.delete(sessionKey);
+    await sendTelegramReply(
+      token,
+      chatId,
+      '✅ আপনার চলমান অর্ডার প্রক্রিয়া বাতিল করা হয়েছে।\n\nনতুন অর্ডার করতে "দাম কত" অথবা "অর্ডার" লিখুন।',
+      businessConnectionId,
+    );
+    return;
+  }
+
+  if (isRateListTrigger(rawText)) {
+    try {
+      const options = await fetchActiveRateOptions();
+      if (options.length === 0) {
+        await sendTelegramReply(
+          token,
+          chatId,
+          '😔 দুঃখিত, এই মুহূর্তে কোনো অ্যাক্টিভ প্যাকেজ পাওয়া যায়নি। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।',
+          businessConnectionId,
+        );
+        return;
+      }
+
+      const lines: string[] = ['💎 আজকের টপআপ ও ডায়মন্ড রেট লিস্ট:', ''];
+      let lastProduct = '';
+      for (const opt of options) {
+        if (opt.productName !== lastProduct) {
+          if (lastProduct) lines.push('');
+          lines.push(`🎮 ${opt.productName}`);
+          lastProduct = opt.productName;
+        }
+        lines.push(`${opt.index}. ${opt.packageName} — ৳${opt.price}`);
+      }
+      lines.push('');
+      lines.push('👉 অর্ডার করতে পছন্দের প্যাকেজের নম্বর (যেমন: 1) লিখে পাঠান।');
+      lines.push('❌ বাতিল করতে "বাতিল" লিখুন।');
+
+      botSessions.set(sessionKey, {
+        step: 'AWAITING_PACKAGE',
+        options,
+        customerName,
+        updatedAt: Date.now(),
+      });
+
+      await sendTelegramReply(token, chatId, lines.join('\n'), businessConnectionId);
+    } catch (err) {
+      console.error('Telegram rate list error:', err instanceof Error ? err.message : err);
+      await sendTelegramReply(
+        token,
+        chatId,
+        '⚠️ এই মুহূর্তে প্যাকেজ লিস্ট লোড করা যাচ্ছে না। অনুগ্রহ করে একটু পর আবার "দাম কত" লিখুন অথবা আমাদের ওয়েবসাইট থেকে অর্ডার করুন।',
+        businessConnectionId,
+      );
+    }
+    return;
+  }
+
+  const session = botSessions.get(sessionKey);
+
+  if (session?.step === 'AWAITING_PACKAGE' && session.options) {
+    const cleanedNum = rawText.replace(/^#/, '').trim();
+    if (!/^\d{1,3}$/.test(cleanedNum)) {
+      await sendTelegramReply(
+        token,
+        chatId,
+        `❌ অনুগ্রহ করে তালিকা থেকে সঠিক প্যাকেজের নম্বর (১ থেকে ${session.options.length}) লিখে পাঠান।\nনতুন লিস্ট দেখতে "দাম কত" লিখুন।`,
+        businessConnectionId,
+      );
+      return;
+    }
+    const idx = Number.parseInt(cleanedNum, 10);
+    const selected = session.options.find((o) => o.index === idx);
+    if (!selected) {
+      await sendTelegramReply(
+        token,
+        chatId,
+        `❌ ${idx} নম্বরে কোনো প্যাকেজ নেই। ১ থেকে ${session.options.length} এর মধ্যে একটি নম্বর দিন।`,
+        businessConnectionId,
+      );
+      return;
+    }
+
+    session.selected = selected;
+    session.step = 'AWAITING_UID';
+    session.updatedAt = Date.now();
+    botSessions.set(sessionKey, session);
+
+    await sendTelegramReply(
+      token,
+      chatId,
+      [
+        '✅ আপনি সিলেক্ট করেছেন:',
+        `🎮 প্রোডাক্ট: ${selected.productName}`,
+        `💎 প্যাকেজ: ${selected.packageName}`,
+        `💰 মূল্য: ৳${selected.price}`,
+        '',
+        '👉 এখন আপনার গেম Player UID (৫ থেকে ১৫ ডিজিটের সংখ্যা) লিখে পাঠান:',
+      ].join('\n'),
+      businessConnectionId,
+    );
+    return;
+  }
+
+  if (session?.step === 'AWAITING_UID' && session.selected) {
+    const uidClean = rawText.replace(/\s+/g, '');
+    if (!/^\d{5,15}$/.test(uidClean)) {
+      await sendTelegramReply(
+        token,
+        chatId,
+        '❌ ভুল Player UID! অনুগ্রহ করে শুধুমাত্র ৫ থেকে ১৫ ডিজিটের সঠিক গেম UID পাঠান (যেমন: 123456789)।',
+        businessConnectionId,
+      );
+      return;
+    }
+
+    session.playerUid = uidClean;
+    session.step = 'AWAITING_TRXID';
+    session.updatedAt = Date.now();
+    botSessions.set(sessionKey, session);
+
+    const {bkashNumber, nagadNumber} = await resolveBotPaymentNumbers();
+    const paymentLines: string[] = [];
+    if (bkashNumber) paymentLines.push(`• bKash (Send Money): ${bkashNumber}`);
+    if (nagadNumber) paymentLines.push(`• Nagad (Send Money): ${nagadNumber}`);
+    if (paymentLines.length === 0) {
+      paymentLines.push('• পেমেন্ট নম্বর এখনো সেট করা হয়নি — এডমিনের সাথে যোগাযোগ করুন।');
+    }
+
+    await sendTelegramReply(
+      token,
+      chatId,
+      [
+        '📋 অর্ডার সামারি:',
+        `🎮 প্রোডাক্ট: ${session.selected.productName}`,
+        `💎 প্যাকেজ: ${session.selected.packageName}`,
+        `🆔 Player UID: ${uidClean}`,
+        `💰 মোট মূল্য: ৳${session.selected.price}`,
+        '',
+        '💳 নিচের যেকোনো নম্বরে Send Money করুন:',
+        ...paymentLines,
+        '',
+        `উপরের নম্বরে ঠিক ৳${session.selected.price} Send Money করে শুধুমাত্র আপনার Transaction ID (TrxID) লিখে পাঠান।`,
+        '(যেমন: 9B4X2K7M1P)',
+      ].join('\n'),
+      businessConnectionId,
+    );
+    return;
+  }
+
+  if (session?.step === 'AWAITING_TRXID' && session.selected && session.playerUid) {
+    if (!adminDb) {
+      await sendTelegramReply(
+        token,
+        chatId,
+        '⚠️ পেমেন্ট ভেরিফিকেশন সিস্টেম সাময়িকভাবে অনুপলব্ধ। অনুগ্রহ করে একটু পর আবার চেষ্টা করুন।',
+        businessConnectionId,
+      );
+      return;
+    }
+
+    // Extract TrxID whether user sends bare TrxID or copies "TrxID: ABC123"
+    const embeddedMatch = rawText.match(
+      /(?:trx\s*id|txnid|txn\s*id)\s*[:#\-]?\s*([a-zA-Z0-9_-]{4,64})/i,
+    );
+    const candidate = embeddedMatch?.[1] ? embeddedMatch[1] : rawText.trim();
+    const trxId = candidate.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase();
+
+    if (trxId.length < 4 || trxId.length > 64 || /\s/.test(candidate.trim())) {
+      await sendTelegramReply(
+        token,
+        chatId,
+        '❌ অনুগ্রহ করে শুধুমাত্র সঠিক Transaction ID (TrxID) লিখে পাঠান (যেমন: 9B4X2K7M1P)।',
+        businessConnectionId,
+      );
+      return;
+    }
+
+    const selected = session.selected;
+    const playerUid = session.playerUid;
+    const tgUid = `tg_${chatId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+
+    try {
+      const outcome = await adminDb.runTransaction(async (tx) => {
+        const smsRef = adminDb!.collection('sms_payments').doc(trxId);
+        const smsSnap = await tx.get(smsRef);
+
+        if (!smsSnap.exists) {
+          return {ok: false as const, code: 'NOT_FOUND' as const};
+        }
+
+        const smsData = smsSnap.data() as {
+          amount?: number;
+          method?: string;
+          used?: boolean;
+        };
+
+        if (smsData.used === true) {
+          return {ok: false as const, code: 'ALREADY_USED' as const};
+        }
+
+        const paidAmount = Number(smsData.amount || 0);
+        if (paidAmount < selected.price) {
+          return {
+            ok: false as const,
+            code: 'INSUFFICIENT_AMOUNT' as const,
+            receivedAmount: paidAmount,
+          };
+        }
+
+        const methodName = smsData.method === 'Nagad' ? 'Nagad' : 'bKash';
+        const methodId = methodName.toLowerCase();
+        const trxKey = `${methodId}_${trxId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+        const trxRegRef = adminDb!.collection('trxRegistry').doc(trxKey);
+        const trxRegSnap = await tx.get(trxRegRef);
+        if (trxRegSnap.exists) {
+          return {ok: false as const, code: 'ALREADY_USED' as const};
+        }
+
+        const orderId = `ord_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+        const orderNumber = `SV-${Math.floor(100000 + Math.random() * 900000)}`;
+        const now = FieldValue.serverTimestamp();
+        const maskedUid =
+          playerUid.length > 4 ? `${playerUid.slice(0, 2)}***${playerUid.slice(-2)}` : playerUid;
+
+        tx.update(smsRef, {
+          used: true,
+          usedAt: now,
+          usedOrderNumber: orderNumber,
+        });
+
+        tx.set(adminDb!.collection('orders').doc(orderId), {
+          id: orderId,
+          orderNumber,
+          customerUid: tgUid,
+          customerName: customerName.slice(0, 100) || `Telegram User ${chatId}`,
+          customerEmail: '',
+          customerPhone: tgUid.slice(0, 30),
+          productId: selected.productId,
+          productName: selected.productName.slice(0, 120),
+          productImage: selected.productImage.slice(0, 1000),
+          packageId: selected.packageId,
+          packageName: selected.packageName.slice(0, 120),
+          quantityLabel: (selected.quantityLabel || selected.packageName).slice(0, 80),
+          unitPrice: selected.price,
+          totalAmount: selected.price,
+          playerUid,
+          serverId: '',
+          paymentType: 'manual',
+          paymentMethodId: methodId,
+          paymentMethodName: methodName,
+          senderNumber: 'Telegram',
+          trxId,
+          trxKey,
+          screenshotUrl: '',
+          voucherCode: '',
+          walletRefunded: false,
+          paymentStatus: 'verified',
+          orderStatus: 'completed',
+          adminNote: `Auto-verified via ${methodName} SMS (৳${paidAmount}) on Telegram Business Bot`,
+          notificationMessage: 'Payment verified automatically via Telegram Business Bot. Order completed!',
+          createdAt: now,
+          updatedAt: now,
+          completedAt: now,
+        });
+
+        tx.set(adminDb!.collection('orderTracking').doc(orderNumber), {
+          orderNumber,
+          productName: selected.productName.slice(0, 120),
+          packageName: selected.packageName.slice(0, 120),
+          playerUidMasked: maskedUid,
+          paymentStatus: 'verified',
+          orderStatus: 'completed',
+          notificationMessage: 'Payment verified automatically via Telegram Business Bot. Order completed!',
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        tx.set(trxRegRef, {
+          trxKey,
+          trxId,
+          orderId,
+          customerUid: tgUid,
+          paymentMethodId: methodId,
+          amount: selected.price,
+          status: 'verified',
+          createdAt: now,
+        });
+
+        return {
+          ok: true as const,
+          orderId,
+          orderNumber,
+          methodName,
+          paidAmount,
+        };
+      });
+
+      if (!outcome.ok) {
+        if (outcome.code === 'NOT_FOUND') {
+          await sendTelegramReply(
+            token,
+            chatId,
+            `❌ দুঃখিত! "${trxId}" ট্রানজ্যাকশন আইডিটি এখনো আমাদের সিস্টেমে পাওয়া যায়নি।\n\nটাকা পাঠিয়ে থাকলে ১০-১৫ সেকেন্ড অপেক্ষা করে সঠিক TrxID টি আবার পাঠান।`,
+            businessConnectionId,
+          );
+        } else if (outcome.code === 'ALREADY_USED') {
+          await sendTelegramReply(
+            token,
+            chatId,
+            `⚠️ এই TrxID (${trxId}) ইতিমধ্যেই অন্য অর্ডারে ব্যবহার করা হয়েছে। অনুগ্রহ করে নতুন পেমেন্টের সঠিক TrxID পাঠান।`,
+            businessConnectionId,
+          );
+        } else {
+          await sendTelegramReply(
+            token,
+            chatId,
+            `❌ পাঠানো টাকার পরিমাণ (৳${outcome.receivedAmount}) প্যাকেজের মূল্যের (৳${selected.price}) চেয়ে কম! অনুগ্রহ করে সঠিক পরিমাণ টাকা পাঠিয়ে নতুন TrxID দিন।`,
+            businessConnectionId,
+          );
+        }
+        return;
+      }
+
+      botSessions.delete(sessionKey);
+
+      const distResult = await dispatchDistributorIfEnabled({
+        orderNumber: outcome.orderNumber,
+        productId: selected.productId,
+        productName: selected.productName,
+        packageId: selected.packageId,
+        packageName: selected.packageName,
+        playerUid,
+        amount: selected.price,
+      });
+
+      const store = readStore();
+      appendServerLog(
+        store,
+        'telegram_bot',
+        'TELEGRAM_AUTO_ORDER',
+        `Order ${outcome.orderNumber} completed via ${outcome.methodName} TrxID ${trxId} (৳${selected.price})`,
+      );
+      writeStore(store);
+
+      await sendAdminNotificationEmail(
+        `Telegram Auto-Order ${outcome.orderNumber} — ${selected.productName}`,
+        [
+          {label: 'Order Number', value: outcome.orderNumber},
+          {label: 'Source', value: 'Telegram Business Bot (Auto-Verified)'},
+          {label: 'Product', value: selected.productName},
+          {label: 'Package', value: selected.packageName},
+          {label: 'Order Amount', value: `৳${selected.price}`},
+          {label: 'SMS Verified Paid', value: `৳${outcome.paidAmount} (${outcome.methodName})`},
+          {label: 'TrxID', value: trxId},
+          {label: 'Player UID', value: playerUid},
+          {label: 'Customer', value: `${customerName} (${tgUid})`},
+          {
+            label: 'Distributor API',
+            value: distResult.dispatched ? `Dispatched (${distResult.statusText})` : 'Not enabled / Manual',
+          },
+          {label: 'Order Status', value: 'completed'},
+          {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
+        ],
+        'telegram_bot',
+      );
+
+      await sendTelegramOrderStatusUpdate({
+        orderNumber: outcome.orderNumber,
+        orderStatus: 'completed',
+        paymentStatus: 'verified',
+        productName: selected.productName,
+        packageName: selected.packageName,
+        playerUid,
+        totalAmount: selected.price,
+        paymentMethodName: outcome.methodName,
+        trxId,
+        customerUid: tgUid,
+        chatId,
+        businessConnectionId,
+      });
+    } catch (err) {
+      console.error('Telegram auto-order verification error:', err instanceof Error ? err.message : err);
+      await sendTelegramReply(
+        token,
+        chatId,
+        '⚠️ অর্ডার প্রসেস করার সময় সমস্যা হয়েছে। অনুগ্রহ করে কিছুক্ষণ পর আবার TrxID পাঠান অথবা এডমিনের সাথে যোগাযোগ করুন।',
+        businessConnectionId,
+      );
+    }
+    return;
+  }
+
+  // Fallback polite Bengali greeting
+  await sendTelegramReply(
+    token,
+    chatId,
+    [
+      '👋 আসসালামু আলাইকুম! আমাদের অটোমেটেড টপআপ সার্ভিসে স্বাগতম।',
+      '',
+      '💎 আজকের ডায়মন্ড ও প্যাকেজের রেট লিস্ট দেখতে এবং অর্ডার করতে অনুগ্রহ করে "দাম কত" অথবা "অর্ডার" লিখে পাঠান।',
+    ].join('\n'),
+    businessConnectionId,
+  );
+}
+
+function startTelegramBusinessBot(): void {
+  const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  if (!token) {
+    telegramBotState.running = false;
+    return;
+  }
+
+  telegramBotState.running = true;
+  let offset = 0;
+
+  const runLoop = async () => {
+    try {
+      const me = await callTelegramApi<{id: number; username?: string}>(token, 'getMe', undefined, 15000);
+      telegramBotState.username = me.username || '';
+      console.log(`Telegram Business Bot active (@${telegramBotState.username || 'bot'})`);
+    } catch (err) {
+      telegramBotState.lastError = err instanceof Error ? err.message : String(err);
+      console.error('Telegram Bot getMe failed:', telegramBotState.lastError);
+    }
+
+    let backoffMs = 2000;
+    while (telegramBotState.running) {
+      try {
+        const updates = await callTelegramApi<TelegramUpdate[]>(
+          token,
+          'getUpdates',
+          {
+            offset,
+            timeout: 25,
+            allowed_updates: ['business_message', 'message'],
+          },
+          35000,
+        );
+        telegramBotState.lastPollAt = new Date().toISOString();
+        telegramBotState.lastError = '';
+        backoffMs = 2000;
+
+        for (const upd of updates) {
+          offset = Math.max(offset, upd.update_id + 1);
+          const msg = upd.business_message || upd.message;
+          if (!msg || !msg.text) continue;
+          if (msg.from?.is_bot) continue;
+          // In Telegram Business chats, only respond to incoming customer messages (not business owner's own replies)
+          if (msg.business_connection_id && msg.from?.id && msg.from.id !== msg.chat.id) {
+            continue;
+          }
+          telegramBotState.processedUpdates += 1;
+          await handleTelegramCustomerMessage(token, msg);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const statusCode = (err as {statusCode?: number}).statusCode;
+        telegramBotState.lastError = msg;
+        if (statusCode === 409) {
+          // Another instance is polling during deploy overlap; wait cleanly
+          await new Promise((r) => setTimeout(r, 5000));
+        } else {
+          await new Promise((r) => setTimeout(r, backoffMs));
+          backoffMs = Math.min(backoffMs * 2, 15000);
+        }
+      }
+    }
+  };
+
+  void runLoop();
 }
 
 async function startServer(): Promise<void> {
@@ -1076,6 +2204,163 @@ async function startServer(): Promise<void> {
     res.json({ok: true, toEmail: result.toEmail});
   });
 
+  // Automated SMS Payment Webhook (bKash / Nagad Android SMS Forwarder -> Firestore sms_payments/{trxId})
+  app.post('/api/sms-webhook', async (req, res) => {
+    const expectedSecret = (process.env.SMS_WEBHOOK_SECRET || '').trim();
+    if (!expectedSecret) {
+      res.status(503).json({error: 'SMS_WEBHOOK_SECRET is not configured on server'});
+      return;
+    }
+
+    const headerSecret = String(req.headers['x-sms-secret'] || '').trim();
+    const bodySecret = typeof req.body?.secret === 'string' ? req.body.secret.trim() : '';
+    const providedSecret = headerSecret || bodySecret;
+
+    if (!providedSecret || !timingSafeEqualsText(providedSecret, expectedSecret)) {
+      res.status(401).json({error: 'Invalid SMS webhook secret'});
+      return;
+    }
+
+    if (!adminDb) {
+      res.status(503).json({error: 'Firebase Admin Firestore is not initialized'});
+      return;
+    }
+
+    const rawText = String(req.body?.message ?? req.body?.text ?? '').trim();
+    if (!rawText || rawText.length > 2000) {
+      res.status(400).json({error: 'Provide a valid SMS message/text payload'});
+      return;
+    }
+
+    const hintSender = typeof req.body?.sender === 'string' ? req.body.sender : undefined;
+    const hintMethod = typeof req.body?.method === 'string' ? req.body.method : undefined;
+    const parsed = parsePaymentSms(rawText, hintSender, hintMethod);
+    if (!parsed) {
+      res.status(400).json({error: 'Could not extract bKash/Nagad amount and TrxID from SMS'});
+      return;
+    }
+
+    try {
+      const docRef = adminDb.collection('sms_payments').doc(parsed.trxId);
+      const result = await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(docRef);
+        if (snap.exists) {
+          const existing = snap.data() as {used?: boolean};
+          return {duplicate: true, used: Boolean(existing.used)};
+        }
+        tx.set(docRef, {
+          trxId: parsed.trxId,
+          amount: parsed.amount,
+          method: parsed.method,
+          rawText: rawText.slice(0, 2000),
+          used: false,
+          receivedAt: FieldValue.serverTimestamp(),
+        });
+        return {duplicate: false, used: false};
+      });
+
+      if (!result.duplicate) {
+        const store = readStore();
+        appendServerLog(
+          store,
+          'sms_webhook',
+          'SMS_PAYMENT_RECORDED',
+          `${parsed.method} ৳${parsed.amount} · TrxID ${parsed.trxId}`,
+        );
+        writeStore(store);
+      }
+
+      res.status(result.duplicate ? 200 : 201).json({
+        ok: true,
+        duplicate: result.duplicate,
+        used: result.used,
+        trxId: parsed.trxId,
+        amount: parsed.amount,
+        method: parsed.method,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('SMS webhook Firestore write error:', msg);
+      res.status(500).json({error: `Failed to store SMS payment: ${msg}`});
+    }
+  });
+
+  // Automation & Telegram Bot Status (Admin Settings diagnostic view, no secret values leaked)
+  app.get('/api/admin/automation-status', requireAdmin('settings'), (_req, res) => {
+    const maskPhone = (val: string) => {
+      const trimmed = val.trim();
+      if (!trimmed) return '';
+      if (trimmed.length <= 5) return '***';
+      return `${trimmed.slice(0, 3)}****${trimmed.slice(-3)}`;
+    };
+    res.json({
+      firebaseAdminMode: firebaseInitMode,
+      firebaseProjectId: firebaseProjectId || '',
+      firestoreDatabaseId: firestoreDatabaseId || '(default)',
+      firestoreConnected: Boolean(adminDb),
+      smsWebhookConfigured: Boolean((process.env.SMS_WEBHOOK_SECRET || '').trim()),
+      telegramBotConfigured: Boolean((process.env.TELEGRAM_BOT_TOKEN || '').trim()),
+      telegramBotRunning: telegramBotState.running,
+      telegramBotUsername: telegramBotState.username,
+      telegramBotProcessedUpdates: telegramBotState.processedUpdates,
+      telegramBotLastPollAt: telegramBotState.lastPollAt,
+      telegramBotLastError: telegramBotState.lastError,
+      bkashNumberMasked: maskPhone(process.env.BKASH_NUMBER || ''),
+      nagadNumberMasked: maskPhone(process.env.NAGAD_NUMBER || ''),
+    });
+  });
+
+  // Admin -> Customer Telegram Order Status Update Endpoint
+  app.post('/api/admin/orders/telegram-notify', requireAdmin(), async (req: AuthedRequest, res) => {
+    const perms = req.adminSession!.permissions;
+    if (req.adminSession!.role !== 'super_admin' && !perms.orders && !perms.payments) {
+      res.status(403).json({error: 'Missing required permission to send order notifications'});
+      return;
+    }
+
+    const body = (req.body || {}) as Partial<OrderStatusTelegramPayload>;
+    const orderNumber = String(body.orderNumber || '').trim().slice(0, 32);
+    const orderStatus = body.orderStatus;
+    const productName = String(body.productName || '').trim().slice(0, 120);
+    const packageName = String(body.packageName || '').trim().slice(0, 120);
+
+    if (
+      !orderNumber ||
+      !orderStatus ||
+      !['pending', 'processing', 'completed', 'cancelled'].includes(orderStatus) ||
+      !productName ||
+      !packageName
+    ) {
+      res.status(400).json({error: 'Invalid order status notification payload'});
+      return;
+    }
+
+    const paymentStatus =
+      body.paymentStatus && ['pending', 'verified', 'rejected'].includes(body.paymentStatus)
+        ? body.paymentStatus
+        : undefined;
+
+    const result = await sendTelegramOrderStatusUpdate({
+      orderNumber,
+      orderStatus,
+      paymentStatus,
+      productName,
+      packageName,
+      playerUid: body.playerUid ? String(body.playerUid).trim().slice(0, 80) : undefined,
+      totalAmount: typeof body.totalAmount === 'number' ? body.totalAmount : undefined,
+      paymentMethodName: body.paymentMethodName
+        ? String(body.paymentMethodName).trim().slice(0, 60)
+        : undefined,
+      trxId: body.trxId ? String(body.trxId).trim().slice(0, 64) : undefined,
+      voucherCode: body.voucherCode ? String(body.voucherCode).trim().slice(0, 500) : undefined,
+      note: body.note ? String(body.note).trim().slice(0, 500) : undefined,
+      customerUid: body.customerUid ? String(body.customerUid).trim().slice(0, 128) : undefined,
+      chatId: body.chatId,
+    });
+
+    res.json({ok: true, ...result});
+  });
+
   // Server Security & Auth Logs
   app.get('/api/admin/server-logs', requireAdmin(), (_req, res) => {
     const store = readStore();
@@ -1108,6 +2393,7 @@ async function startServer(): Promise<void> {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`StrikeVault server running on http://0.0.0.0:${PORT}`);
+    startTelegramBusinessBot();
   });
 }
 

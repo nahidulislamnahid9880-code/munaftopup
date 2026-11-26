@@ -48,12 +48,12 @@ export function MyCodesPage() {
         </h1>
 
         {!authReady ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center text-sm text-slate-500">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center text-sm text-slate-500 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
             Loading codes...
           </div>
         ) : !firebaseUser ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-4">
-            <div className="w-12 h-12 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center mx-auto">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+            <div className="w-12 h-12 rounded-2xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center mx-auto">
               <User className="w-6 h-6" />
             </div>
             <h2 className="text-lg font-bold text-slate-900 font-display">Sign in to access your codes</h2>
@@ -63,12 +63,12 @@ export function MyCodesPage() {
             <button
               type="button"
               onClick={() => void signInCustomerWithGoogle()}
-              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
+              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-sm font-semibold cursor-pointer">
               Sign in with Google
             </button>
           </div>
         ) : voucherOrders.length === 0 ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-10 text-center space-y-3">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-10 text-center space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
             <KeyRound className="w-8 h-8 text-slate-400 mx-auto" />
             <p className="text-sm font-bold text-slate-900">No voucher codes delivered yet</p>
             <p className="text-xs text-slate-500">
@@ -76,7 +76,7 @@ export function MyCodesPage() {
             </p>
             <Link
               to="/"
-              className="inline-flex px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold">
+              className="inline-flex px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs font-semibold">
               Browse Vouchers
             </Link>
           </div>
@@ -85,7 +85,7 @@ export function MyCodesPage() {
             {voucherOrders.map((order) => (
               <div
                 key={order.id}
-                className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 space-y-4 shadow-xs">
+                className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] hover:border-cyan-300/90 p-4 sm:p-5 space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] transition-all">
                 <div>
                   <h2 className="text-base sm:text-lg font-bold text-slate-900 font-display">
                     {order.productName} - {order.packageName}
@@ -95,13 +95,13 @@ export function MyCodesPage() {
                   </p>
                 </div>
 
-                <div className="rounded-xl bg-slate-50 border border-slate-200 overflow-hidden">
-                  <div className="px-4 py-2.5 border-b border-slate-200/80 flex items-center justify-between gap-2 bg-white">
+                <div className="rounded-xl bg-slate-50/90 border-[1.5px] border-slate-200/95 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-200/90 flex items-center justify-between gap-2 bg-white">
                     <span className="text-xs sm:text-sm font-semibold text-slate-600">Codes</span>
                     <button
                       type="button"
                       onClick={() => void handleCopyCode(order.id, order.voucherCode || '')}
-                      className="px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer">
+                      className="px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-xs font-semibold cursor-pointer">
                       {copiedId === order.id ? 'Copied' : 'Copy Code'}
                     </button>
                   </div>
@@ -113,7 +113,7 @@ export function MyCodesPage() {
                       type="button"
                       onClick={() => void handleCopyCode(order.id, order.voucherCode || '')}
                       aria-label="Copy voucher code"
-                      className="p-2 rounded-lg hover:bg-slate-200/70 text-slate-700 shrink-0 cursor-pointer">
+                      className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 shrink-0 cursor-pointer">
                       {copiedId === order.id ? (
                         <Check className="w-4 h-4 text-emerald-600" />
                       ) : (

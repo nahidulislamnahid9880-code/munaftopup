@@ -23,3 +23,13 @@ services:
         sync: false
       - key: NOTIFICATION_EMAIL
         value: abdulmunafadmin@gmail.com
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      - key: SMS_WEBHOOK_SECRET
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: BKASH_NUMBER
+        sync: false
+      - key: NAGAD_NUMBER
+        sync: false

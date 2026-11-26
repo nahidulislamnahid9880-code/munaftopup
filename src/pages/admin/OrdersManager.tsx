@@ -30,7 +30,7 @@ import {ImageWithFallback} from '../../components/ImageWithFallback';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
 export function OrdersManager() {
-  const {adminUser, firebaseUser} = useAuth();
+  const {adminUser, firebaseUser, adminFetch} = useAuth();
   const canOrders = adminUser?.role === 'super_admin' || adminUser?.permissions.orders;
   const canPayments = adminUser?.role === 'super_admin' || adminUser?.permissions.payments;
 
@@ -82,6 +82,41 @@ export function OrdersManager() {
     setVoucherCode(order.voucherCode || '');
     setNotifText('');
     setFeedback('');
+  };
+
+  const notifyTelegramOrderUpdate = async (params: {
+    order: Order;
+    orderStatus: OrderStatus;
+    paymentStatus: Order['paymentStatus'];
+    voucherCode?: string;
+    note?: string;
+  }): Promise<boolean> => {
+    if (!params.order.customerUid.startsWith('tg_')) return false;
+    try {
+      const res = await adminFetch('/api/admin/orders/telegram-notify', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          orderNumber: params.order.orderNumber,
+          orderStatus: params.orderStatus,
+          paymentStatus: params.paymentStatus,
+          productName: params.order.productName,
+          packageName: params.order.packageName,
+          playerUid: params.order.playerUid,
+          totalAmount: params.order.totalAmount,
+          paymentMethodName: params.order.paymentMethodName,
+          trxId: params.order.trxId,
+          voucherCode: params.voucherCode,
+          note: params.note,
+          customerUid: params.order.customerUid,
+        }),
+      });
+      if (!res.ok) return false;
+      const data = (await res.json()) as {sent?: boolean};
+      return Boolean(data.sent);
+    } catch {
+      return false;
+    }
   };
 
   const handleVerifyPayment = async (order: Order, decision: 'approved' | 'rejected') => {
@@ -162,7 +197,15 @@ export function OrdersManager() {
       });
 
       await batch.commit();
-      setFeedback(`Payment marked as ${nextPaymentStatus}.`);
+      const tgSent = await notifyTelegramOrderUpdate({
+        order,
+        orderStatus: nextOrderStatus,
+        paymentStatus: nextPaymentStatus,
+        note: msg,
+      });
+      setFeedback(
+        `Payment marked as ${nextPaymentStatus}.${tgSent ? ' Customer notified on Telegram.' : ''}`,
+      );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
     } finally {
@@ -281,10 +324,29 @@ export function OrdersManager() {
         return credited;
       });
 
+      const tgStatusMsg =
+        notifText.trim() ||
+        (nextStatus === 'cancelled'
+          ? adminNote.trim() || 'Order cancelled by administrator.'
+          : nextStatus === 'completed'
+            ? 'Diamonds / voucher fulfilled to your Player UID.'
+            : nextStatus === 'processing'
+              ? 'Top-up is currently being fulfilled to your Player UID.'
+              : '');
+
+      const tgSent = await notifyTelegramOrderUpdate({
+        order,
+        orderStatus: nextStatus,
+        paymentStatus: order.paymentStatus,
+        voucherCode: voucherCode.trim(),
+        note: tgStatusMsg,
+      });
+
       setFeedback(
-        refundedAmount > 0
+        (refundedAmount > 0
           ? `Order cancelled & ${formatCurrency(refundedAmount)} automatically refunded to customer wallet.`
-          : `Order status updated to ${nextStatus}.`,
+          : `Order status updated to ${nextStatus}.`) +
+          (tgSent ? ' Customer notified on Telegram.' : ''),
       );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
@@ -331,8 +393,20 @@ export function OrdersManager() {
       }
 
       await batch.commit();
+      const tgSent =
+        notifText.trim() || voucherCode.trim()
+          ? await notifyTelegramOrderUpdate({
+              order,
+              orderStatus: order.orderStatus,
+              paymentStatus: order.paymentStatus,
+              voucherCode: voucherCode.trim(),
+              note: msg,
+            })
+          : false;
       setNotifText('');
-      setFeedback('Admin note & customer notification saved.');
+      setFeedback(
+        `Admin note & customer notification saved.${tgSent ? ' Customer notified on Telegram.' : ''}`,
+      );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
     } finally {

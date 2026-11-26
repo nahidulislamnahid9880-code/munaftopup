@@ -223,20 +223,20 @@ export function AddMoneyPage() {
     <StoreLayout>
       <div className="max-w-3xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5">
         {/* Wallet Header Card */}
-        <div className="rounded-2xl bg-gradient-to-r from-slate-900 to-slate-800 text-white p-5 flex items-center justify-between gap-4 shadow-xs">
+        <div className="rounded-2xl bg-gradient-to-r from-slate-900 to-slate-800 border-[1.5px] border-cyan-500/35 ring-1 ring-white/10 text-white p-5 flex items-center justify-between gap-4 shadow-[0_12px_28px_-8px_rgba(15,23,42,0.28)]">
           <div>
             <span className="text-xs text-slate-300 block">Current Wallet Balance</span>
             <p className="text-2xl sm:text-3xl font-extrabold font-display tabular-nums mt-0.5">
               {formatCurrency(customerProfile?.walletBalance ?? 0)}
             </p>
           </div>
-          <div className="w-11 h-11 rounded-2xl bg-cyan-500/20 border border-cyan-400/30 text-cyan-300 flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-2xl bg-cyan-500/20 border-[1.5px] border-cyan-400/40 text-cyan-300 flex items-center justify-center shrink-0">
             <Wallet className="w-6 h-6" />
           </div>
         </div>
 
         {!firebaseUser && (
-          <div className="rounded-2xl bg-white border border-slate-200 p-6 text-center space-y-3 shadow-xs">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-6 text-center space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
             <h1 className="text-lg font-bold text-slate-900 font-display">Sign in to Add Money</h1>
             <p className="text-xs sm:text-sm text-slate-600">
               Sign in with Google so approved deposits are credited directly to your wallet.
@@ -244,22 +244,22 @@ export function AddMoneyPage() {
             <button
               type="button"
               onClick={() => void signInCustomerWithGoogle()}
-              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
+              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white text-sm font-semibold cursor-pointer">
               Sign in with Google
             </button>
           </div>
         )}
 
-        {/* Add Money Form Card (Matching SRBD Screenshot) */}
+        {/* Add Money Form Card */}
         <form
           onSubmit={handleSubmit}
-          className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-6 space-y-5 shadow-xs">
-          <div className="border-b border-slate-100 pb-3">
+          className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-6 space-y-5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+          <div className="border-b-[1.5px] border-slate-200/80 pb-3">
             <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 font-display">
               Add Money
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Deposit via bKash or Nagad and use your balance for instant UID top-ups.
+              Deposit via bKash, Nagad, or Upay and use your balance for instant UID top-ups.
             </p>
           </div>
 
@@ -273,7 +273,7 @@ export function AddMoneyPage() {
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="Enter amount"
-              className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500"
+              className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
             />
             <div className="flex flex-wrap gap-2 pt-1">
               {PRESET_AMOUNTS.map((val) => (
@@ -281,10 +281,10 @@ export function AddMoneyPage() {
                   key={val}
                   type="button"
                   onClick={() => setAmount(String(val))}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
                     Number(amount) === val
-                      ? 'bg-cyan-500 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      ? 'bg-cyan-500 border-cyan-600 text-white shadow-2xs'
+                      : 'bg-slate-50 border-slate-200/90 text-slate-700 hover:border-slate-300 hover:bg-slate-100'
                   }`}>
                   ৳{val}
                 </button>
@@ -309,10 +309,10 @@ export function AddMoneyPage() {
                       key={method.id}
                       type="button"
                       onClick={() => setSelectedMethodId(method.id)}
-                      className={`p-3.5 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center gap-2 ${
+                      className={`p-3.5 rounded-xl text-center transition-all cursor-pointer flex flex-col items-center gap-2 ${
                         active
-                          ? 'border-cyan-500 bg-cyan-50/60 ring-2 ring-cyan-500/20 shadow-xs'
-                          : 'border-slate-200 bg-white hover:border-slate-300'
+                          ? 'border-2 border-cyan-500 bg-cyan-50/70 ring-2 ring-cyan-500/20 shadow-xs'
+                          : 'border-[1.5px] border-slate-200/95 bg-white hover:border-slate-300'
                       }`}>
                       <PaymentMethodLogo name={method.name} logoUrl={method.logoUrl} size="md" />
                       <div className="min-w-0">
@@ -329,7 +329,7 @@ export function AddMoneyPage() {
           </div>
 
           {selectedMethod && (
-            <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-2.5">
+            <div className="rounded-xl bg-slate-50/90 border-[1.5px] border-slate-200/95 p-4 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
                   <PaymentMethodLogo name={selectedMethod.name} logoUrl={selectedMethod.logoUrl} size="md" />
@@ -345,12 +345,12 @@ export function AddMoneyPage() {
                 <button
                   type="button"
                   onClick={() => void handleCopy()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0">
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border-[1.5px] border-slate-300 hover:border-cyan-500 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer shrink-0 transition-colors">
                   <Copy className="w-3.5 h-3.5" /> {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
               {selectedMethod.instructions && (
-                <p className="text-xs text-slate-600 whitespace-pre-line border-t border-slate-200 pt-2">
+                <p className="text-xs text-slate-600 whitespace-pre-line border-t border-slate-200/90 pt-2.5 leading-relaxed">
                   {selectedMethod.instructions}
                 </p>
               )}
@@ -367,18 +367,18 @@ export function AddMoneyPage() {
               value={trxId}
               onChange={(e) => setTrxId(e.target.value)}
               placeholder="Enter Transaction ID (TrxID)"
-              className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+              className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
             />
           </div>
 
           {error && (
-            <div className="rounded-xl bg-red-50 border border-red-200 p-3 flex items-start gap-2 text-xs text-red-700">
+            <div className="rounded-xl bg-red-50 border-[1.5px] border-red-200 p-3 flex items-start gap-2 text-xs text-red-700">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
           )}
           {successMsg && (
-            <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 flex items-start gap-2 text-xs text-emerald-700 font-medium">
+            <div className="rounded-xl bg-emerald-50 border-[1.5px] border-emerald-200 p-3 flex items-start gap-2 text-xs text-emerald-700 font-medium">
               <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{successMsg}</span>
             </div>
@@ -387,7 +387,7 @@ export function AddMoneyPage() {
           <button
             type="submit"
             disabled={submitting || !firebaseUser || activeMethods.length === 0}
-            className="w-full inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 text-white text-sm font-bold cursor-pointer transition-colors">
+            className="w-full inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 border border-slate-800 disabled:border-slate-300 text-white text-sm font-bold cursor-pointer transition-colors shadow-xs">
             {submitting ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" /> Submitting Deposit...
@@ -402,8 +402,8 @@ export function AddMoneyPage() {
 
         {/* Recent Deposit History */}
         {firebaseUser && (
-          <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-5 space-y-3 shadow-xs">
-            <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-5 space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+            <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display border-b border-slate-100 pb-2.5">
               Deposit Requests
             </h2>
             {topups.length === 0 ? (
@@ -411,7 +411,7 @@ export function AddMoneyPage() {
                 No wallet deposit requests submitted yet.
               </p>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-slate-200/80">
                 {topups.map((t) => (
                   <div key={t.id} className="py-3 flex items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -428,10 +428,10 @@ export function AddMoneyPage() {
                     <span
                       className={`px-2.5 py-1 rounded-full text-[11px] font-bold capitalize shrink-0 ${
                         t.status === 'approved'
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          ? 'bg-emerald-50 text-emerald-700 border-[1.5px] border-emerald-200'
                           : t.status === 'rejected'
-                            ? 'bg-red-50 text-red-700 border border-red-200'
-                            : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            ? 'bg-red-50 text-red-700 border-[1.5px] border-red-200'
+                            : 'bg-amber-50 text-amber-700 border-[1.5px] border-amber-200'
                       }`}>
                       {t.status}
                     </span>

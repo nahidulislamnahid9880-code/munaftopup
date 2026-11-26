@@ -289,6 +289,35 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "customerUid", "title", "message", "read", "createdAt"]
+    },
+    "SmsPayment": {
+      "title": "SmsPayment",
+      "description": "Verified incoming bKash/Nagad SMS payment records ingested by /api/sms-webhook and keyed by uppercase TrxID.",
+      "type": "object",
+      "properties": {
+        "trxId": { "type": "string", "pattern": "^[A-Z0-9_\\-]+$", "minLength": 4, "maxLength": 64 },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["bKash", "Nagad"] },
+        "rawText": { "type": "string", "maxLength": 2000 },
+        "used": { "type": "boolean" },
+        "receivedAt": { "type": "string", "format": "date-time" },
+        "usedAt": { "type": "string", "format": "date-time" },
+        "usedOrderNumber": { "type": "string", "maxLength": 32 }
+      },
+      "required": ["trxId", "amount", "method", "rawText", "used", "receivedAt"]
+    },
+    "TelegramChatRoute": {
+      "title": "TelegramChatRoute",
+      "description": "Server-managed mapping between Telegram customer UIDs (tg_<chatId>) and Telegram Business chat routing IDs.",
+      "type": "object",
+      "properties": {
+        "customerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "chatId": { "type": "number" },
+        "businessConnectionId": { "type": "string", "maxLength": 200 },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerUid", "chatId", "updatedAt"]
     }
   },
   "firestore": {
@@ -347,6 +376,14 @@
     "/notifications/{notifId}": {
       "schema": { "$ref": "#/entities/CustomerNotification" },
       "description": "Customer order notifications."
+    },
+    "/sms_payments/{trxId}": {
+      "schema": { "$ref": "#/entities/SmsPayment" },
+      "description": "Server-ingested bKash/Nagad SMS payment records keyed by TrxID."
+    },
+    "/telegram_chats/{customerUid}": {
+      "schema": { "$ref": "#/entities/TelegramChatRoute" },
+      "description": "Server-managed Telegram Business chat and connection routing metadata."
     }
   }
 }

@@ -138,14 +138,14 @@ export function MyOrdersPage() {
           </div>
           <Link
             to="/track"
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 hover:text-cyan-600 transition-colors whitespace-nowrap">
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border-[1.5px] border-slate-200/95 hover:border-cyan-400 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 hover:text-cyan-600 transition-colors whitespace-nowrap shadow-2xs">
             <Search className="w-3.5 h-3.5" /> Track Order
           </Link>
         </div>
 
         {/* Interactive Status Filter Buttons */}
         {firebaseUser && orders.length > 0 && (
-          <div className="flex items-center gap-1.5 p-1.5 bg-white border border-slate-200/90 rounded-2xl overflow-x-auto shadow-2xs">
+          <div className="flex items-center gap-1.5 p-1.5 bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] rounded-2xl overflow-x-auto shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
             {filterTabs.map((tab) => {
               const active = statusFilter === tab.key;
               return (
@@ -153,10 +153,10 @@ export function MyOrdersPage() {
                   key={tab.key}
                   type="button"
                   onClick={() => setStatusFilter(tab.key)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
+                  className={`px-3.5 py-2 rounded-xl border text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
                     active
-                      ? 'bg-gradient-to-r from-slate-900 to-slate-800 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                      ? 'bg-gradient-to-r from-slate-900 to-slate-800 border-slate-900 text-white shadow-xs'
+                      : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                   }`}>
                   {tab.label} ({counts[tab.key]})
                 </button>
@@ -166,12 +166,12 @@ export function MyOrdersPage() {
         )}
 
         {!authReady ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center text-sm text-slate-500">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center text-sm text-slate-500 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
             Loading orders...
           </div>
         ) : !firebaseUser ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-8 text-center space-y-4 shadow-xs">
-            <div className="w-12 h-12 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center mx-auto">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+            <div className="w-12 h-12 rounded-2xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center mx-auto">
               <User className="w-6 h-6" />
             </div>
             <h2 className="text-lg font-bold text-slate-900 font-display">Sign in to view orders</h2>
@@ -181,12 +181,12 @@ export function MyOrdersPage() {
             <button
               type="button"
               onClick={() => void signInCustomerWithGoogle()}
-              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
+              className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-sm font-semibold cursor-pointer">
               Sign in with Google
             </button>
           </div>
         ) : filteredOrders.length === 0 ? (
-          <div className="rounded-2xl bg-white border border-slate-200 p-10 text-center space-y-3 shadow-xs">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-10 text-center space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
             <Package className="w-8 h-8 text-slate-400 mx-auto" />
             <p className="text-sm font-bold text-slate-900">
               {statusFilter === 'all' ? 'No orders yet' : `No ${statusFilter} orders`}
@@ -199,7 +199,7 @@ export function MyOrdersPage() {
             {statusFilter === 'all' && (
               <Link
                 to="/"
-                className="inline-flex px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold">
+                className="inline-flex px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs font-semibold">
                 Browse Top-Ups
               </Link>
             )}
@@ -211,7 +211,7 @@ export function MyOrdersPage() {
               return (
                 <div
                   key={order.id}
-                  className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-4 shadow-sm hover:shadow-md transition-shadow">
+                  className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] hover:border-cyan-300/90 p-4 sm:p-5 space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] transition-all">
                   {/* Card Header */}
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -226,9 +226,9 @@ export function MyOrdersPage() {
                   </div>
 
                   {/* Product Summary */}
-                  <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50/90 border border-slate-200/70 p-3">
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50/90 border-[1.5px] border-slate-200/85 p-3">
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-12 h-12 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
+                      <div className="w-12 h-12 rounded-xl overflow-hidden bg-slate-100 border-[1.5px] border-slate-200 shrink-0">
                         <ImageWithFallback
                           src={getProductImage(order)}
                           alt={order.productName}
@@ -257,7 +257,7 @@ export function MyOrdersPage() {
 
                   {/* Cancel Reason Notice */}
                   {cancelReason && (
-                    <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 flex items-start gap-2.5 text-xs text-rose-800">
+                    <div className="rounded-xl bg-rose-50 border-[1.5px] border-rose-200 p-3 flex items-start gap-2.5 text-xs text-rose-800">
                       <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                       <div>
                         <span className="font-bold block">Cancel Reason</span>
@@ -269,7 +269,7 @@ export function MyOrdersPage() {
                   {/* Processing / Active Status Update */}
                   {!cancelReason && order.notificationMessage && (
                     <div
-                      className={`rounded-xl border px-3.5 py-2.5 text-xs ${
+                      className={`rounded-xl border-[1.5px] px-3.5 py-2.5 text-xs ${
                         order.orderStatus === 'processing'
                           ? 'bg-cyan-50/70 border-cyan-200 text-cyan-900'
                           : order.orderStatus === 'completed'
@@ -282,30 +282,30 @@ export function MyOrdersPage() {
                   )}
 
                   {/* Action Buttons Row */}
-                  <div className="pt-2 border-t border-slate-100 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+                  <div className="pt-2.5 border-t border-slate-200/80 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                     <Link
                       to={`/product/${getProductSlug(order)}`}
-                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-cyan-600 hover:to-blue-600 text-white text-xs sm:text-sm font-bold transition-all shadow-2xs">
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-cyan-600 hover:to-blue-600 border border-slate-800 text-white text-xs sm:text-sm font-bold transition-all shadow-2xs">
                       <RefreshCw className="w-3.5 h-3.5" /> Top Up Again
                     </Link>
 
                     <button
                       type="button"
                       onClick={() => setDetailOrder(order)}
-                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs sm:text-sm font-bold text-slate-800 transition-colors cursor-pointer">
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border-[1.5px] border-slate-200/95 hover:border-slate-300 bg-white hover:bg-slate-50 text-xs sm:text-sm font-bold text-slate-800 transition-colors cursor-pointer">
                       <Eye className="w-3.5 h-3.5 text-cyan-600" /> View Details
                     </button>
 
                     <Link
                       to={`/track?order=${order.orderNumber}`}
-                      className={`${order.voucherCode ? 'col-span-1' : 'col-span-2 sm:col-span-1'} sm:flex-none inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-cyan-200 bg-cyan-50/60 hover:bg-cyan-100/70 text-xs sm:text-sm font-bold text-cyan-800 transition-colors`}>
+                      className={`${order.voucherCode ? 'col-span-1' : 'col-span-2 sm:col-span-1'} sm:flex-none inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border-[1.5px] border-cyan-200 bg-cyan-50/60 hover:bg-cyan-100/70 text-xs sm:text-sm font-bold text-cyan-800 transition-colors`}>
                       <Search className="w-3.5 h-3.5" /> Track
                     </Link>
 
                     {order.voucherCode && (
                       <Link
                         to="/codes"
-                        className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold transition-colors">
+                        className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 text-white text-xs sm:text-sm font-bold transition-colors">
                         <KeyRound className="w-3.5 h-3.5" /> Codes
                       </Link>
                     )}
@@ -320,8 +320,8 @@ export function MyOrdersPage() {
       {/* Order Details Modal */}
       {detailOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-[1px]">
-          <div className="bg-white rounded-2xl border border-slate-200 max-w-md w-full p-5 space-y-4 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="bg-white rounded-2xl border-[1.5px] border-slate-200 ring-1 ring-slate-900/10 max-w-md w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200/80 pb-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900 font-display">
                   Order {detailOrder.orderNumber}
@@ -331,7 +331,7 @@ export function MyOrdersPage() {
               <button
                 type="button"
                 onClick={() => setDetailOrder(null)}
-                className="p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer">
+                className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -370,13 +370,13 @@ export function MyOrdersPage() {
             </div>
 
             {getCancelReason(detailOrder) ? (
-              <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-800">
+              <div className="rounded-xl bg-rose-50 border-[1.5px] border-rose-200 p-3 text-xs text-rose-800">
                 <span className="font-bold block mb-0.5">Cancel Reason</span>
                 {getCancelReason(detailOrder)}
               </div>
             ) : (
               detailOrder.notificationMessage && (
-                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-700">
+                <div className="rounded-xl bg-slate-50 border-[1.5px] border-slate-200 p-3 text-xs text-slate-700">
                   <span className="font-bold text-slate-900 block mb-0.5">Latest Update</span>
                   {detailOrder.notificationMessage}
                 </div>
@@ -384,7 +384,7 @@ export function MyOrdersPage() {
             )}
 
             {detailOrder.voucherCode && (
-              <div className="rounded-xl bg-cyan-50 border border-cyan-200 p-3 text-xs space-y-1">
+              <div className="rounded-xl bg-cyan-50 border-[1.5px] border-cyan-200 p-3 text-xs space-y-1">
                 <span className="font-bold text-cyan-900 block">Delivered Voucher Code</span>
                 <p className="font-mono font-bold text-slate-900 break-all">{detailOrder.voucherCode}</p>
               </div>
@@ -393,13 +393,13 @@ export function MyOrdersPage() {
             <div className="flex gap-2 pt-1">
               <Link
                 to={`/track?order=${detailOrder.orderNumber}`}
-                className="flex-1 text-center px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-semibold">
+                className="flex-1 text-center px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-white text-xs font-semibold">
                 Live Tracker
               </Link>
               <button
                 type="button"
                 onClick={() => setDetailOrder(null)}
-                className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 cursor-pointer">
+                className="px-4 py-2.5 rounded-xl border-[1.5px] border-slate-200 text-xs font-semibold text-slate-700 cursor-pointer">
                 Close
               </button>
             </div>

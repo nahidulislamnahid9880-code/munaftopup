@@ -349,8 +349,8 @@ export function CheckoutPage() {
     return (
       <StoreLayout>
         <div className="max-w-xl mx-auto px-4 sm:px-6 py-12">
-          <div className="rounded-2xl bg-white border border-slate-200 p-7 text-center space-y-5 shadow-xs">
-            <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
+          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-7 text-center space-y-5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+            <div className="w-14 h-14 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center mx-auto">
               <CheckCircle2 className="w-8 h-8" />
             </div>
             <div className="space-y-1.5">
@@ -363,7 +363,7 @@ export function CheckoutPage() {
                   : 'Your payment details have been submitted for verification. Track fulfillment live below.'}
               </p>
             </div>
-            <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-1">
+            <div className="rounded-xl bg-slate-50 border-[1.5px] border-slate-200/95 p-4 space-y-1">
               <span className="text-xs text-slate-500">Order Reference</span>
               <p className="text-xl font-bold font-mono text-slate-900 tabular-nums">
                 {confirmedOrderNumber}
@@ -372,12 +372,12 @@ export function CheckoutPage() {
             <div className="flex flex-col sm:flex-row gap-3 justify-center pt-1">
               <Link
                 to="/orders"
-                className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors">
+                className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-sm font-semibold transition-colors">
                 View My Orders
               </Link>
               <Link
                 to={`/track?order=${confirmedOrderNumber}`}
-                className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-white text-sm font-semibold transition-colors">
+                className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-600 border border-cyan-600 text-white text-sm font-semibold transition-colors">
                 Track Order Live
               </Link>
             </div>
@@ -418,7 +418,7 @@ export function CheckoutPage() {
           {/* Left Form */}
           <div className="lg:col-span-7 space-y-5">
             {!firebaseUser && (
-              <div className="rounded-2xl bg-cyan-50 border border-cyan-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="rounded-2xl bg-cyan-50/80 border-[1.5px] border-cyan-300/90 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs">
                 <div className="space-y-1">
                   <h2 className="text-sm font-bold text-slate-900">Sign in to complete checkout</h2>
                   <p className="text-xs text-slate-600">
@@ -428,15 +428,15 @@ export function CheckoutPage() {
                 <button
                   type="button"
                   onClick={() => void signInCustomerWithGoogle()}
-                  className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer">
+                  className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer">
                   Sign in with Google
                 </button>
               </div>
             )}
 
             {/* Player & Customer Info */}
-            <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-6 space-y-4 shadow-xs">
-              <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-6 space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display border-b border-slate-100 pb-3">
                 1. Player &amp; Contact Information
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -450,7 +450,7 @@ export function CheckoutPage() {
                       required
                       value={playerUid}
                       onChange={(e) => setPlayerUid(e.target.value)}
-                      className="w-full px-3 py-2 text-sm font-mono rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                     />
                   </div>
                 )}
@@ -464,7 +464,7 @@ export function CheckoutPage() {
                       required
                       value={serverId}
                       onChange={(e) => setServerId(e.target.value)}
-                      className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+                      className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                     />
                   </div>
                 )}
@@ -478,15 +478,15 @@ export function CheckoutPage() {
                       value={customerName}
                       onChange={(e) => setCustomerName(e.target.value)}
                       placeholder="Enter your name"
-                      className="w-full px-3 py-2 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+                      className="w-full px-3.5 py-2.5 text-sm rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                     />
                   </div>
                 </div>
               </div>
 
             {/* Payment Option Switcher: Manual bKash/Nagad vs Wallet Balance */}
-            <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-6 space-y-5 shadow-xs">
-              <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display flex items-center gap-2">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-4 sm:p-6 space-y-5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 font-display flex items-center gap-2 border-b border-slate-100 pb-3">
                 <CreditCard className="w-4 h-4 text-cyan-600" />
                 2. Choose Payment Method
               </h2>
@@ -495,10 +495,10 @@ export function CheckoutPage() {
                 <button
                   type="button"
                   onClick={() => setPaymentMode('manual')}
-                  className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                  className={`p-3.5 rounded-xl text-left transition-all cursor-pointer ${
                     paymentMode === 'manual'
-                      ? 'border-cyan-500 bg-cyan-50/60 ring-2 ring-cyan-500/20'
-                      : 'border-slate-200 hover:border-slate-300'
+                      ? 'border-2 border-cyan-500 bg-cyan-50/70 ring-2 ring-cyan-500/20 shadow-xs'
+                      : 'border-[1.5px] border-slate-200/95 hover:border-slate-300 bg-white'
                   }`}>
                   <span className="text-sm font-bold text-slate-900 block">
                     bKash / Nagad Manual Pay
@@ -509,10 +509,10 @@ export function CheckoutPage() {
                 <button
                   type="button"
                   onClick={() => setPaymentMode('wallet')}
-                  className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                  className={`p-3.5 rounded-xl text-left transition-all cursor-pointer ${
                     paymentMode === 'wallet'
-                      ? 'border-cyan-500 bg-cyan-50/60 ring-2 ring-cyan-500/20'
-                      : 'border-slate-200 hover:border-slate-300'
+                      ? 'border-2 border-cyan-500 bg-cyan-50/70 ring-2 ring-cyan-500/20 shadow-xs'
+                      : 'border-[1.5px] border-slate-200/95 hover:border-slate-300 bg-white'
                   }`}>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm font-bold text-slate-900 inline-flex items-center gap-1.5">
@@ -531,7 +531,7 @@ export function CheckoutPage() {
               </div>
 
               {paymentMode === 'wallet' ? (
-                <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-2.5">
+                <div className="rounded-xl bg-slate-50/90 border-[1.5px] border-slate-200/95 p-4 space-y-2.5">
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-slate-600">Current Wallet Balance</span>
                     <span className="font-bold text-slate-900 tabular-nums">
@@ -551,7 +551,7 @@ export function CheckoutPage() {
                       </span>
                       <Link
                         to="/add-money"
-                        className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-semibold whitespace-nowrap">
+                        className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-600 border border-cyan-600 text-white text-xs font-semibold whitespace-nowrap">
                         Add Money
                       </Link>
                     </div>
@@ -571,10 +571,10 @@ export function CheckoutPage() {
                           key={method.id}
                           type="button"
                           onClick={() => setSelectedMethodId(method.id)}
-                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2.5 ${
+                          className={`p-3 rounded-xl text-left transition-all cursor-pointer flex items-center gap-2.5 ${
                             active
-                              ? 'border-cyan-500 bg-cyan-50/70 ring-2 ring-cyan-500/20 shadow-xs'
-                              : 'border-slate-200 hover:border-slate-300 bg-white'
+                              ? 'border-2 border-cyan-500 bg-cyan-50/70 ring-2 ring-cyan-500/20 shadow-xs'
+                              : 'border-[1.5px] border-slate-200/95 hover:border-slate-300 bg-white'
                           }`}>
                           <PaymentMethodLogo name={method.name} logoUrl={method.logoUrl} size="sm" />
                           <div className="min-w-0">
@@ -591,7 +591,7 @@ export function CheckoutPage() {
                   </div>
 
                   {selectedMethod && (
-                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-3">
+                    <div className="rounded-xl bg-slate-50/90 border-[1.5px] border-slate-200/95 p-4 space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-3 min-w-0">
                           <PaymentMethodLogo
@@ -611,13 +611,13 @@ export function CheckoutPage() {
                         <button
                           type="button"
                           onClick={() => void handleCopyAccount()}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-xs font-semibold text-slate-700 cursor-pointer shrink-0">
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border-[1.5px] border-slate-300 hover:border-cyan-500 hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer shrink-0 transition-colors">
                           <Copy className="w-3.5 h-3.5" />
                           {copiedNumber ? 'Copied' : 'Copy Number'}
                         </button>
                       </div>
                       {selectedMethod.instructions && (
-                        <p className="text-xs text-slate-600 whitespace-pre-line leading-relaxed border-t border-slate-200 pt-2.5">
+                        <p className="text-xs text-slate-600 whitespace-pre-line leading-relaxed border-t border-slate-200/90 pt-2.5">
                           {selectedMethod.instructions}
                         </p>
                       )}
@@ -634,7 +634,7 @@ export function CheckoutPage() {
                       value={trxId}
                       onChange={(e) => setTrxId(e.target.value)}
                       placeholder="Enter Transaction ID (TrxID)"
-                      className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-xl border-[1.5px] border-slate-300 hover:border-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                     />
                   </div>
                 </>
@@ -642,7 +642,7 @@ export function CheckoutPage() {
             </div>
 
             {error && (
-              <div className="rounded-xl bg-red-50 border border-red-200 p-4 flex items-start gap-2.5 text-sm text-red-700">
+              <div className="rounded-xl bg-red-50 border-[1.5px] border-red-200 p-4 flex items-start gap-2.5 text-sm text-red-700">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>{error}</span>
               </div>
@@ -651,10 +651,12 @@ export function CheckoutPage() {
 
           {/* Right Summary */}
           <div className="lg:col-span-5 lg:sticky lg:top-20">
-            <div className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 space-y-5 shadow-xs">
-              <h2 className="text-base font-bold text-slate-900 font-display">Order Summary</h2>
-              <div className="flex items-center gap-3.5 pb-4 border-b border-slate-100">
-                <div className="w-16 h-16 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
+            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-5 sm:p-6 space-y-5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
+              <h2 className="text-base font-bold text-slate-900 font-display border-b border-slate-100 pb-3">
+                Order Summary
+              </h2>
+              <div className="flex items-center gap-3.5 pb-4 border-b border-slate-200/70">
+                <div className="w-16 h-16 rounded-xl overflow-hidden bg-slate-100 border-[1.5px] border-slate-200 shrink-0">
                   <ImageWithFallback
                     src={selectedPackage.imageUrl || product.images?.[0]}
                     alt={product.name}
@@ -701,7 +703,7 @@ export function CheckoutPage() {
                   (paymentMode === 'manual' && activeMethods.length === 0) ||
                   (paymentMode === 'wallet' && !canPayWithWallet)
                 }
-                className="w-full inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 text-white text-sm font-bold transition-colors cursor-pointer">
+                className="w-full inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 border border-slate-800 disabled:border-slate-300 text-white text-sm font-bold transition-colors cursor-pointer shadow-xs">
                 {submitting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" /> Submitting Order...

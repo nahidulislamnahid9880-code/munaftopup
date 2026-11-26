@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {
   Activity,
+  Bot,
   KeyRound,
   Mail,
   Plus,
@@ -114,14 +115,30 @@ export function AdminSettings() {
   const [serverLogs, setServerLogs] = useState<
     Array<{id: string; actorEmail: string; action: string; details: string; createdAt: string}>
   >([]);
+  const [autoStatus, setAutoStatus] = useState<{
+    firebaseAdminMode: string;
+    firebaseProjectId: string;
+    firestoreDatabaseId: string;
+    firestoreConnected: boolean;
+    smsWebhookConfigured: boolean;
+    telegramBotConfigured: boolean;
+    telegramBotRunning: boolean;
+    telegramBotUsername: string;
+    telegramBotProcessedUpdates: number;
+    telegramBotLastPollAt: string;
+    telegramBotLastError: string;
+    bkashNumberMasked: string;
+    nagadNumberMasked: string;
+  } | null>(null);
 
   const loadServerData = useCallback(async () => {
     if (!canSettings) return;
     try {
-      const [staffRes, sysRes, logsRes] = await Promise.all([
+      const [staffRes, sysRes, logsRes, autoRes] = await Promise.all([
         adminFetch('/api/admin/staff'),
         adminFetch('/api/admin/system-settings'),
         adminFetch('/api/admin/server-logs'),
+        adminFetch('/api/admin/automation-status'),
       ]);
       if (staffRes.ok) {
         const d = (await staffRes.json()) as {staff: ServerStaffItem[]};
@@ -141,6 +158,10 @@ export function AdminSettings() {
           logs: Array<{id: string; actorEmail: string; action: string; details: string; createdAt: string}>;
         };
         setServerLogs(d.logs || []);
+      }
+      if (autoRes.ok) {
+        const d = (await autoRes.json()) as NonNullable<typeof autoStatus>;
+        setAutoStatus(d);
       }
     } catch {
       // ignore initial load error
@@ -667,6 +688,68 @@ export function AdminSettings() {
                 <Send className="w-3.5 h-3.5" /> {testingEmail ? 'Sending...' : 'Send Test Email'}
               </button>
             </div>
+
+            {autoStatus && (
+              <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-3">
+                <h2 className="text-base font-bold font-display flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-blue-600" /> Telegram Business Bot &amp; SMS Auto-Payment Status
+                </h2>
+                <p className="text-xs text-slate-600 dark:text-slate-400">
+                  Configure <code className="font-mono">FIREBASE_SERVICE_ACCOUNT</code>,{' '}
+                  <code className="font-mono">SMS_WEBHOOK_SECRET</code>,{' '}
+                  <code className="font-mono">TELEGRAM_BOT_TOKEN</code>,{' '}
+                  <code className="font-mono">BKASH_NUMBER</code>, and{' '}
+                  <code className="font-mono">NAGAD_NUMBER</code> in your Render environment variables. SMS forwarder endpoint:{' '}
+                  <code className="font-mono">POST /api/sms-webhook</code> (header <code className="font-mono">x-sms-secret</code>).
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <span className="text-slate-500 block">Firestore Admin SDK</span>
+                    <span className={`font-bold ${autoStatus.firestoreConnected ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      {autoStatus.firestoreConnected
+                        ? `Connected (${autoStatus.firebaseAdminMode})`
+                        : 'Not Connected'}
+                    </span>
+                    <span className="block text-[11px] text-slate-400 truncate mt-0.5">
+                      DB: {autoStatus.firestoreDatabaseId}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <span className="text-slate-500 block">SMS Webhook Secret</span>
+                    <span className={`font-bold ${autoStatus.smsWebhookConfigured ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      {autoStatus.smsWebhookConfigured ? 'Configured & Protected' : 'Missing SMS_WEBHOOK_SECRET'}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <span className="text-slate-500 block">Telegram Business Bot</span>
+                    <span className={`font-bold ${autoStatus.telegramBotRunning ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      {autoStatus.telegramBotRunning
+                        ? `Active${autoStatus.telegramBotUsername ? ` (@${autoStatus.telegramBotUsername})` : ''}`
+                        : 'Waiting for TELEGRAM_BOT_TOKEN'}
+                    </span>
+                    {autoStatus.telegramBotRunning && (
+                      <span className="block text-[11px] text-slate-400 mt-0.5">
+                        Updates processed: {autoStatus.telegramBotProcessedUpdates}
+                      </span>
+                    )}
+                    {autoStatus.telegramBotLastError && (
+                      <span className="block text-[11px] text-red-500 truncate mt-0.5">
+                        {autoStatus.telegramBotLastError}
+                      </span>
+                    )}
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <span className="text-slate-500 block">Bot Payment Numbers</span>
+                    <span className="block font-mono text-[11px] mt-0.5">
+                      bKash: {autoStatus.bkashNumberMasked || 'Fallback to Payment Methods'}
+                    </span>
+                    <span className="block font-mono text-[11px]">
+                      Nagad: {autoStatus.nagadNumberMasked || 'Fallback to Payment Methods'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
           </form>
         )}
 

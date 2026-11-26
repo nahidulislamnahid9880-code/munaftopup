@@ -282,3 +282,14 @@ export interface AdminSessionUser {
   role: 'super_admin' | 'admin' | 'sub_admin';
   permissions: StaffPermissions;
 }
+
+export interface SmsPaymentRecord {
+  trxId: string;
+  amount: number;
+  method: 'bKash' | 'Nagad';
+  rawText: string;
+  used: boolean;
+  receivedAt?: unknown;
+  usedAt?: unknown;
+  usedOrderNumber?: string;
+}
