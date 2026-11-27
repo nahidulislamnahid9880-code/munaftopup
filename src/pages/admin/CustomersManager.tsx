@@ -1,9 +1,11 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {
+  Award,
   Ban,
   CheckCircle2,
   Eye,
   MessageSquare,
+  Save,
   Send,
   Users,
   X,
@@ -26,7 +28,7 @@ import {
   handleFirestoreError,
   timestampToMillis,
 } from '../../lib/firebase';
-import type {CustomerProfile, Order, SupportTicket} from '../../types';
+import type {CustomerProfile, CustomerTier, Order, SupportTicket} from '../../types';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
 export function CustomersManager() {
@@ -40,8 +42,21 @@ export function CustomersManager() {
 
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerProfile | null>(null);
   const [suspendReason, setSuspendReason] = useState('');
+  const [editTier, setEditTier] = useState<CustomerTier>('regular');
+  const [editTierLocked, setEditTierLocked] = useState(false);
+  const [editLoyaltyPoints, setEditLoyaltyPoints] = useState('0');
+  const [savingTier, setSavingTier] = useState(false);
+  const [tierMessage, setTierMessage] = useState('');
   const [replyTarget, setReplyTarget] = useState<SupportTicket | null>(null);
   const [replyText, setReplyText] = useState('');
+
+  useEffect(() => {
+    if (!selectedCustomer) return;
+    setEditTier((selectedCustomer.tier as CustomerTier) || 'regular');
+    setEditTierLocked(Boolean(selectedCustomer.tierLocked));
+    setEditLoyaltyPoints(String(selectedCustomer.loyaltyPoints ?? 0));
+    setTierMessage('');
+  }, [selectedCustomer?.uid]);
 
   useEffect(() => {
     if (!firebaseUser || !canEdit) return;
@@ -110,6 +125,42 @@ export function CustomersManager() {
       setSuspendReason('');
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `customers/${cust.uid}`);
+    }
+  };
+
+  const handleSaveTierAndLoyalty = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminUser || !canEdit || !selectedCustomer) return;
+    setSavingTier(true);
+    setTierMessage('');
+    try {
+      const nextPoints = Math.max(0, Math.round(Number(editLoyaltyPoints) || 0));
+      const now = serverTimestamp();
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'customers', selectedCustomer.uid), {
+        tier: editTier,
+        tierLocked: editTierLocked,
+        loyaltyPoints: nextPoints,
+        updatedAt: now,
+      });
+      const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      batch.set(doc(db, 'auditLogs', logId), {
+        id: logId,
+        actorEmail: adminUser.email,
+        actorRole: adminUser.role,
+        action: 'CUSTOMER_TIER_LOYALTY_UPDATED',
+        targetType: 'customer',
+        targetId: selectedCustomer.uid,
+        details: `${selectedCustomer.email} -> tier=${editTier} (locked=${editTierLocked}), loyaltyPoints=${nextPoints}`,
+        createdAt: now,
+      });
+      await batch.commit();
+      setTierMessage('Tier & loyalty points saved.');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `customers/${selectedCustomer.uid}`);
+      setTierMessage('Failed to update tier/loyalty.');
+    } finally {
+      setSavingTier(false);
     }
   };
 
@@ -200,7 +251,7 @@ export function CustomersManager() {
                   <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-xs text-slate-500">
                     <tr>
                       <th className="px-4 py-3 font-medium">Customer</th>
-                      <th className="px-4 py-3 font-medium">Phone</th>
+                      <th className="px-4 py-3 font-medium">Tier &amp; Points</th>
                       <th className="px-4 py-3 font-medium">Wallet</th>
                       <th className="px-4 py-3 font-medium">Orders</th>
                       <th className="px-4 py-3 font-medium">Total Spent</th>
@@ -211,13 +262,31 @@ export function CustomersManager() {
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {customers.map((c) => {
                       const st = customerStats.get(c.uid) || {count: 0, spent: 0};
+                      const tier = (c.tier || 'regular').toUpperCase();
                       return (
                         <tr key={c.uid}>
                           <td className="px-4 py-3">
                             <p className="font-semibold">{c.displayName || 'Customer'}</p>
                             <p className="text-xs text-slate-500">{c.email}</p>
+                            {c.referralCode && (
+                              <p className="text-[11px] font-mono text-slate-400">Ref: {c.referralCode}</p>
+                            )}
                           </td>
-                          <td className="px-4 py-3 font-mono text-xs">{c.phone || '—'}</td>
+                          <td className="px-4 py-3 text-xs">
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded font-bold text-[10px] ${
+                                tier === 'RESELLER'
+                                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300'
+                                  : tier === 'VIP'
+                                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                              }`}>
+                              {tier}
+                            </span>
+                            <span className="block text-slate-500 tabular-nums mt-0.5">
+                              {(c.loyaltyPoints || 0).toLocaleString()} pts
+                            </span>
+                          </td>
                           <td className="px-4 py-3 font-semibold text-cyan-600 dark:text-cyan-400 tabular-nums">
                             {formatCurrency(c.walletBalance || 0)}
                           </td>
@@ -357,6 +426,73 @@ export function CustomersManager() {
                 <p className="text-xs text-red-600">Reason: {selectedCustomer.suspendedReason}</p>
               )}
             </div>
+
+            <form
+              onSubmit={handleSaveTierAndLoyalty}
+              className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold flex items-center gap-1.5">
+                  <Award className="w-3.5 h-3.5 text-amber-500" /> VIP / Reseller Tier &amp; Loyalty
+                </span>
+                {selectedCustomer.referralCode && (
+                  <span className="text-[11px] font-mono text-slate-500">
+                    Referral Code: {selectedCustomer.referralCode}
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    Customer Tier
+                  </label>
+                  <select
+                    value={editTier}
+                    onChange={(e) => setEditTier(e.target.value as CustomerTier)}
+                    className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+                    <option value="regular">Regular</option>
+                    <option value="vip">VIP</option>
+                    <option value="reseller">Reseller</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    Loyalty Points
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editLoyaltyPoints}
+                    onChange={(e) => setEditLoyaltyPoints(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <label className="flex items-center gap-2 text-xs font-medium cursor-pointer pb-1.5">
+                    <input
+                      type="checkbox"
+                      checked={editTierLocked}
+                      onChange={(e) => setEditTierLocked(e.target.checked)}
+                    />
+                    Lock Tier (Prevent Auto-Downgrade)
+                  </label>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                {tierMessage ? (
+                  <span className="text-xs font-medium text-emerald-600">{tierMessage}</span>
+                ) : (
+                  <span className="text-[11px] text-slate-400">
+                    Lifetime Spend Recorded: {formatCurrency(selectedCustomer.totalSpent || 0)}
+                  </span>
+                )}
+                <button
+                  type="submit"
+                  disabled={savingTier}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50">
+                  <Save className="w-3.5 h-3.5" /> {savingTier ? 'Saving...' : 'Save Tier'}
+                </button>
+              </div>
+            </form>
 
             <div className="space-y-2">
               <h3 className="text-sm font-bold">Customer Order History</h3>

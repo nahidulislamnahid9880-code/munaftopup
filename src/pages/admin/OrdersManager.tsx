@@ -1,12 +1,17 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
+  Download,
   Eye,
+  KeyRound,
   Search,
   Send,
+  Server,
   X,
   XCircle,
 } from 'lucide-react';
+import {useSearchParams} from 'react-router-dom';
 import {
   collection,
   doc,
@@ -34,9 +39,12 @@ export function OrdersManager() {
   const canOrders = adminUser?.role === 'super_admin' || adminUser?.permissions.orders;
   const canPayments = adminUser?.role === 'super_admin' || adminUser?.permissions.payments;
 
+  const [searchParams] = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | OrderStatus>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | OrderStatus | 'fraud'>(
+    searchParams.get('filter') === 'fraud' ? 'fraud' : 'all',
+  );
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
   const [adminNote, setAdminNote] = useState('');
@@ -59,9 +67,18 @@ export function OrdersManager() {
     return () => unsub();
   }, [firebaseUser, canOrders, canPayments]);
 
+  const fraudCount = useMemo(
+    () => orders.filter((o) => Boolean(o.fraudFlag)).length,
+    [orders],
+  );
+
   const filtered = useMemo(() => {
     return orders
-      .filter((o) => (statusFilter === 'all' ? true : o.orderStatus === statusFilter))
+      .filter((o) => {
+        if (statusFilter === 'all') return true;
+        if (statusFilter === 'fraud') return Boolean(o.fraudFlag);
+        return o.orderStatus === statusFilter;
+      })
       .filter((o) => {
         if (!searchQuery.trim()) return true;
         const q = searchQuery.toLowerCase();
@@ -75,6 +92,73 @@ export function OrdersManager() {
         );
       });
   }, [orders, statusFilter, searchQuery]);
+
+  const handleExportCsv = () => {
+    const csvEscape = (v: unknown) => {
+      const s = String(v ?? '').replace(/"/g, '""');
+      return `"${s}"`;
+    };
+    const headers = [
+      'Order Number',
+      'Date',
+      'Customer Name',
+      'Customer Email',
+      'Customer Phone',
+      'Product',
+      'Package',
+      'Player UID',
+      'Server ID',
+      'Payment Method',
+      'TrxID',
+      'Unit Price',
+      'Discounts',
+      'Total Paid',
+      'Unit Cost',
+      'Net Profit',
+      'Payment Status',
+      'Order Status',
+      'Fraud Flag',
+    ];
+    const rows = filtered.map((o) => {
+      const discounts =
+        Number(o.couponDiscount || 0) +
+        Number(o.tierDiscount || 0) +
+        Number(o.flashSaleDiscount || 0);
+      return [
+        o.orderNumber,
+        new Date(timestampToMillis(o.createdAt)).toISOString(),
+        o.customerName,
+        o.customerEmail,
+        o.customerPhone,
+        o.productName,
+        o.packageName,
+        o.playerUid,
+        o.serverId,
+        o.paymentMethodName,
+        o.trxId,
+        o.unitPrice,
+        discounts,
+        o.totalAmount,
+        o.unitCost ?? '',
+        o.netProfit ?? '',
+        o.paymentStatus,
+        o.orderStatus,
+        o.fraudFlag ? 'YES' : 'NO',
+      ]
+        .map(csvEscape)
+        .join(',');
+    });
+    const csv = [headers.map(csvEscape).join(','), ...rows].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], {type: 'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `munaf-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   const openOrder = (order: Order) => {
     setSelectedOrder(order);
@@ -339,6 +423,12 @@ export function OrdersManager() {
         return credited;
       });
 
+      if (nextStatus === 'completed') {
+        await adminFetch(`/api/admin/orders/${encodeURIComponent(order.id)}/complete-effects`, {
+          method: 'POST',
+        }).catch(() => null);
+      }
+
       const tgStatusMsg =
         notifText.trim() ||
         (nextStatus === 'cancelled'
@@ -369,6 +459,68 @@ export function OrdersManager() {
       );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleFulfillFromVault = async (order: Order) => {
+    if (!adminUser || !canOrders) return;
+    setProcessingId(order.id);
+    setFeedback('');
+    try {
+      const res = await adminFetch(
+        `/api/admin/orders/${encodeURIComponent(order.id)}/fulfill-pin`,
+        {method: 'POST'},
+      );
+      const data = (await res.json()) as {
+        ok?: boolean;
+        voucherCode?: string;
+        remainingStock?: number;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        setFeedback(data.error || 'No unused PIN available in vault for this package.');
+        return;
+      }
+      if (data.voucherCode) {
+        setVoucherCode(data.voucherCode);
+      }
+      setFeedback(
+        `Vault PIN delivered (${data.voucherCode || ''}). Remaining stock: ${data.remainingStock ?? 0}.`,
+      );
+    } catch {
+      setFeedback('Network error while claiming PIN from vault.');
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleDistributorDispatch = async (order: Order) => {
+    if (!adminUser || !canOrders) return;
+    setProcessingId(order.id);
+    setFeedback('');
+    try {
+      const res = await adminFetch(
+        `/api/admin/orders/${encodeURIComponent(order.id)}/distributor-dispatch`,
+        {method: 'POST'},
+      );
+      const data = (await res.json()) as {
+        dispatched?: boolean;
+        status?: string;
+        statusText?: string;
+        externalRef?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        setFeedback(data.error || data.statusText || 'Distributor dispatch failed.');
+        return;
+      }
+      setFeedback(
+        `${data.statusText || 'Distributor request finished'}${data.externalRef ? ` (Ref: ${data.externalRef})` : ''}`,
+      );
+    } catch {
+      setFeedback('Network error calling Distributor API.');
     } finally {
       setProcessingId(null);
     }
@@ -464,20 +616,30 @@ export function OrdersManager() {
             />
           </div>
 
-          <div className="flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl overflow-x-auto">
-            {(['all', 'pending', 'processing', 'completed', 'cancelled', 'expired'] as const).map((st) => (
-              <button
-                key={st}
-                type="button"
-                onClick={() => setStatusFilter(st)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize cursor-pointer whitespace-nowrap ${
-                  statusFilter === st
-                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}>
-                {st}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl overflow-x-auto">
+              {(['all', 'pending', 'processing', 'completed', 'cancelled', 'expired', 'fraud'] as const).map((st) => (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => setStatusFilter(st)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize cursor-pointer whitespace-nowrap ${
+                    statusFilter === st
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                      : st === 'fraud' && fraudCount > 0
+                        ? 'text-rose-600 dark:text-rose-400'
+                        : 'text-slate-600 dark:text-slate-400'
+                  }`}>
+                  {st === 'fraud' ? `Fraud (${fraudCount})` : st}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold cursor-pointer whitespace-nowrap">
+              <Download className="w-3.5 h-3.5" /> Export CSV
+            </button>
           </div>
         </div>
 
@@ -504,9 +666,18 @@ export function OrdersManager() {
                   {filtered.map((o) => (
                     <tr key={o.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
                       <td className="px-4 py-3">
-                        <span className="font-mono font-semibold tabular-nums block">
-                          {o.orderNumber}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-semibold tabular-nums">
+                            {o.orderNumber}
+                          </span>
+                          {o.fraudFlag && (
+                            <span
+                              title={(o.fraudReasons || []).join(', ') || 'Flagged by Fraud Guard'}
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-[10px] font-bold">
+                              <AlertTriangle className="w-3 h-3" /> Risk
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[11px] text-slate-500 tabular-nums">
                           {new Date(timestampToMillis(o.createdAt)).toLocaleDateString()}
                         </span>
@@ -615,6 +786,50 @@ export function OrdersManager() {
                 )}
               </div>
             </div>
+
+            {(selectedOrder.fraudFlag ||
+              selectedOrder.couponCode ||
+              selectedOrder.tierDiscount ||
+              selectedOrder.flashSaleDiscount ||
+              typeof selectedOrder.netProfit === 'number' ||
+              (selectedOrder.distributorStatus && selectedOrder.distributorStatus !== 'none')) && (
+              <div className="space-y-2 text-xs">
+                {selectedOrder.fraudFlag && (
+                  <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-200">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" /> Fraud Guard Warning (Score: {selectedOrder.fraudScore ?? 0})
+                    </p>
+                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                      {(selectedOrder.fraudReasons || ['Velocity or mismatch triggered']).map((r, i) => (
+                        <li key={i}>{r}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-wrap gap-x-4 gap-y-1 text-slate-600 dark:text-slate-300">
+                  {selectedOrder.couponCode && (
+                    <span>Coupon: <strong className="font-mono">{selectedOrder.couponCode}</strong> (-{formatCurrency(selectedOrder.couponDiscount || 0)})</span>
+                  )}
+                  {(selectedOrder.flashSaleDiscount || 0) > 0 && (
+                    <span>Flash Sale: -{formatCurrency(selectedOrder.flashSaleDiscount || 0)}</span>
+                  )}
+                  {(selectedOrder.tierDiscount || 0) > 0 && (
+                    <span>Tier ({selectedOrder.appliedTier || 'vip'}): -{formatCurrency(selectedOrder.tierDiscount || 0)}</span>
+                  )}
+                  {typeof selectedOrder.netProfit === 'number' && (selectedOrder.unitCost || 0) > 0 && (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                      Est. Profit: {formatCurrency(selectedOrder.netProfit)}
+                    </span>
+                  )}
+                  {selectedOrder.distributorStatus && selectedOrder.distributorStatus !== 'none' && (
+                    <span>
+                      API Status: <strong className="uppercase">{selectedOrder.distributorStatus}</strong>
+                      {selectedOrder.distributorRef ? ` (${selectedOrder.distributorRef})` : ''}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
 
             {selectedOrder.screenshotUrl && (
               <div className="space-y-1.5">
@@ -726,7 +941,21 @@ export function OrdersManager() {
               )}
 
               {canOrders && (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={processingId === selectedOrder.id || selectedOrder.paymentStatus !== 'verified'}
+                    onClick={() => void handleFulfillFromVault(selectedOrder)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 disabled:opacity-40 text-xs font-semibold cursor-pointer">
+                    <KeyRound className="w-3.5 h-3.5" /> Auto-Deliver Vault PIN
+                  </button>
+                  <button
+                    type="button"
+                    disabled={processingId === selectedOrder.id || selectedOrder.paymentStatus !== 'verified'}
+                    onClick={() => void handleDistributorDispatch(selectedOrder)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-cyan-300 dark:border-cyan-800 text-cyan-700 dark:text-cyan-400 disabled:opacity-40 text-xs font-semibold cursor-pointer">
+                    <Server className="w-3.5 h-3.5" /> Dispatch Distributor API
+                  </button>
                   <button
                     type="button"
                     disabled={processingId === selectedOrder.id}

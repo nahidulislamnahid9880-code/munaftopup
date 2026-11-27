@@ -18,6 +18,12 @@ import {
   notifyTelegramAdmins,
   type TelegramAdminDeps,
 } from './server-telegram-admin.ts';
+import {
+  DEFAULT_COMMERCE_SETTINGS,
+  normalizeCommerceSettings,
+  registerCommerceRoutes,
+  type CommerceSettings,
+} from './server-commerce.ts';
 
 dotenv.config();
 
@@ -121,6 +127,7 @@ interface SystemSettingsStore {
   telegramQuickReplies: TelegramQuickReplyPreset[];
   telegramAdminChatIds: string[];
   telegramAdminOrderAlerts: boolean;
+  commerce?: CommerceSettings;
   updatedAt: string;
 }
 
@@ -291,6 +298,7 @@ function defaultStore(): AdminStoreData {
       telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
       telegramAdminChatIds: [],
       telegramAdminOrderAlerts: true,
+      commerce: {...DEFAULT_COMMERCE_SETTINGS},
       updatedAt: now,
     },
     serverLogs: [],
@@ -371,6 +379,7 @@ function readStore(): AdminStoreData {
       if (typeof parsed.systemSettings.telegramAdminOrderAlerts !== 'boolean') {
         parsed.systemSettings.telegramAdminOrderAlerts = true;
       }
+      parsed.systemSettings.commerce = normalizeCommerceSettings(parsed.systemSettings.commerce);
     }
     if (!Array.isArray(parsed.serverLogs)) parsed.serverLogs = [];
     return parsed;
@@ -4217,6 +4226,7 @@ async function startServer(): Promise<void> {
         body.telegramAdminOrderAlerts !== undefined
           ? Boolean(body.telegramAdminOrderAlerts)
           : prev.telegramAdminOrderAlerts !== false,
+      commerce: normalizeCommerceSettings(prev.commerce),
       updatedAt: new Date().toISOString(),
     };
     appendServerLog(
@@ -4445,16 +4455,30 @@ async function startServer(): Promise<void> {
       const isPermDenied = /PERMISSION_DENIED|insufficient permissions/i.test(message);
       if (isPermDenied) {
         console.warn('[Telegram 24h Metric] Firestore Admin SDK PERMISSION_DENIED (awaiting project IAM grant).');
-      } else {
-        console.error('[Telegram 24h Metric] Firebase Admin SDK query error:', message);
+        res.json({
+          ok: true,
+          connected: false,
+          permissionDenied: true,
+          count: 0,
+          completedCount: 0,
+          pendingCount: 0,
+          processingCount: 0,
+          cancelledOrExpiredCount: 0,
+          totalRevenue: 0,
+          botRunning: telegramBotState.running,
+          botUsername: telegramBotState.username,
+          windowHours: 24,
+          fetchedAt,
+          reason:
+            'Firestore Admin SDK PERMISSION_DENIED: Grant Cloud Datastore User (roles/datastore.user) in Google Cloud IAM for project gen-lang-client-0552010536, then wait ~1 min and click Refresh.',
+        });
+        return;
       }
-      res.status(isPermDenied ? 403 : 500).json({
+      console.error('[Telegram 24h Metric] Firebase Admin SDK query error:', message);
+      res.status(500).json({
         ok: false,
-        connected: !isPermDenied,
-        permissionDenied: isPermDenied,
-        error: isPermDenied
-          ? 'Firestore Admin SDK PERMISSION_DENIED: Grant Cloud Datastore User (roles/datastore.user) IAM role to your preview service account on project gen-lang-client-0552010536.'
-          : message,
+        connected: true,
+        error: message,
         fetchedAt,
       });
     }
@@ -4593,6 +4617,28 @@ async function startServer(): Promise<void> {
   app.get('/api/admin/server-logs', requireAdmin(), (_req, res) => {
     const store = readStore();
     res.json({logs: store.serverLogs});
+  });
+
+  // Advanced Commerce Routes (Coupons, Flash Sales, VIP Tiers, Vault PINs, Fraud Guard, Loyalty/Referrals, Gateway)
+  registerCommerceRoutes(app, {
+    adminDb,
+    readStore,
+    writeStore,
+    appendServerLog,
+    requireSignedInFirebase,
+    requireAdmin,
+    timingSafeEqualsText,
+    markNotificationEventSent,
+    sendAdminNotificationEmail,
+    sendCustomerOrderEmail,
+    sendTelegramOrderStatusUpdate,
+    notifyTelegramAdmins: (text, replyMarkup) => {
+      const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+      if (!botToken) return Promise.resolve();
+      return notifyTelegramAdmins(getTelegramAdminDeps(), botToken, text, replyMarkup);
+    },
+    makeAdminOrderCallback,
+    websiteUrl: WEBSITE_URL,
   });
 
   // Multer & API error handler

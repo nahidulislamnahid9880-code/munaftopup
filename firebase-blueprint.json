@@ -107,6 +107,19 @@
         "quantityLabel": { "type": "string", "maxLength": 80 },
         "unitPrice": { "type": "number" },
         "totalAmount": { "type": "number" },
+        "couponCode": { "type": "string", "maxLength": 40 },
+        "couponDiscount": { "type": "number" },
+        "tierDiscount": { "type": "number" },
+        "flashSaleDiscount": { "type": "number" },
+        "appliedTier": { "type": "string", "enum": ["regular", "vip", "reseller"] },
+        "unitCost": { "type": "number" },
+        "netProfit": { "type": "number" },
+        "loyaltyPointsEarned": { "type": "number" },
+        "fraudFlag": { "type": "boolean" },
+        "fraudScore": { "type": "number" },
+        "fraudReasons": { "type": "array" },
+        "distributorStatus": { "type": "string", "enum": ["none", "dispatched", "success", "failed"] },
+        "distributorRef": { "type": "string", "maxLength": 128 },
         "playerUid": { "type": "string", "maxLength": 80 },
         "serverId": { "type": "string", "maxLength": 80 },
         "paymentType": { "type": "string", "enum": ["manual", "wallet"] },
@@ -197,6 +210,14 @@
         "walletBalance": { "type": "number" },
         "suspended": { "type": "boolean" },
         "suspendedReason": { "type": "string", "maxLength": 300 },
+        "tier": { "type": "string", "enum": ["regular", "vip", "reseller"] },
+        "tierLocked": { "type": "boolean" },
+        "loyaltyPoints": { "type": "number" },
+        "referralCode": { "type": "string", "maxLength": 32 },
+        "referredBy": { "type": "string", "maxLength": 128 },
+        "referralRewarded": { "type": "boolean" },
+        "totalSpent": { "type": "number" },
+        "savedUids": { "type": "array", "description": "Saved player UID presets for fast checkout" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -318,6 +339,101 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["customerUid", "chatId", "updatedAt"]
+    },
+    "Coupon": {
+      "title": "Coupon",
+      "description": "Promo / discount coupon code managed by admins.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "code": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "title": { "type": "string", "maxLength": 120 },
+        "discountType": { "type": "string", "enum": ["percent", "fixed"] },
+        "discountValue": { "type": "number" },
+        "minOrderAmount": { "type": "number" },
+        "maxDiscountAmount": { "type": "number" },
+        "usageLimit": { "type": "number" },
+        "perUserLimit": { "type": "number" },
+        "usedCount": { "type": "number" },
+        "active": { "type": "boolean" },
+        "expiresAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "discountType", "discountValue", "active", "createdAt", "updatedAt"]
+    },
+    "FlashSale": {
+      "title": "FlashSale",
+      "description": "Time-bound flash sale discount campaign for a product.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "productId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 120 },
+        "discountPercent": { "type": "number" },
+        "badgeText": { "type": "string", "maxLength": 40 },
+        "startsAt": { "type": "string", "maxLength": 64 },
+        "endsAt": { "type": "string", "maxLength": 64 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "productId", "discountPercent", "active", "startsAt", "endsAt", "createdAt", "updatedAt"]
+    },
+    "VoucherStock": {
+      "title": "VoucherStock",
+      "description": "Secret voucher/redeem PIN code vault claimed atomically by server on verified orders.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 120 },
+        "packageId": { "type": "string", "maxLength": 128 },
+        "packageName": { "type": "string", "maxLength": 120 },
+        "code": { "type": "string", "minLength": 3, "maxLength": 240 },
+        "status": { "type": "string", "enum": ["unused", "claimed"] },
+        "claimedOrderId": { "type": "string", "maxLength": 128 },
+        "claimedOrderNumber": { "type": "string", "maxLength": 32 },
+        "claimedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "productId", "packageId", "code", "status", "createdAt"]
+    },
+    "ApiLog": {
+      "title": "ApiLog",
+      "description": "Server-recorded distributor, gateway, PIN vault, and fraud guard execution logs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["distributor", "payment_gateway", "pin_vault", "fraud_guard"] },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "endpoint": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["success", "failed", "pending"] },
+        "httpStatus": { "type": "number" },
+        "message": { "type": "string", "maxLength": 1000 },
+        "responsePreview": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "orderNumber", "status", "message", "createdAt"]
+    },
+    "ReferralEvent": {
+      "title": "ReferralEvent",
+      "description": "Ledger of referral bonuses, loyalty cashback earnings, and wallet point redemptions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "referrerUid": { "type": "string", "maxLength": 128 },
+        "referredUid": { "type": "string", "maxLength": 128 },
+        "referredEmail": { "type": "string", "maxLength": 160 },
+        "eventType": { "type": "string", "enum": ["referral_bonus", "loyalty_earn", "loyalty_redeem"] },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "walletDelta": { "type": "number" },
+        "pointsDelta": { "type": "number" },
+        "note": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "referrerUid", "referredUid", "eventType", "walletDelta", "pointsDelta", "createdAt"]
     }
   },
   "firestore": {
@@ -384,6 +500,26 @@
     "/telegram_chats/{customerUid}": {
       "schema": { "$ref": "#/entities/TelegramChatRoute" },
       "description": "Server-managed Telegram Business chat and connection routing metadata."
+    },
+    "/coupons/{couponId}": {
+      "schema": { "$ref": "#/entities/Coupon" },
+      "description": "Promotional discount coupons."
+    },
+    "/flashSales/{saleId}": {
+      "schema": { "$ref": "#/entities/FlashSale" },
+      "description": "Active and scheduled flash sale campaigns."
+    },
+    "/voucherStock/{stockId}": {
+      "schema": { "$ref": "#/entities/VoucherStock" },
+      "description": "Staff-only and server-claimed voucher PIN vault."
+    },
+    "/apiLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ApiLog" },
+      "description": "Immutable API fulfillment and fraud logs."
+    },
+    "/referralEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/ReferralEvent" },
+      "description": "Referral and loyalty transaction ledger."
     }
   }
 }

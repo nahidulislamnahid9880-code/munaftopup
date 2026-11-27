@@ -26,7 +26,10 @@ import {useTheme} from '../../contexts/ThemeContext';
 import {formatCurrency} from '../../lib/firebase';
 import {resolveTelegramHref, resolveWhatsAppHref} from '../../lib/supportLinks';
 import {ImageWithFallback} from '../ImageWithFallback';
+import {OfflineIndicator} from '../OfflineIndicator';
+import {PWAInstallButton} from '../PWAInstallButton';
 import {TelegramIcon, WhatsAppIcon} from '../SupportIcons';
+import {useBrowserPushAlerts} from '../../hooks/useBrowserPushAlerts';
 
 export function StoreLayout({children}: {children: React.ReactNode}) {
   const {siteSettings} = useStore();
@@ -36,6 +39,8 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();
+
+  useBrowserPushAlerts(firebaseUser?.uid);
 
   const walletBalance = customerProfile?.walletBalance ?? 0;
   const avatarUrl = customerProfile?.photoURL || firebaseUser?.photoURL || '';
@@ -68,6 +73,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
+      <OfflineIndicator />
       {/* Larger 3D scrolling dismissible notice bar controlled by Admin */}
       {siteSettings.noticeActive && siteSettings.noticeText && !noticeDismissed && (
         <div
@@ -151,8 +157,9 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             ))}
           </nav>
 
-          {/* Right: Language + Theme + Orders Bag + Wallet + Profile Avatar */}
+          {/* Right: Language + Theme + PWA Install + Orders Bag + Wallet + Profile Avatar */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <PWAInstallButton variant="compact" />
             <button
               type="button"
               onClick={toggleLang}
@@ -272,6 +279,8 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
                   <span>{lang === 'en' ? 'বাংলা' : 'English'}</span>
                 </button>
               </div>
+
+              <PWAInstallButton variant="drawer" />
 
               {/* Drawer Navigation Links */}
               <nav className="space-y-1">

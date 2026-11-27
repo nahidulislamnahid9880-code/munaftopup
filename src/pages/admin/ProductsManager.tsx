@@ -150,6 +150,7 @@ export function ProductsManager() {
         ...pkg,
         price: Number(pkg.price) || 0,
         originalPrice: Number(pkg.originalPrice) || Number(pkg.price) || 0,
+        costPrice: Math.max(0, Number(pkg.costPrice) || 0),
         displayOrder: Number(pkg.displayOrder) || idx + 1,
       }));
       if (cleanPackages.length === 0) {
@@ -760,6 +761,22 @@ export function ProductsManager() {
                           min={0}
                           value={pkg.originalPrice}
                           onChange={(e) => updatePackage(idx, {originalPrice: Number(e.target.value)})}
+                          className="w-full px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium mb-1">Cost Price (৳, Optional)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={pkg.costPrice ?? ''}
+                          placeholder="For profit analytics"
+                          onChange={(e) =>
+                            updatePackage(idx, {
+                              costPrice: e.target.value === '' ? 0 : Math.max(0, Number(e.target.value)),
+                            })
+                          }
                           className="w-full px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                         />
                       </div>

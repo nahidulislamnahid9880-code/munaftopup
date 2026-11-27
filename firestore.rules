@@ -177,7 +177,11 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'orderNumber', 'customerUid', 'customerName', 'customerEmail', 'customerPhone',
           'productId', 'productName', 'productImage', 'packageId', 'packageName', 'quantityLabel',
-          'unitPrice', 'totalAmount', 'playerUid', 'serverId', 'paymentType',
+          'unitPrice', 'totalAmount',
+          'couponCode', 'couponDiscount', 'tierDiscount', 'flashSaleDiscount', 'appliedTier',
+          'unitCost', 'netProfit', 'loyaltyPointsEarned',
+          'fraudFlag', 'fraudScore', 'fraudReasons', 'distributorStatus', 'distributorRef',
+          'playerUid', 'serverId', 'paymentType',
           'paymentMethodId', 'paymentMethodName', 'senderNumber', 'trxId', 'trxKey',
           'screenshotUrl', 'voucherCode', 'walletRefunded', 'paymentStatus', 'orderStatus', 'adminNote', 'notificationMessage',
           'createdAt', 'updatedAt', 'completedAt'
@@ -196,6 +200,19 @@ service cloud.firestore {
         data.quantityLabel is string && data.quantityLabel.size() <= 80 &&
         data.unitPrice is number && data.unitPrice >= 0 &&
         data.totalAmount is number && data.totalAmount >= 0 &&
+        (!('couponCode' in data) || (data.couponCode is string && data.couponCode.size() <= 40)) &&
+        (!('couponDiscount' in data) || (data.couponDiscount is number && data.couponDiscount >= 0)) &&
+        (!('tierDiscount' in data) || (data.tierDiscount is number && data.tierDiscount >= 0)) &&
+        (!('flashSaleDiscount' in data) || (data.flashSaleDiscount is number && data.flashSaleDiscount >= 0)) &&
+        (!('appliedTier' in data) || data.appliedTier in ['regular', 'vip', 'reseller']) &&
+        (!('unitCost' in data) || (data.unitCost is number && data.unitCost >= 0)) &&
+        (!('netProfit' in data) || data.netProfit is number) &&
+        (!('loyaltyPointsEarned' in data) || (data.loyaltyPointsEarned is number && data.loyaltyPointsEarned >= 0)) &&
+        (!('fraudFlag' in data) || data.fraudFlag is bool) &&
+        (!('fraudScore' in data) || (data.fraudScore is number && data.fraudScore >= 0)) &&
+        (!('fraudReasons' in data) || (data.fraudReasons is list && data.fraudReasons.size() <= 15)) &&
+        (!('distributorStatus' in data) || data.distributorStatus in ['none', 'dispatched', 'success', 'failed']) &&
+        (!('distributorRef' in data) || (data.distributorRef is string && data.distributorRef.size() <= 128)) &&
         data.playerUid is string && data.playerUid.size() <= 80 &&
         data.serverId is string && data.serverId.size() <= 80 &&
         (!('paymentType' in data) || data.paymentType in ['manual', 'wallet']) &&
@@ -279,7 +296,13 @@ service cloud.firestore {
 
     function isValidCustomer(data) {
       return data.keys().hasAll(['uid', 'displayName', 'email', 'photoURL', 'phone', 'suspended', 'suspendedReason', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'phone', 'walletBalance', 'suspended', 'suspendedReason', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'photoURL', 'phone', 'walletBalance',
+          'suspended', 'suspendedReason',
+          'tier', 'tierLocked', 'loyaltyPoints', 'referralCode', 'referredBy',
+          'referralRewarded', 'totalSpent', 'savedUids',
+          'createdAt', 'updatedAt'
+        ]) &&
         isValidId(data.uid) &&
         data.displayName is string && data.displayName.size() <= 100 &&
         data.email is string && data.email.size() <= 160 &&
@@ -288,6 +311,14 @@ service cloud.firestore {
         (!('walletBalance' in data) || (data.walletBalance is number && data.walletBalance >= 0 && data.walletBalance <= 10000000)) &&
         data.suspended is bool &&
         data.suspendedReason is string && data.suspendedReason.size() <= 300 &&
+        (!('tier' in data) || data.tier in ['regular', 'vip', 'reseller']) &&
+        (!('tierLocked' in data) || data.tierLocked is bool) &&
+        (!('loyaltyPoints' in data) || (data.loyaltyPoints is number && data.loyaltyPoints >= 0 && data.loyaltyPoints <= 10000000)) &&
+        (!('referralCode' in data) || (data.referralCode is string && data.referralCode.size() <= 32)) &&
+        (!('referredBy' in data) || (data.referredBy is string && data.referredBy.size() <= 128)) &&
+        (!('referralRewarded' in data) || data.referralRewarded is bool) &&
+        (!('totalSpent' in data) || (data.totalSpent is number && data.totalSpent >= 0 && data.totalSpent <= 100000000)) &&
+        (!('savedUids' in data) || (data.savedUids is list && data.savedUids.size() <= 15)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp && data.updatedAt == request.time;
     }
@@ -373,6 +404,74 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    function isValidCoupon(data) {
+      return data.keys().hasAll([
+          'id', 'code', 'title', 'discountType', 'discountValue',
+          'minOrderAmount', 'maxDiscountAmount', 'usageLimit', 'perUserLimit',
+          'usedCount', 'active', 'expiresAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'code', 'title', 'discountType', 'discountValue',
+          'minOrderAmount', 'maxDiscountAmount', 'usageLimit', 'perUserLimit',
+          'usedCount', 'active', 'expiresAt', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.code is string && data.code.size() >= 2 && data.code.size() <= 40 &&
+        data.title is string && data.title.size() <= 120 &&
+        data.discountType in ['percent', 'fixed'] &&
+        data.discountValue is number && data.discountValue > 0 && data.discountValue <= 100000 &&
+        data.minOrderAmount is number && data.minOrderAmount >= 0 &&
+        data.maxDiscountAmount is number && data.maxDiscountAmount >= 0 &&
+        data.usageLimit is number && data.usageLimit >= 0 &&
+        data.perUserLimit is number && data.perUserLimit >= 0 &&
+        data.usedCount is number && data.usedCount >= 0 &&
+        data.active is bool &&
+        data.expiresAt is string && data.expiresAt.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidFlashSale(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'productId', 'productName', 'discountPercent',
+          'badgeText', 'startsAt', 'endsAt', 'active', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'title', 'productId', 'productName', 'discountPercent',
+          'badgeText', 'startsAt', 'endsAt', 'active', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() <= 120 &&
+        data.discountPercent is number && data.discountPercent > 0 && data.discountPercent <= 90 &&
+        data.badgeText is string && data.badgeText.size() <= 40 &&
+        data.startsAt is string && data.startsAt.size() <= 64 &&
+        data.endsAt is string && data.endsAt.size() <= 64 &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidVoucherStock(data) {
+      return data.keys().hasAll(['id', 'productId', 'productName', 'packageId', 'packageName', 'code', 'status', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'productId', 'productName', 'packageId', 'packageName',
+          'code', 'status', 'claimedOrderId', 'claimedOrderNumber', 'claimedAt', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() <= 120 &&
+        data.packageId is string && data.packageId.size() >= 1 && data.packageId.size() <= 128 &&
+        data.packageName is string && data.packageName.size() <= 120 &&
+        data.code is string && data.code.size() >= 3 && data.code.size() <= 240 &&
+        data.status in ['unused', 'claimed'] &&
+        (!('claimedOrderId' in data) || (data.claimedOrderId is string && data.claimedOrderId.size() <= 128)) &&
+        (!('claimedOrderNumber' in data) || (data.claimedOrderNumber is string && data.claimedOrderNumber.size() <= 32)) &&
+        (!('claimedAt' in data) || data.claimedAt is timestamp) &&
+        data.createdAt is timestamp;
+    }
+
     // ---------------------------------------------------------
     // Collection Rules
     // ---------------------------------------------------------
@@ -438,6 +537,8 @@ service cloud.firestore {
         incoming().adminNote == '' &&
         (!('voucherCode' in incoming()) || incoming().voucherCode == '') &&
         (!('walletRefunded' in incoming()) || incoming().walletRefunded == false) &&
+        (!('fraudFlag' in incoming()) || incoming().fraudFlag == false) &&
+        (!('loyaltyPointsEarned' in incoming()) || incoming().loyaltyPointsEarned == 0) &&
         incoming().createdAt == request.time &&
         !('completedAt' in incoming()) &&
         exists(/databases/$(database)/documents/products/$(incoming().productId)) &&
@@ -473,7 +574,9 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         (!('walletRefunded' in existing()) || existing().walletRefunded == false || incoming().walletRefunded == true) &&
         incoming().diff(existing()).affectedKeys().hasOnly([
-          'paymentStatus', 'orderStatus', 'voucherCode', 'walletRefunded', 'adminNote', 'notificationMessage', 'updatedAt', 'completedAt'
+          'paymentStatus', 'orderStatus', 'voucherCode', 'walletRefunded', 'adminNote', 'notificationMessage',
+          'distributorStatus', 'distributorRef', 'fraudFlag', 'fraudScore', 'fraudReasons',
+          'loyaltyPointsEarned', 'updatedAt', 'completedAt'
         ]);
       allow delete: if false;
     }
@@ -557,6 +660,11 @@ service cloud.firestore {
         incoming().walletBalance == 0 &&
         incoming().suspended == false &&
         incoming().suspendedReason == '' &&
+        (!('tier' in incoming()) || incoming().tier == 'regular') &&
+        (!('tierLocked' in incoming()) || incoming().tierLocked == false) &&
+        (!('loyaltyPoints' in incoming()) || incoming().loyaltyPoints == 0) &&
+        (!('referralRewarded' in incoming()) || incoming().referralRewarded == false) &&
+        (!('totalSpent' in incoming()) || incoming().totalSpent == 0) &&
         incoming().createdAt == request.time;
       allow update: if isValidId(uid) && isSignedIn() && isValidCustomer(incoming()) &&
         incoming().uid == existing().uid &&
@@ -564,16 +672,21 @@ service cloud.firestore {
           (request.auth.uid == uid &&
            incoming().suspended == existing().suspended &&
            incoming().suspendedReason == existing().suspendedReason &&
+           (!('tier' in incoming()) ? !('tier' in existing()) : (!('tier' in existing()) ? incoming().tier == 'regular' : incoming().tier == existing().tier)) &&
+           (!('tierLocked' in incoming()) ? !('tierLocked' in existing()) : (!('tierLocked' in existing()) ? incoming().tierLocked == false : incoming().tierLocked == existing().tierLocked)) &&
+           (!('loyaltyPoints' in incoming()) ? !('loyaltyPoints' in existing()) : (!('loyaltyPoints' in existing()) ? incoming().loyaltyPoints == 0 : incoming().loyaltyPoints == existing().loyaltyPoints)) &&
+           (!('referralRewarded' in incoming()) ? !('referralRewarded' in existing()) : (!('referralRewarded' in existing()) ? incoming().referralRewarded == false : incoming().referralRewarded == existing().referralRewarded)) &&
+           (!('totalSpent' in incoming()) ? !('totalSpent' in existing()) : (!('totalSpent' in existing()) ? incoming().totalSpent == 0 : incoming().totalSpent == existing().totalSpent)) &&
            (
              (
                !('walletBalance' in existing()) &&
                incoming().walletBalance == 0 &&
-               incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'phone', 'walletBalance', 'updatedAt'])
+               incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'phone', 'savedUids', 'walletBalance', 'updatedAt'])
              ) ||
              (
                'walletBalance' in existing() &&
                incoming().walletBalance == existing().walletBalance &&
-               incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'phone', 'updatedAt'])
+               incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'phone', 'savedUids', 'updatedAt'])
              ) ||
              (
                'walletBalance' in existing() &&
@@ -584,7 +697,9 @@ service cloud.firestore {
            )) ||
           (hasPerm('customers') &&
            (!('walletBalance' in existing()) || incoming().walletBalance == existing().walletBalance) &&
-           incoming().diff(existing()).affectedKeys().hasOnly(['suspended', 'suspendedReason', 'updatedAt'])) ||
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'suspended', 'suspendedReason', 'tier', 'tierLocked', 'loyaltyPoints', 'updatedAt'
+           ])) ||
           (hasPerm('payments') &&
            incoming().suspended == existing().suspended &&
            incoming().suspendedReason == existing().suspendedReason &&
@@ -683,6 +798,69 @@ service cloud.firestore {
         incoming().customerUid == existing().customerUid &&
         incoming().read == true &&
         incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if false;
+    }
+
+    // Promotional Coupons (Active promos readable by signed-in/public; full CRUD by products/customization staff)
+    match /coupons/{couponId} {
+      allow get: if isValidId(couponId) && (existing().active == true || hasPerm('products') || hasPerm('customization'));
+      allow list: if resource.data.active == true || hasPerm('products') || hasPerm('customization');
+      allow create: if isValidId(couponId) && (hasPerm('products') || hasPerm('customization')) &&
+        isValidCoupon(incoming()) &&
+        incoming().id == couponId &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(couponId) && (hasPerm('products') || hasPerm('customization')) &&
+        isValidCoupon(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(couponId) && (hasPerm('products') || hasPerm('customization'));
+    }
+
+    // Flash Sales (Publicly readable for storefront countdowns; admin CRUD)
+    match /flashSales/{saleId} {
+      allow get: if isValidId(saleId);
+      allow list: if true;
+      allow create: if isValidId(saleId) && (hasPerm('products') || hasPerm('customization')) &&
+        isValidFlashSale(incoming()) &&
+        incoming().id == saleId &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(saleId) && (hasPerm('products') || hasPerm('customization')) &&
+        isValidFlashSale(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(saleId) && (hasPerm('products') || hasPerm('customization'));
+    }
+
+    // Voucher PIN Vault (Secret codes: strictly staff-only read/write, NEVER customer readable)
+    match /voucherStock/{stockId} {
+      allow get: if isValidId(stockId) && (hasPerm('products') || hasPerm('orders'));
+      allow list: if hasPerm('products') || hasPerm('orders');
+      allow create: if isValidId(stockId) && hasPerm('products') &&
+        isValidVoucherStock(incoming()) &&
+        incoming().id == stockId &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(stockId) && hasPerm('products') &&
+        isValidVoucherStock(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(stockId) && hasPerm('products');
+    }
+
+    // API Fulfillment & Fraud Logs (Server-written, read-only for staff)
+    match /apiLogs/{logId} {
+      allow get: if isValidId(logId) && isStaff();
+      allow list: if isStaff();
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Referral & Loyalty Ledger (Server-written, owner or staff readable)
+    match /referralEvents/{eventId} {
+      allow get: if isValidId(eventId) && isSignedIn() && (existing().referrerUid == request.auth.uid || existing().referredUid == request.auth.uid || isStaff());
+      allow list: if isSignedIn() && (resource.data.referrerUid == request.auth.uid || resource.data.referredUid == request.auth.uid || isStaff());
+      allow create: if false;
+      allow update: if false;
       allow delete: if false;
     }
 

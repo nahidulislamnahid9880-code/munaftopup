@@ -2,32 +2,51 @@ import React, {useEffect, useMemo, useState} from 'react';
 import {Link, useSearchParams} from 'react-router-dom';
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Copy,
   CreditCard,
+  Flame,
+  Gift,
+  KeyRound,
   Loader2,
   ShieldCheck,
+  Tag,
   Wallet,
+  X,
 } from 'lucide-react';
-import {doc, getDoc, getDocFromServer, serverTimestamp, writeBatch} from 'firebase/firestore';
 import {useAuth} from '../../contexts/AuthContext';
 import {useLanguage} from '../../contexts/LanguageContext';
 import {useStore} from '../../contexts/StoreContext';
 import {useToast} from '../../contexts/ToastContext';
+import {formatCurrency} from '../../lib/firebase';
 import {
-  OperationType,
-  db,
-  formatCurrency,
-  handleFirestoreError,
-  normalizeTrxKey,
-} from '../../lib/firebase';
+  calculatePackagePricing,
+  getActiveFlashSaleForProduct,
+  validatePlayerUidForProduct,
+} from '../../lib/pricing';
 import {PackageVisual} from '../../components/PackageTypeIcon';
 import {PaymentMethodLogo} from '../../components/PaymentMethodLogo';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
+interface AppliedCouponState {
+  code: string;
+  title: string;
+  discountAmount: number;
+}
+
+interface ConfirmedOrderResult {
+  orderNumber: string;
+  totalAmount: number;
+  paymentStatus: string;
+  orderStatus: string;
+  voucherCode?: string;
+  fraudFlag?: boolean;
+}
+
 export function CheckoutPage() {
   const [searchParams] = useSearchParams();
-  const {products, paymentMethods} = useStore();
+  const {products, paymentMethods, flashSales, programConfig} = useStore();
   const {firebaseUser, customerProfile, signInCustomerWithGoogle} = useAuth();
   const {t} = useLanguage();
   const toast = useToast();
@@ -49,10 +68,34 @@ export function CheckoutPage() {
     () => paymentMethods.filter((m) => m.active),
     [paymentMethods],
   );
+  const activeFlashSale = useMemo(
+    () => (product ? getActiveFlashSaleForProduct(flashSales, product.id) : null),
+    [flashSales, product],
+  );
+
+  const pricing = useMemo(
+    () =>
+      calculatePackagePricing(
+        selectedPackage?.price || 0,
+        activeFlashSale,
+        customerProfile?.tier,
+        programConfig,
+      ),
+    [selectedPackage?.price, activeFlashSale, customerProfile?.tier, programConfig],
+  );
+
+  const [couponInput, setCouponInput] = useState('');
+  const [appliedCoupon, setAppliedCoupon] = useState<AppliedCouponState | null>(null);
+  const [validatingCoupon, setValidatingCoupon] = useState(false);
+
+  const finalTotal = useMemo(() => {
+    const disc = appliedCoupon?.discountAmount || 0;
+    return Math.max(1, Number((pricing.finalPriceBeforeCoupon - disc).toFixed(2)));
+  }, [pricing.finalPriceBeforeCoupon, appliedCoupon]);
 
   const walletBalance = customerProfile?.walletBalance ?? 0;
   const canPayWithWallet = Boolean(
-    firebaseUser && selectedPackage && selectedPackage.price > 0 && walletBalance >= selectedPackage.price,
+    firebaseUser && selectedPackage && finalTotal > 0 && walletBalance >= finalTotal,
   );
 
   const [paymentMode, setPaymentMode] = useState<'manual' | 'wallet'>('manual');
@@ -65,8 +108,10 @@ export function CheckoutPage() {
   const [copiedNumber, setCopiedNumber] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
+  const [gatewayRedirecting, setGatewayRedirecting] = useState(false);
   const [error, setError] = useState('');
-  const [confirmedOrderNumber, setConfirmedOrderNumber] = useState('');
+  const [duplicateOrderWarning, setDuplicateOrderWarning] = useState<string | null>(null);
+  const [confirmedResult, setConfirmedResult] = useState<ConfirmedOrderResult | null>(null);
 
   useEffect(() => {
     if (firebaseUser && !customerName) {
@@ -85,18 +130,17 @@ export function CheckoutPage() {
 
   const selectedMethod = activeMethods.find((m) => m.id === selectedMethodId) || activeMethods[0];
 
-  const handleCopyAccount = async () => {
-    if (!selectedMethod?.accountNumber) return;
-    await navigator.clipboard.writeText(selectedMethod.accountNumber);
-    setCopiedNumber(true);
-    toast.success(`${selectedMethod.name} number copied`);
-    setTimeout(() => setCopiedNumber(false), 2000);
+  const handleCopyText = async (val: string, label: string) => {
+    if (!val) return;
+    await navigator.clipboard.writeText(val);
+    toast.success(`${label} copied`);
   };
 
-  const maskUid = (uid: string) => {
-    const clean = uid.trim();
-    if (clean.length <= 4) return clean;
-    return `${clean.slice(0, 3)}***${clean.slice(-2)}`;
+  const handleCopyAccount = async () => {
+    if (!selectedMethod?.accountNumber) return;
+    await handleCopyText(selectedMethod.accountNumber, selectedMethod.name);
+    setCopiedNumber(true);
+    setTimeout(() => setCopiedNumber(false), 2000);
   };
 
   const failValidation = (msg: string) => {
@@ -104,8 +148,53 @@ export function CheckoutPage() {
     toast.error(msg);
   };
 
-  const handleSubmitOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleApplyCoupon = async () => {
+    if (!firebaseUser) {
+      toast.error('Please sign in first to apply a promo code');
+      return;
+    }
+    const cleanCode = couponInput.trim().toUpperCase();
+    if (!cleanCode) {
+      toast.error('Enter a promo code');
+      return;
+    }
+    setValidatingCoupon(true);
+    setError('');
+    try {
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch('/api/store/validate-coupon', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          code: cleanCode,
+          productId: product?.id,
+          packageId: selectedPackage?.id,
+          amount: pricing.finalPriceBeforeCoupon,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        coupon?: AppliedCouponState;
+      };
+      if (!res.ok || !data.coupon) {
+        throw new Error(data.error || 'Promo code is invalid');
+      }
+      setAppliedCoupon(data.coupon);
+      setCouponInput(data.coupon.code);
+      toast.success(`Coupon ${data.coupon.code} applied (-${formatCurrency(data.coupon.discountAmount)})`);
+    } catch (err) {
+      setAppliedCoupon(null);
+      toast.error(err instanceof Error ? err.message : 'Unable to apply promo code');
+    } finally {
+      setValidatingCoupon(false);
+    }
+  };
+
+  const submitOrderEnhanced = async (confirmDuplicate: boolean) => {
     setError('');
 
     if (!firebaseUser) {
@@ -122,9 +211,12 @@ export function CheckoutPage() {
       failValidation('Selected product or package is no longer available.');
       return;
     }
-    if (product.requiresUid && !playerUid.trim()) {
-      failValidation(`Please enter your ${product.uidLabel || 'Player UID'}.`);
-      return;
+    if (product.requiresUid) {
+      const uidErr = validatePlayerUidForProduct(product.name, playerUid);
+      if (uidErr) {
+        failValidation(uidErr);
+        return;
+      }
     }
     if (product.requiresServerId && !serverId.trim()) {
       failValidation(`Please enter your ${product.serverLabel || 'Server ID'}.`);
@@ -134,14 +226,17 @@ export function CheckoutPage() {
       failValidation('Please enter your name.');
       return;
     }
+
     const effectivePhone = (
-      customerProfile?.phone?.trim() && customerProfile.phone.trim().length >= 5
-        ? customerProfile.phone.trim()
-        : 'Not Required'
+      customerPhone.trim().length >= 5
+        ? customerPhone.trim()
+        : customerProfile?.phone?.trim() && customerProfile.phone.trim().length >= 5
+          ? customerProfile.phone.trim()
+          : 'Not Required'
     ).slice(0, 30);
 
     if (paymentMode === 'wallet') {
-      if (selectedPackage.price <= 0 || walletBalance < selectedPackage.price) {
+      if (finalTotal <= 0 || walletBalance < finalTotal) {
         failValidation('Insufficient Wallet Balance. Add money or use bKash / Nagad.');
         return;
       }
@@ -158,217 +253,106 @@ export function CheckoutPage() {
 
     setSubmitting(true);
     try {
-      const orderId = `ord_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const orderNumber = `SV-${Math.floor(100000 + Math.random() * 900000)}`;
-      const now = serverTimestamp();
-      const batch = writeBatch(db);
-      const thumbUrl = (selectedPackage.imageUrl || product.images?.[0] || '').slice(0, 1000);
-
-      if (paymentMode === 'wallet') {
-        const custRef = doc(db, 'customers', firebaseUser.uid);
-        let custSnap;
-        try {
-          custSnap = await getDocFromServer(custRef);
-        } catch {
-          custSnap = await getDoc(custRef);
-        }
-        const freshBalance = custSnap.exists()
-          ? Number((custSnap.data() as {walletBalance?: number}).walletBalance || 0)
-          : walletBalance;
-
-        if (freshBalance < selectedPackage.price) {
-          failValidation('Insufficient Wallet Balance. Add money or use bKash / Nagad.');
-          setSubmitting(false);
-          return;
-        }
-
-        const nextBalance = Math.max(0, Number((freshBalance - selectedPackage.price).toFixed(2)));
-        const walletTrx = `WALLET-${orderNumber}`;
-        const walletTrxKey = `wallet_${orderNumber}`;
-
-        batch.update(custRef, {
-          walletBalance: nextBalance,
-          updatedAt: now,
-        });
-
-        batch.set(doc(db, 'orders', orderId), {
-          id: orderId,
-          orderNumber,
-          customerUid: firebaseUser.uid,
-          customerName: customerName.trim().slice(0, 100),
-          customerEmail: (firebaseUser.email || '').slice(0, 160),
-          customerPhone: effectivePhone,
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch('/api/orders/create-enhanced', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
           productId: product.id,
-          productName: product.name.slice(0, 120),
-          productImage: thumbUrl,
           packageId: selectedPackage.id,
-          packageName: selectedPackage.name.slice(0, 120),
-          quantityLabel: selectedPackage.quantityLabel.slice(0, 80),
-          unitPrice: selectedPackage.price,
-          totalAmount: selectedPackage.price,
-          playerUid: playerUid.trim().slice(0, 80),
-          serverId: serverId.trim().slice(0, 80),
-          paymentType: 'wallet',
-          paymentMethodId: 'wallet',
-          paymentMethodName: 'Wallet Balance',
-          senderNumber: effectivePhone.slice(0, 40),
-          trxId: walletTrx,
-          trxKey: walletTrxKey,
-          screenshotUrl: '',
-          voucherCode: '',
-          paymentStatus: 'verified',
-          orderStatus: 'pending',
-          adminNote: '',
-          notificationMessage: 'Paid via Wallet Balance. Queued for instant top-up delivery.',
-          createdAt: now,
-          updatedAt: now,
-        });
-
-        batch.set(doc(db, 'orderTracking', orderNumber), {
-          orderNumber,
-          productName: product.name.slice(0, 120),
-          packageName: selectedPackage.name.slice(0, 120),
-          playerUidMasked: maskUid(playerUid),
-          paymentStatus: 'verified',
-          orderStatus: 'pending',
-          notificationMessage: 'Paid via Wallet Balance. Queued for instant top-up delivery.',
-          createdAt: now,
-          updatedAt: now,
-        });
-      } else {
-        const trxKey = normalizeTrxKey(selectedMethod!.id, trxId);
-        try {
-          const existingTrx = await getDoc(doc(db, 'trxRegistry', trxKey));
-          if (existingTrx.exists()) {
-            failValidation('This Transaction ID (TrxID) has already been used. Duplicate TrxIDs are not permitted.');
-            setSubmitting(false);
-            return;
-          }
-        } catch (checkErr) {
-          const checkMsg = checkErr instanceof Error ? checkErr.message.toLowerCase() : '';
-          if (checkMsg.includes('permission')) {
-            failValidation('This Transaction ID (TrxID) has already been used. Duplicate TrxIDs are not permitted.');
-            setSubmitting(false);
-            return;
-          }
-          throw checkErr;
-        }
-
-        batch.set(doc(db, 'orders', orderId), {
-          id: orderId,
-          orderNumber,
-          customerUid: firebaseUser.uid,
-          customerName: customerName.trim().slice(0, 100),
-          customerEmail: (firebaseUser.email || '').slice(0, 160),
+          playerUid: playerUid.trim(),
+          serverId: serverId.trim() || 'N/A',
+          customerName: customerName.trim(),
           customerPhone: effectivePhone,
-          productId: product.id,
-          productName: product.name.slice(0, 120),
-          productImage: thumbUrl,
-          packageId: selectedPackage.id,
-          packageName: selectedPackage.name.slice(0, 120),
-          quantityLabel: selectedPackage.quantityLabel.slice(0, 80),
-          unitPrice: selectedPackage.price,
-          totalAmount: selectedPackage.price,
-          playerUid: playerUid.trim().slice(0, 80),
-          serverId: serverId.trim().slice(0, 80),
-          paymentType: 'manual',
-          paymentMethodId: selectedMethod!.id,
-          paymentMethodName: selectedMethod!.name.slice(0, 60),
-          senderNumber: effectivePhone.slice(0, 40),
-          trxId: trxId.trim().toUpperCase().slice(0, 64),
-          trxKey,
-          screenshotUrl: '',
-          voucherCode: '',
-          paymentStatus: 'pending',
-          orderStatus: 'pending',
-          adminNote: '',
-          notificationMessage: 'Order received. Awaiting payment verification.',
-          createdAt: now,
-          updatedAt: now,
-        });
+          paymentType: paymentMode,
+          paymentMethodId: paymentMode === 'wallet' ? 'wallet' : selectedMethod?.id,
+          senderNumber: paymentMode === 'wallet' ? 'WALLET' : effectivePhone,
+          trxId: paymentMode === 'wallet' ? '' : trxId.trim().toUpperCase(),
+          couponCode: appliedCoupon?.code || '',
+          confirmDuplicate,
+        }),
+      });
 
-        batch.set(doc(db, 'orderTracking', orderNumber), {
-          orderNumber,
-          productName: product.name.slice(0, 120),
-          packageName: selectedPackage.name.slice(0, 120),
-          playerUidMasked: maskUid(playerUid),
-          paymentStatus: 'pending',
-          orderStatus: 'pending',
-          notificationMessage: 'Order received. Awaiting payment verification.',
-          createdAt: now,
-          updatedAt: now,
-        });
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        code?: string;
+        existingOrderNumber?: string;
+        error?: string;
+        orderNumber?: string;
+        totalAmount?: number;
+        paymentStatus?: string;
+        orderStatus?: string;
+        voucherCode?: string;
+        fraudFlag?: boolean;
+      };
 
-        batch.set(doc(db, 'trxRegistry', trxKey), {
-          trxKey,
-          trxId: trxId.trim().toUpperCase().slice(0, 64),
-          orderId,
-          customerUid: firebaseUser.uid,
-          paymentMethodId: selectedMethod!.id,
-          amount: selectedPackage.price,
-          status: 'pending',
-          createdAt: now,
-        });
+      if (res.status === 409 && payload.code === 'DUPLICATE_PENDING_ORDER') {
+        setDuplicateOrderWarning(payload.existingOrderNumber || 'recent order');
+        return;
       }
 
-      await batch.commit();
+      if (!res.ok || !payload.ok || !payload.orderNumber) {
+        throw new Error(payload.error || 'Unable to place order. Please review your details.');
+      }
 
-      void (async () => {
-        try {
-          const token = await firebaseUser.getIdToken();
-          const notifyRes = await fetch('/api/notify/admin', {
-            method: 'POST',
-            keepalive: true,
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              type: 'order',
-              details: {
-                orderId,
-                orderNumber,
-                productName: product.name,
-                packageName: `${selectedPackage.name} (${selectedPackage.quantityLabel})`,
-                amount: formatCurrency(selectedPackage.price),
-                playerUid: playerUid.trim() || 'N/A',
-                serverId: serverId.trim() || 'N/A',
-                paymentMethod: paymentMode === 'wallet' ? 'Wallet Balance' : selectedMethod?.name || 'Manual',
-                trxId: paymentMode === 'wallet' ? `WALLET-${orderNumber}` : trxId.trim().toUpperCase(),
-                customerName: customerName.trim(),
-                customerEmail: firebaseUser.email || '',
-                customerPhone: effectivePhone,
-              },
-            }),
-          });
-          if (!notifyRes.ok) {
-            console.error('Order admin notify HTTP error:', notifyRes.status);
-          } else {
-            const notifyData = (await notifyRes.json()) as {sent?: boolean; reason?: string};
-            if (notifyData.sent === false) {
-              console.warn('Order admin email skipped:', notifyData.reason);
-            }
-          }
-        } catch (notifyErr) {
-          console.error('Order admin notify request failed:', notifyErr);
-        }
-      })();
-
-      toast.success(`Order ${orderNumber} placed!`);
-      setConfirmedOrderNumber(orderNumber);
+      setDuplicateOrderWarning(null);
+      toast.success(`Order ${payload.orderNumber} placed!`);
+      setConfirmedResult({
+        orderNumber: payload.orderNumber,
+        totalAmount: payload.totalAmount ?? finalTotal,
+        paymentStatus: payload.paymentStatus || 'pending',
+        orderStatus: payload.orderStatus || 'pending',
+        voucherCode: payload.voucherCode,
+        fraudFlag: payload.fraudFlag,
+      });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('already exists')) {
-        failValidation('Unable to submit order: verify your TrxID is unique, wallet balance is sufficient, and account is active.');
-      } else {
-        handleFirestoreError(err, OperationType.WRITE, 'orders');
-      }
+      failValidation(err instanceof Error ? err.message : 'Unable to submit order');
     } finally {
       setSubmitting(false);
     }
   };
 
-  if (confirmedOrderNumber) {
+  const handleSubmitOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitOrderEnhanced(false);
+  };
+
+  const handleMerchantGatewayPay = async () => {
+    if (!firebaseUser || !product || !selectedPackage) return;
+    setGatewayRedirecting(true);
+    setError('');
+    try {
+      const token = await firebaseUser.getIdToken();
+      const tempRef = `GW${Date.now().toString().slice(-6)}`;
+      const res = await fetch('/api/payment-gateway/create-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          orderNumber: tempRef,
+          amount: finalTotal,
+          customerName: customerName.trim() || firebaseUser.displayName || 'Customer',
+          customerEmail: firebaseUser.email || '',
+        }),
+      });
+      const data = (await res.json()) as {ok?: boolean; paymentUrl?: string; error?: string};
+      if (!res.ok || !data.paymentUrl) {
+        throw new Error(data.error || 'Automated gateway is not configured yet');
+      }
+      window.location.href = data.paymentUrl;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to launch payment gateway');
+    } finally {
+      setGatewayRedirecting(false);
+    }
+  };
+
+  if (confirmedResult) {
     return (
       <StoreLayout>
         <div className="max-w-xl mx-auto px-4 sm:px-6 py-12">
@@ -381,7 +365,11 @@ export function CheckoutPage() {
                 {t('checkout.placedTitle')}
               </h1>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300">
-                {paymentMode === 'wallet' ? t('checkout.placedWallet') : t('checkout.placedManual')}
+                {confirmedResult.voucherCode
+                  ? 'Payment verified & your Voucher PIN has been delivered automatically!'
+                  : confirmedResult.paymentStatus === 'verified'
+                    ? t('checkout.placedWallet')
+                    : t('checkout.placedManual')}
               </p>
             </div>
             <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-4 space-y-1">
@@ -389,9 +377,33 @@ export function CheckoutPage() {
                 {t('checkout.orderRef')}
               </span>
               <p className="text-xl font-bold font-mono text-slate-900 dark:text-white tabular-nums">
-                {confirmedOrderNumber}
+                {confirmedResult.orderNumber}
+              </p>
+              <p className="text-xs text-cyan-600 dark:text-cyan-400 font-bold">
+                {formatCurrency(confirmedResult.totalAmount)} ·{' '}
+                <span className="capitalize">{confirmedResult.orderStatus}</span>
               </p>
             </div>
+
+            {confirmedResult.voucherCode && (
+              <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border-[1.5px] border-emerald-300 dark:border-emerald-700 p-4 space-y-2 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300 inline-flex items-center gap-1.5">
+                    <KeyRound className="w-4 h-4" /> Instant Delivered PIN
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyText(confirmedResult.voucherCode || '', 'Voucher PIN')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-bold cursor-pointer">
+                    <Copy className="w-3 h-3" /> Copy
+                  </button>
+                </div>
+                <p className="font-mono text-sm font-extrabold text-slate-900 dark:text-white break-all">
+                  {confirmedResult.voucherCode}
+                </p>
+              </div>
+            )}
+
             <div className="flex flex-col sm:flex-row gap-3 justify-center pt-1">
               <Link
                 to="/orders"
@@ -399,7 +411,7 @@ export function CheckoutPage() {
                 {t('checkout.viewOrders')}
               </Link>
               <Link
-                to={`/track?order=${confirmedOrderNumber}`}
+                to={`/track?order=${confirmedResult.orderNumber}`}
                 className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-600 border border-cyan-600 text-white text-sm font-semibold transition-colors">
                 {t('checkout.trackLive')}
               </Link>
@@ -509,12 +521,75 @@ export function CheckoutPage() {
               </div>
             </div>
 
+            {/* Promo Code Section */}
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-4 sm:p-5 space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                  <Tag className="w-4 h-4 text-cyan-600 dark:text-cyan-400" /> {t('promo.label')}
+                </label>
+                {appliedCoupon && (
+                  <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                    -{formatCurrency(appliedCoupon.discountAmount)}
+                  </span>
+                )}
+              </div>
+
+              {appliedCoupon ? (
+                <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
+                  <div className="text-xs">
+                    <span className="font-mono font-bold text-emerald-800 dark:text-emerald-300">
+                      {appliedCoupon.code}
+                    </span>
+                    <span className="text-emerald-700 dark:text-emerald-400 ml-2">
+                      {appliedCoupon.title} (-{formatCurrency(appliedCoupon.discountAmount)})
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAppliedCoupon(null)}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer">
+                    <X className="w-3.5 h-3.5" /> {t('promo.remove')}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={couponInput}
+                    onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                    placeholder={t('promo.placeholder')}
+                    className="flex-1 px-3.5 py-2 text-sm font-mono uppercase rounded-xl border-[1.5px] border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={validatingCoupon || !couponInput.trim()}
+                    onClick={() => void handleApplyCoupon()}
+                    className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-cyan-600 hover:bg-slate-800 dark:hover:bg-cyan-500 disabled:opacity-50 text-white text-xs sm:text-sm font-bold cursor-pointer">
+                    {validatingCoupon ? '...' : t('promo.apply')}
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Payment Option Switcher */}
             <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-4 sm:p-6 space-y-5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
-              <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white font-display flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
-                <CreditCard className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
-                {t('checkout.step2')}
-              </h2>
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 gap-2">
+                <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white font-display flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+                  {t('checkout.step2')}
+                </h2>
+                {programConfig.gatewayEnabled && (
+                  <button
+                    type="button"
+                    disabled={gatewayRedirecting}
+                    onClick={() => void handleMerchantGatewayPay()}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold cursor-pointer">
+                    {gatewayRedirecting
+                      ? 'Redirecting...'
+                      : `Pay Instantly (${programConfig.gatewayProvider})`}
+                  </button>
+                )}
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
@@ -571,13 +646,13 @@ export function CheckoutPage() {
                       {t('checkout.orderTotal')}
                     </span>
                     <span className="font-bold text-cyan-700 dark:text-cyan-400 tabular-nums">
-                      {formatCurrency(selectedPackage.price)}
+                      {formatCurrency(finalTotal)}
                     </span>
                   </div>
                   {!canPayWithWallet && (
                     <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
                       <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">
-                        You need {formatCurrency(Math.max(0, selectedPackage.price - walletBalance))} more.
+                        You need {formatCurrency(Math.max(0, finalTotal - walletBalance))} more.
                       </span>
                       <Link
                         to="/add-money"
@@ -631,7 +706,8 @@ export function CheckoutPage() {
                           />
                           <div className="min-w-0">
                             <span className="text-xs text-slate-500 dark:text-slate-400 block">
-                              {t('checkout.sendTo')} {formatCurrency(selectedPackage.price)} → ({selectedMethod.name} {selectedMethod.accountType})
+                              {t('checkout.sendTo')} {formatCurrency(finalTotal)} → ({selectedMethod.name}{' '}
+                              {selectedMethod.accountType})
                             </span>
                             <span className="text-lg font-bold font-mono text-slate-900 dark:text-white tabular-nums">
                               {selectedMethod.accountNumber}
@@ -721,12 +797,46 @@ export function CheckoutPage() {
                       : selectedMethod?.name || '—'}
                   </span>
                 </div>
+                <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                  <span>Base Price</span>
+                  <span className="tabular-nums">{formatCurrency(pricing.basePrice)}</span>
+                </div>
+                {pricing.flashSaleDiscount > 0 && (
+                  <div className="flex justify-between text-rose-600 dark:text-rose-400 font-medium">
+                    <span className="inline-flex items-center gap-1">
+                      <Flame className="w-3.5 h-3.5" /> Flash Sale ({pricing.flashSalePercent}%)
+                    </span>
+                    <span className="tabular-nums">-{formatCurrency(pricing.flashSaleDiscount)}</span>
+                  </div>
+                )}
+                {pricing.tierDiscount > 0 && (
+                  <div className="flex justify-between text-emerald-700 dark:text-emerald-400 font-medium">
+                    <span className="uppercase">
+                      {pricing.appliedTier} {t('tier.discount')} ({pricing.tierPercent}%)
+                    </span>
+                    <span className="tabular-nums">-{formatCurrency(pricing.tierDiscount)}</span>
+                  </div>
+                )}
+                {appliedCoupon && (
+                  <div className="flex justify-between text-emerald-700 dark:text-emerald-400 font-medium">
+                    <span>Promo ({appliedCoupon.code})</span>
+                    <span className="tabular-nums">-{formatCurrency(appliedCoupon.discountAmount)}</span>
+                  </div>
+                )}
+                {pricing.estimatedLoyaltyPoints > 0 && (
+                  <div className="flex justify-between text-xs text-amber-700 dark:text-amber-400">
+                    <span className="inline-flex items-center gap-1">
+                      <Gift className="w-3.5 h-3.5" /> {t('loyalty.earnPreview')}
+                    </span>
+                    <span className="font-bold">+{pricing.estimatedLoyaltyPoints} pts</span>
+                  </div>
+                )}
                 <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-between items-baseline">
                   <span className="font-bold text-slate-900 dark:text-white">
                     {t('checkout.totalPayable')}
                   </span>
                   <span className="text-xl font-extrabold text-cyan-600 dark:text-cyan-400 tabular-nums">
-                    {formatCurrency(selectedPackage.price)}
+                    {formatCurrency(finalTotal)}
                   </span>
                 </div>
               </div>
@@ -754,6 +864,42 @@ export function CheckoutPage() {
           </div>
         </form>
       </div>
+
+      {/* Duplicate Pending Order Confirmation Modal */}
+      {duplicateOrderWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-[1px]">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border-[1.5px] border-amber-300 dark:border-amber-700 max-w-md w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-950 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
+                  {t('dup.title')}
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                  You already placed an active order (<span className="font-mono font-bold">{duplicateOrderWarning}</span>) for the same package and Player UID within the last 10 minutes. Do you still want to place another order?
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDuplicateOrderWarning(null)}
+                className="px-4 py-2 rounded-xl border-[1.5px] border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer">
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => void submitOrderEnhanced(true)}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer">
+                {submitting ? 'Submitting...' : t('dup.confirmAnyway')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </StoreLayout>
   );
 }

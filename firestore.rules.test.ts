@@ -109,4 +109,28 @@ export const DIRTY_DOZEN_TESTS: AdversarialTestCase[] = [
     expectedOutcome: 'PERMISSION_DENIED',
     description: 'Rejects documents whose createdAt/updatedAt do not equal request.time.',
   },
+  {
+    id: 13,
+    name: 'Voucher Stock Enumeration',
+    collectionPath: '/voucherStock',
+    operation: 'list',
+    expectedOutcome: 'PERMISSION_DENIED',
+    description: 'Rejects customer read/list access to unused PIN vault documents.',
+  },
+  {
+    id: 14,
+    name: 'Self-Tier or Loyalty Points Inflation',
+    collectionPath: '/customers/user_123',
+    operation: 'update',
+    expectedOutcome: 'PERMISSION_DENIED',
+    description: 'Rejects customer modifying tier, tierLocked, loyaltyPoints, totalSpent, or referralRewarded.',
+  },
+  {
+    id: 15,
+    name: 'Client Referral Event Forgery',
+    collectionPath: '/referralEvents/ref_1',
+    operation: 'create',
+    expectedOutcome: 'PERMISSION_DENIED',
+    description: 'Rejects client-side writes to referralEvents or apiLogs.',
+  },
 ];

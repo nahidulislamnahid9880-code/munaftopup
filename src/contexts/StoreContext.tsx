@@ -1,14 +1,26 @@
 import React, {createContext, useContext, useEffect, useState} from 'react';
-import {collection, doc, onSnapshot, orderBy, query} from 'firebase/firestore';
+import {collection, doc, onSnapshot, orderBy, query, where} from 'firebase/firestore';
 import {OperationType, db, handleFirestoreError, testConnection} from '../lib/firebase';
+import {DEFAULT_PROGRAM_CONFIG} from '../lib/pricing';
 import {DEFAULT_SITE_SHELL} from '../lib/seedData';
-import type {Category, PaymentMethod, Product, SiteSettings} from '../types';
+import type {
+  Category,
+  Coupon,
+  FlashSale,
+  PaymentMethod,
+  Product,
+  SiteSettings,
+  StoreProgramConfig,
+} from '../types';
 
 interface StoreContextValue {
   siteSettings: SiteSettings;
   categories: Category[];
   products: Product[];
   paymentMethods: PaymentMethod[];
+  flashSales: FlashSale[];
+  coupons: Coupon[];
+  programConfig: StoreProgramConfig;
   loading: boolean;
   catalogInitialized: boolean;
 }
@@ -20,11 +32,26 @@ export function StoreProvider({children}: {children: React.ReactNode}) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [flashSales, setFlashSales] = useState<FlashSale[]>([]);
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [programConfig, setProgramConfig] = useState<StoreProgramConfig>(DEFAULT_PROGRAM_CONFIG);
   const [loading, setLoading] = useState(true);
   const [catalogInitialized, setCatalogInitialized] = useState(false);
 
   useEffect(() => {
     void testConnection();
+
+    // Fetch server-authoritative non-secret loyalty/tier/gateway config
+    fetch('/api/store/program-config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && typeof data === 'object') {
+          setProgramConfig((prev) => ({...prev, ...data}));
+        }
+      })
+      .catch(() => {
+        // fallback to defaults cleanly
+      });
 
     const unsubSettings = onSnapshot(
       doc(db, 'settings', 'site'),
@@ -73,11 +100,34 @@ export function StoreProvider({children}: {children: React.ReactNode}) {
       },
     );
 
+    const unsubFlashSales = onSnapshot(
+      query(collection(db, 'flashSales'), where('active', '==', true)),
+      (snap) => {
+        setFlashSales(snap.docs.map((d) => d.data() as FlashSale));
+      },
+      (err) => {
+        console.warn('[flashSales] subscription warning:', err.message);
+      },
+    );
+
+    // Must filter active == true to match Firestore rules for storefront users
+    const unsubCoupons = onSnapshot(
+      query(collection(db, 'coupons'), where('active', '==', true)),
+      (snap) => {
+        setCoupons(snap.docs.map((d) => d.data() as Coupon));
+      },
+      (err) => {
+        console.warn('[coupons] subscription warning:', err.message);
+      },
+    );
+
     return () => {
       unsubSettings();
       unsubCategories();
       unsubProducts();
       unsubPayments();
+      unsubFlashSales();
+      unsubCoupons();
     };
   }, []);
 
@@ -104,6 +154,9 @@ export function StoreProvider({children}: {children: React.ReactNode}) {
         categories,
         products,
         paymentMethods,
+        flashSales,
+        coupons,
+        programConfig,
         loading,
         catalogInitialized,
       }}>

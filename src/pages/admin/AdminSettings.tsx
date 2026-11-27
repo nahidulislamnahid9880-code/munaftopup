@@ -3,7 +3,10 @@ import {
   Activity,
   ArrowDown,
   ArrowUp,
+  Award,
   Bot,
+  Copy,
+  CreditCard,
   KeyRound,
   Mail,
   MessageSquarePlus,
@@ -12,6 +15,7 @@ import {
   Save,
   Send,
   Server,
+  ShieldAlert,
   Trash2,
   UserCheck,
 } from 'lucide-react';
@@ -174,11 +178,49 @@ export function AdminSettings() {
   const [sysMsg, setSysMsg] = useState('');
   const [sysErr, setSysErr] = useState('');
   const [testingEmail, setTestingEmail] = useState(false);
+  const [testingDistributor, setTestingDistributor] = useState(false);
+  const [distributorTestResult, setDistributorTestResult] = useState('');
 
-  // Audit logs
+  // Commerce, Loyalty, Fraud & Merchant Payment Gateway settings
+  const [commerceForm, setCommerceForm] = useState({
+    vipSpendThreshold: 5000,
+    vipDiscountPercent: 2,
+    resellerSpendThreshold: 20000,
+    resellerDiscountPercent: 5,
+    referralBonusAmount: 20,
+    loyaltyPercent: 1,
+    loyaltyPointValueBdt: 1,
+    fraudMaxFailedTrxPerHour: 5,
+    fraudMaxOrdersPer10Min: 4,
+    gatewayEnabled: false,
+    gatewayProvider: 'none' as 'none' | 'uddoktapay' | 'bkash_merchant' | 'nagad_merchant',
+    gatewayBaseUrl: '',
+    gatewayApiKey: '',
+    hasGatewayApiKey: false,
+    gatewayWebhookSecret: '',
+    hasGatewayWebhookSecret: false,
+  });
+  const [savingCommerce, setSavingCommerce] = useState(false);
+  const [commerceMsg, setCommerceMsg] = useState('');
+  const [commerceErr, setCommerceErr] = useState('');
+
+  // Audit & API logs
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [serverLogs, setServerLogs] = useState<
     Array<{id: string; actorEmail: string; action: string; details: string; createdAt: string}>
+  >([]);
+  const [apiLogs, setApiLogs] = useState<
+    Array<{
+      id: string;
+      type: string;
+      orderNumber: string;
+      endpoint: string;
+      status: string;
+      httpStatus?: number;
+      message: string;
+      responsePreview?: string;
+      createdAtIso?: string;
+    }>
   >([]);
   const [autoStatus, setAutoStatus] = useState<{
     firebaseAdminMode: string;
@@ -202,11 +244,13 @@ export function AdminSettings() {
   const loadServerData = useCallback(async () => {
     if (!canSettings) return;
     try {
-      const [staffRes, sysRes, logsRes, autoRes] = await Promise.all([
+      const [staffRes, sysRes, logsRes, autoRes, commerceRes, apiLogsRes] = await Promise.all([
         adminFetch('/api/admin/staff'),
         adminFetch('/api/admin/system-settings'),
         adminFetch('/api/admin/server-logs'),
         adminFetch('/api/admin/automation-status'),
+        adminFetch('/api/admin/commerce-settings'),
+        adminFetch('/api/admin/api-logs'),
       ]);
       if (staffRes.ok) {
         const d = (await staffRes.json()) as {staff: ServerStaffItem[]};
@@ -241,6 +285,23 @@ export function AdminSettings() {
       if (autoRes.ok) {
         const d = (await autoRes.json()) as NonNullable<typeof autoStatus>;
         setAutoStatus(d);
+      }
+      if (commerceRes.ok) {
+        const d = (await commerceRes.json()) as {
+          settings?: Partial<typeof commerceForm>;
+        };
+        if (d.settings) {
+          setCommerceForm((prev) => ({
+            ...prev,
+            ...d.settings,
+            gatewayApiKey: '',
+            gatewayWebhookSecret: '',
+          }));
+        }
+      }
+      if (apiLogsRes.ok) {
+        const d = (await apiLogsRes.json()) as {logs?: typeof apiLogs};
+        setApiLogs(d.logs || []);
       }
     } catch {
       // ignore initial load error
@@ -469,6 +530,66 @@ export function AdminSettings() {
     }
   };
 
+  const handleTestDistributor = async () => {
+    setTestingDistributor(true);
+    setDistributorTestResult('');
+    try {
+      const res = await adminFetch('/api/admin/distributor/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          distributorBaseUrl: sysForm.distributorBaseUrl,
+          distributorApiKey: sysForm.distributorApiKey || undefined,
+          distributorMerchantId: sysForm.distributorMerchantId,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        httpStatus?: number;
+        preview?: string;
+        error?: string;
+      };
+      if (res.ok && data.ok) {
+        setDistributorTestResult(
+          `Connected cleanly (HTTP ${data.httpStatus ?? 200}). ${data.preview ? data.preview.slice(0, 120) : ''}`,
+        );
+      } else {
+        setDistributorTestResult(
+          data.error || `Distributor test returned HTTP ${data.httpStatus ?? res.status}.`,
+        );
+      }
+    } catch {
+      setDistributorTestResult('Network error while testing Distributor API endpoint.');
+    } finally {
+      setTestingDistributor(false);
+    }
+  };
+
+  const handleSaveCommerceSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingCommerce(true);
+    setCommerceMsg('');
+    setCommerceErr('');
+    try {
+      const res = await adminFetch('/api/admin/commerce-settings', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(commerceForm),
+      });
+      const data = (await res.json()) as {ok?: boolean; error?: string};
+      if (!res.ok || !data.ok) {
+        setCommerceErr(data.error || 'Failed to save commerce & gateway settings.');
+      } else {
+        setCommerceMsg('VIP/Loyalty rules, Fraud thresholds & Merchant Gateway settings saved.');
+        void loadServerData();
+      }
+    } catch {
+      setCommerceErr('Network error saving commerce settings.');
+    } finally {
+      setSavingCommerce(false);
+    }
+  };
+
   if (!canSettings) {
     return (
       <AdminLayout title="Admin Settings">
@@ -511,7 +632,7 @@ export function AdminSettings() {
                 ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
                 : 'text-slate-600 dark:text-slate-400'
             }`}>
-            <Server className="w-3.5 h-3.5" /> SMTP &amp; Distributor API
+            <Server className="w-3.5 h-3.5" /> Integrations &amp; Commerce
           </button>
           <button
             type="button"
@@ -684,8 +805,9 @@ export function AdminSettings() {
           </div>
         )}
 
-        {/* Tab 3: SMTP & Distributor API */}
+        {/* Tab 3: Integrations & Commerce */}
         {tab === 'integrations' && (
+          <div className="space-y-6">
           <form
             onSubmit={handleSaveSystemSettings}
             className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 space-y-6">
@@ -793,9 +915,19 @@ export function AdminSettings() {
             </div>
 
             <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
-              <h2 className="text-base font-bold font-display flex items-center gap-2">
-                <Server className="w-4 h-4 text-blue-600" /> Authorized Distributor API
-              </h2>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-base font-bold font-display flex items-center gap-2">
+                  <Server className="w-4 h-4 text-blue-600" /> Authorized Distributor API
+                </h2>
+                <button
+                  type="button"
+                  disabled={testingDistributor}
+                  onClick={() => void handleTestDistributor()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold cursor-pointer disabled:opacity-50">
+                  <Server className="w-3.5 h-3.5 text-cyan-600" />
+                  {testingDistributor ? 'Testing...' : 'Test Connection'}
+                </button>
+              </div>
               <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
                 <input
                   type="checkbox"
@@ -837,6 +969,11 @@ export function AdminSettings() {
                   className="px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                 />
               </div>
+              {distributorTestResult && (
+                <p className="text-xs font-medium text-cyan-700 dark:text-cyan-400">
+                  {distributorTestResult}
+                </p>
+              )}
             </div>
 
             <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
@@ -1171,55 +1308,402 @@ export function AdminSettings() {
               </div>
             )}
           </form>
+
+          {/* Commerce Rules, Loyalty, Fraud Guard & Merchant Payment Gateway */}
+          <form
+            onSubmit={handleSaveCommerceSettings}
+            className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 space-y-6">
+              <div className="space-y-4">
+                <h2 className="text-base font-bold font-display flex items-center gap-2">
+                  <Award className="w-4 h-4 text-amber-500" /> VIP Tiers, Loyalty Cashback &amp; Referral Program
+                </h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      VIP Spend Threshold (৳)
+                    </label>
+                    <input
+                      type="number"
+                      min={100}
+                      value={commerceForm.vipSpendThreshold}
+                      onChange={(e) =>
+                        setCommerceForm({...commerceForm, vipSpendThreshold: Number(e.target.value)})
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      VIP Discount (%)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={50}
+                      step="0.5"
+                      value={commerceForm.vipDiscountPercent}
+                      onChange={(e) =>
+                        setCommerceForm({...commerceForm, vipDiscountPercent: Number(e.target.value)})
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Reseller Spend Threshold (৳)
+                    </label>
+                    <input
+                      type="number"
+                      min={500}
+                      value={commerceForm.resellerSpendThreshold}
+                      onChange={(e) =>
+                        setCommerceForm({
+                          ...commerceForm,
+                          resellerSpendThreshold: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Reseller Discount (%)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={60}
+                      step="0.5"
+                      value={commerceForm.resellerDiscountPercent}
+                      onChange={(e) =>
+                        setCommerceForm({
+                          ...commerceForm,
+                          resellerDiscountPercent: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Referral Bonus Wallet Credit (৳)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={commerceForm.referralBonusAmount}
+                      onChange={(e) =>
+                        setCommerceForm({...commerceForm, referralBonusAmount: Number(e.target.value)})
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Loyalty Cashback (% of paid order)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={25}
+                      step="0.5"
+                      value={commerceForm.loyaltyPercent}
+                      onChange={(e) =>
+                        setCommerceForm({...commerceForm, loyaltyPercent: Number(e.target.value)})
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      1 Point Value (৳)
+                    </label>
+                    <input
+                      type="number"
+                      min={0.1}
+                      max={100}
+                      step="0.1"
+                      value={commerceForm.loyaltyPointValueBdt}
+                      onChange={(e) =>
+                        setCommerceForm({
+                          ...commerceForm,
+                          loyaltyPointValueBdt: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
+                <h2 className="text-base font-bold font-display flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-rose-600" /> Fraud &amp; Velocity Guard Thresholds
+                </h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Max TrxID Attempts / Hour before Flag
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={commerceForm.fraudMaxFailedTrxPerHour}
+                      onChange={(e) =>
+                        setCommerceForm({
+                          ...commerceForm,
+                          fraudMaxFailedTrxPerHour: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Max Burst Orders / 10 Min before Flag
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={commerceForm.fraudMaxOrdersPer10Min}
+                      onChange={(e) =>
+                        setCommerceForm({
+                          ...commerceForm,
+                          fraudMaxOrdersPer10Min: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-base font-bold font-display flex items-center gap-2">
+                    <CreditCard className="w-4 h-4 text-emerald-600" /> Automated Merchant Payment Gateway
+                  </h2>
+                  {commerceForm.gatewayEnabled &&
+                    !commerceForm.hasGatewayApiKey &&
+                    !commerceForm.gatewayApiKey && (
+                      <span className="px-2.5 py-1 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 text-[11px] font-bold">
+                        Pending API Key Configuration
+                      </span>
+                    )}
+                </div>
+                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={commerceForm.gatewayEnabled}
+                    onChange={(e) =>
+                      setCommerceForm({...commerceForm, gatewayEnabled: e.target.checked})
+                    }
+                  />
+                  Show Automated Gateway Pay Option on Checkout (requires Merchant API Key)
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Gateway Provider
+                    </label>
+                    <select
+                      value={commerceForm.gatewayProvider}
+                      onChange={(e) =>
+                        setCommerceForm({
+                          ...commerceForm,
+                          gatewayProvider: e.target.value as
+                            | 'none'
+                            | 'uddoktapay'
+                            | 'bkash_merchant'
+                            | 'nagad_merchant',
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950">
+                      <option value="none">Disabled</option>
+                      <option value="uddoktapay">UddoktaPay</option>
+                      <option value="bkash_merchant">bKash Merchant Checkout</option>
+                      <option value="nagad_merchant">Nagad Merchant PGW</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Gateway API Base URL
+                    </label>
+                    <input
+                      type="url"
+                      value={commerceForm.gatewayBaseUrl}
+                      onChange={(e) =>
+                        setCommerceForm({...commerceForm, gatewayBaseUrl: e.target.value})
+                      }
+                      placeholder="https://sandbox.uddoktapay.com"
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Merchant API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={commerceForm.gatewayApiKey}
+                      onChange={(e) =>
+                        setCommerceForm({...commerceForm, gatewayApiKey: e.target.value})
+                      }
+                      placeholder={
+                        commerceForm.hasGatewayApiKey ? '•••••••• (Saved on server)' : 'Paste merchant API key'
+                      }
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                      Webhook Verification Secret
+                    </label>
+                    <input
+                      type="password"
+                      value={commerceForm.gatewayWebhookSecret}
+                      onChange={(e) =>
+                        setCommerceForm({...commerceForm, gatewayWebhookSecret: e.target.value})
+                      }
+                      placeholder={
+                        commerceForm.hasGatewayWebhookSecret
+                          ? '•••••••• (Saved on server)'
+                          : 'Webhook HMAC / header secret'
+                      }
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                </div>
+
+                {commerceForm.gatewayProvider !== 'none' && typeof window !== 'undefined' && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs">
+                    <span className="font-mono text-slate-600 dark:text-slate-300 truncate">
+                      Webhook IPN URL:{' '}
+                      {`${window.location.origin}/api/payment-gateway/webhook/${commerceForm.gatewayProvider}`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(
+                          `${window.location.origin}/api/payment-gateway/webhook/${commerceForm.gatewayProvider}`,
+                        );
+                        setCommerceMsg('Webhook URL copied to clipboard.');
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 font-semibold cursor-pointer">
+                      <Copy className="w-3 h-3" /> Copy URL
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {commerceErr && <p className="text-xs text-red-600 font-medium">{commerceErr}</p>}
+              {commerceMsg && <p className="text-xs text-emerald-600 font-medium">{commerceMsg}</p>}
+
+              <button
+                type="submit"
+                disabled={savingCommerce}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50">
+                <Save className="w-3.5 h-3.5" /> {savingCommerce ? 'Saving...' : 'Save Commerce & Gateway Rules'}
+              </button>
+          </form>
+          </div>
         )}
 
         {/* Tab 4: Audit & Activity Logs */}
         {tab === 'logs' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
-              <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 font-bold text-sm">
-                Database Audit Trail
-              </div>
-              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[500px] overflow-y-auto">
-                {auditLogs.map((log) => (
-                  <div key={log.id} className="p-3.5 text-xs space-y-1">
-                    <div className="flex items-center justify-between font-semibold">
-                      <span>{log.action}</span>
-                      <span className="text-slate-500 tabular-nums">
-                        {new Date(timestampToMillis(log.createdAt)).toLocaleString()}
-                      </span>
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 font-bold text-sm">
+                  Database Audit Trail
+                </div>
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[500px] overflow-y-auto">
+                  {auditLogs.map((log) => (
+                    <div key={log.id} className="p-3.5 text-xs space-y-1">
+                      <div className="flex items-center justify-between font-semibold">
+                        <span>{log.action}</span>
+                        <span className="text-slate-500 tabular-nums">
+                          {new Date(timestampToMillis(log.createdAt)).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="text-slate-600 dark:text-slate-400">{log.details}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {log.actorEmail} ({log.actorRole})
+                      </p>
                     </div>
-                    <p className="text-slate-600 dark:text-slate-400">{log.details}</p>
-                    <p className="text-[11px] text-slate-400">
-                      {log.actorEmail} ({log.actorRole})
-                    </p>
-                  </div>
-                ))}
-                {auditLogs.length === 0 && (
-                  <p className="p-6 text-center text-xs text-slate-500">No audit entries yet.</p>
-                )}
+                  ))}
+                  {auditLogs.length === 0 && (
+                    <p className="p-6 text-center text-xs text-slate-500">No audit entries yet.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 font-bold text-sm">
+                  Server Auth &amp; Security Log
+                </div>
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[500px] overflow-y-auto">
+                  {serverLogs.map((log) => (
+                    <div key={log.id} className="p-3.5 text-xs space-y-1">
+                      <div className="flex items-center justify-between font-semibold">
+                        <span>{log.action}</span>
+                        <span className="text-slate-500 tabular-nums">
+                          {new Date(log.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="text-slate-600 dark:text-slate-400">{log.details}</p>
+                      <p className="text-[11px] text-slate-400">{log.actorEmail}</p>
+                    </div>
+                  ))}
+                  {serverLogs.length === 0 && (
+                    <p className="p-6 text-center text-xs text-slate-500">No server logs yet.</p>
+                  )}
+                </div>
               </div>
             </div>
 
             <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 font-bold text-sm">
-                Server Auth &amp; Security Log
+                API Fulfillment, Gateway, PIN Vault &amp; Fraud Guard Logs
               </div>
-              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[500px] overflow-y-auto">
-                {serverLogs.map((log) => (
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[420px] overflow-y-auto">
+                {apiLogs.map((log) => (
                   <div key={log.id} className="p-3.5 text-xs space-y-1">
-                    <div className="flex items-center justify-between font-semibold">
-                      <span>{log.action}</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 font-semibold">
+                      <span className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 uppercase text-[10px] font-bold">
+                          {log.type}
+                        </span>
+                        <span className="font-mono">{log.orderNumber}</span>
+                        <span
+                          className={
+                            log.status === 'success'
+                              ? 'text-emerald-600'
+                              : log.status === 'failed'
+                                ? 'text-rose-600'
+                                : 'text-amber-600'
+                          }>
+                          {log.status.toUpperCase()}
+                          {log.httpStatus ? ` (${log.httpStatus})` : ''}
+                        </span>
+                      </span>
                       <span className="text-slate-500 tabular-nums">
-                        {new Date(log.createdAt).toLocaleString()}
+                        {log.createdAtIso ? new Date(log.createdAtIso).toLocaleString() : ''}
                       </span>
                     </div>
-                    <p className="text-slate-600 dark:text-slate-400">{log.details}</p>
-                    <p className="text-[11px] text-slate-400">{log.actorEmail}</p>
+                    <p className="text-slate-600 dark:text-slate-400">{log.message}</p>
+                    {log.endpoint && (
+                      <p className="text-[11px] font-mono text-slate-400 truncate">{log.endpoint}</p>
+                    )}
                   </div>
                 ))}
-                {serverLogs.length === 0 && (
-                  <p className="p-6 text-center text-xs text-slate-500">No server logs yet.</p>
+                {apiLogs.length === 0 && (
+                  <p className="p-6 text-center text-xs text-slate-500">
+                    No API fulfillment or fraud guard events logged yet.
+                  </p>
                 )}
               </div>
             </div>

@@ -1,10 +1,26 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {Link, useNavigate, useParams} from 'react-router-dom';
-import {ArrowLeft, ArrowRight, CheckCircle2, Circle, Info, ShieldCheck} from 'lucide-react';
+import {
+  ArrowLeft,
+  ArrowRight,
+  BookmarkPlus,
+  CheckCircle2,
+  Circle,
+  Flame,
+  Info,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
+import {useAuth} from '../../contexts/AuthContext';
 import {useLanguage} from '../../contexts/LanguageContext';
 import {useStore} from '../../contexts/StoreContext';
 import {useToast} from '../../contexts/ToastContext';
 import {formatCurrency} from '../../lib/firebase';
+import {
+  calculatePackagePricing,
+  getActiveFlashSaleForProduct,
+  validatePlayerUidForProduct,
+} from '../../lib/pricing';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
 import {PackageVisual} from '../../components/PackageTypeIcon';
 import {StoreLayout} from '../../components/store/StoreLayout';
@@ -14,13 +30,19 @@ const LAST_UID_KEY = 'sv_last_player_uid';
 export function ProductDetailPage() {
   const {slug} = useParams<{slug: string}>();
   const navigate = useNavigate();
-  const {products, loading} = useStore();
+  const {products, flashSales, programConfig, loading} = useStore();
+  const {firebaseUser, customerProfile, saveCustomerPlayerUid, removeCustomerPlayerUid} = useAuth();
   const {t} = useLanguage();
   const toast = useToast();
 
   const product = useMemo(
     () => products.find((p) => p.slug === slug || p.id === slug),
     [products, slug],
+  );
+
+  const activeFlashSale = useMemo(
+    () => (product ? getActiveFlashSaleForProduct(flashSales, product.id) : null),
+    [flashSales, product],
   );
 
   const activePackages = useMemo(() => {
@@ -36,6 +58,9 @@ export function ProductDetailPage() {
   const [savedUid, setSavedUid] = useState('');
   const [serverId, setServerId] = useState('');
   const [formError, setFormError] = useState('');
+  const [showSaveUidForm, setShowSaveUidForm] = useState(false);
+  const [uidLabel, setUidLabel] = useState('');
+  const [savingUid, setSavingUid] = useState(false);
 
   useEffect(() => {
     try {
@@ -57,17 +82,64 @@ export function ProductDetailPage() {
   }, [product, activePackages, selectedPkgId, serverId]);
 
   const selectedPackage = activePackages.find((p) => p.id === selectedPkgId) || activePackages[0];
+  const selectedPricing = useMemo(
+    () =>
+      selectedPackage
+        ? calculatePackagePricing(
+            selectedPackage.price,
+            activeFlashSale,
+            customerProfile?.tier,
+            programConfig,
+          )
+        : null,
+    [selectedPackage, activeFlashSale, customerProfile?.tier, programConfig],
+  );
+
+  const isNumericUidGame = useMemo(
+    () => (product ? validatePlayerUidForProduct(product.name, '123456') === null && validatePlayerUidForProduct(product.name, 'abcde') !== null : false),
+    [product],
+  );
+
+  const handleSaveUidProfile = async () => {
+    if (!product || !playerUid.trim()) {
+      toast.error('Enter a Player UID first');
+      return;
+    }
+    const uidErr = validatePlayerUidForProduct(product.name, playerUid);
+    if (uidErr) {
+      toast.error(uidErr);
+      return;
+    }
+    setSavingUid(true);
+    try {
+      await saveCustomerPlayerUid({
+        label: uidLabel.trim() || `${product.name.split(' ')[0]} ID`,
+        gameName: product.name,
+        playerUid: playerUid.trim(),
+        serverId: serverId.trim() || 'N/A',
+      });
+      toast.success('Player UID saved to your profile!');
+      setShowSaveUidForm(false);
+      setUidLabel('');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to save UID');
+    } finally {
+      setSavingUid(false);
+    }
+  };
 
   const handleContinue = (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
     if (!product || !selectedPackage) return;
     const trimmedUid = playerUid.trim();
-    if (product.requiresUid && !trimmedUid) {
-      const msg = `Please enter your ${product.uidLabel || 'Player UID'}.`;
-      setFormError(msg);
-      toast.error(msg);
-      return;
+    if (product.requiresUid) {
+      const uidErr = validatePlayerUidForProduct(product.name, trimmedUid);
+      if (uidErr) {
+        setFormError(uidErr);
+        toast.error(uidErr);
+        return;
+      }
     }
     if (product.requiresServerId && !serverId.trim()) {
       const msg = `Please select or enter your ${product.serverLabel || 'Server ID'}.`;
@@ -197,7 +269,18 @@ export function ProductDetailPage() {
                   }`}>
                   {activePackages.map((pkg) => {
                     const isSelected = selectedPackage?.id === pkg.id;
-                    const hasDiscount = pkg.originalPrice > pkg.price;
+                    const pkgPricing = calculatePackagePricing(
+                      pkg.price,
+                      activeFlashSale,
+                      customerProfile?.tier,
+                      programConfig,
+                    );
+                    const strikethroughPrice =
+                      pkgPricing.hasDiscount
+                        ? pkg.price
+                        : pkg.originalPrice > pkg.price
+                          ? pkg.originalPrice
+                          : 0;
                     const showSubtitle =
                       pkg.quantityLabel &&
                       pkg.quantityLabel.trim().toLowerCase() !== pkg.name.trim().toLowerCase();
@@ -225,7 +308,6 @@ export function ProductDetailPage() {
                             <Circle className="w-4 h-4 text-slate-300 dark:text-slate-600 shrink-0" />
                           )}
 
-                          {/* Package Icon or Uploaded Custom Logo */}
                           <PackageVisual pkg={pkg} size="sm" />
 
                           <div className="min-w-0 flex-1">
@@ -233,6 +315,11 @@ export function ProductDetailPage() {
                               <p className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug break-words">
                                 {pkg.name}
                               </p>
+                              {activeFlashSale && (
+                                <span className="px-1.5 py-0.5 rounded-md text-[9px] font-extrabold uppercase bg-rose-600 text-white shrink-0">
+                                  -{activeFlashSale.discountPercent}%
+                                </span>
+                              )}
                               {badgeLabel && (
                                 <span
                                   className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide shrink-0 ${
@@ -269,11 +356,11 @@ export function ProductDetailPage() {
 
                         <div className="text-right shrink-0">
                           <span className="block text-xs sm:text-sm font-extrabold text-cyan-600 dark:text-cyan-400 tabular-nums whitespace-nowrap">
-                            {formatCurrency(pkg.price)}
+                            {formatCurrency(pkgPricing.finalPriceBeforeCoupon)}
                           </span>
-                          {hasDiscount && (
+                          {strikethroughPrice > pkgPricing.finalPriceBeforeCoupon && (
                             <span className="block text-[10px] text-slate-400 line-through tabular-nums whitespace-nowrap">
-                              {formatCurrency(pkg.originalPrice)}
+                              {formatCurrency(strikethroughPrice)}
                             </span>
                           )}
                         </div>
@@ -295,37 +382,101 @@ export function ProductDetailPage() {
                 </h2>
               </div>
 
-              {product.requiresUid && savedUid && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-slate-500 dark:text-slate-400">
-                    {t('product.savedUid')}:
+              {product.requiresUid && (customerProfile?.savedUids?.length || savedUid) ? (
+                <div className="space-y-1.5">
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 block">
+                    {t('uid.savedProfiles')}:
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPlayerUid(savedUid);
-                      toast.info(`Applied saved UID: ${savedUid}`);
-                    }}
-                    className="px-3 py-1 rounded-lg border-[1.5px] border-cyan-400 dark:border-cyan-600 bg-cyan-50/60 dark:bg-cyan-950/50 text-xs font-mono font-semibold text-slate-800 dark:text-cyan-200 hover:bg-cyan-100/70 dark:hover:bg-cyan-900/60 cursor-pointer">
-                    {savedUid}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(customerProfile?.savedUids || []).map((su) => (
+                      <div
+                        key={su.id}
+                        className="inline-flex items-center rounded-lg border-[1.5px] border-cyan-400/80 dark:border-cyan-700 bg-cyan-50/70 dark:bg-cyan-950/40 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPlayerUid(su.playerUid);
+                            if (su.serverId && su.serverId !== 'N/A' && product.requiresServerId) {
+                              setServerId(su.serverId);
+                            }
+                            toast.info(`Applied ${su.label}: ${su.playerUid}`);
+                          }}
+                          className="px-2.5 py-1 text-xs font-semibold text-slate-800 dark:text-cyan-200 hover:bg-cyan-100/70 dark:hover:bg-cyan-900/60 cursor-pointer flex items-center gap-1.5">
+                          <span>{su.label}</span>
+                          <span className="font-mono text-cyan-700 dark:text-cyan-300">{su.playerUid}</span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${su.label}`}
+                          onClick={() => void removeCustomerPlayerUid(su.id)}
+                          className="px-1.5 py-1 text-slate-400 hover:text-rose-600 cursor-pointer border-l border-cyan-200/70 dark:border-cyan-800">
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                    {!(customerProfile?.savedUids || []).some((u) => u.playerUid === savedUid) && savedUid && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlayerUid(savedUid);
+                          toast.info(`Applied saved UID: ${savedUid}`);
+                        }}
+                        className="px-3 py-1 rounded-lg border-[1.5px] border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono font-semibold text-slate-700 dark:text-slate-200 hover:border-cyan-400 cursor-pointer">
+                        {savedUid}
+                      </button>
+                    )}
+                  </div>
                 </div>
-              )}
+              ) : null}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {product.requiresUid && (
                   <div className={product.requiresServerId ? '' : 'sm:col-span-2'}>
-                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                      {product.uidLabel || 'Player UID'} *
-                    </label>
+                    <div className="flex items-center justify-between mb-1.5 gap-2">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        {product.uidLabel || 'Player UID'} *
+                      </label>
+                      {firebaseUser && playerUid.trim() && (
+                        <button
+                          type="button"
+                          onClick={() => setShowSaveUidForm((v) => !v)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-cyan-600 dark:text-cyan-400 hover:underline cursor-pointer">
+                          <BookmarkPlus className="w-3.5 h-3.5" /> {t('uid.saveCurrent')}
+                        </button>
+                      )}
+                    </div>
                     <input
                       type="text"
+                      inputMode={isNumericUidGame ? 'numeric' : 'text'}
                       required
                       value={playerUid}
                       onChange={(e) => setPlayerUid(e.target.value)}
                       placeholder={t('product.enterUid')}
                       className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 dark:border-slate-700 hover:border-slate-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
                     />
+                    {isNumericUidGame && (
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                        {t('uid.numericHint')}
+                      </p>
+                    )}
+                    {showSaveUidForm && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={uidLabel}
+                          onChange={(e) => setUidLabel(e.target.value)}
+                          placeholder="Label (e.g. Main FF ID)"
+                          className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
+                        />
+                        <button
+                          type="button"
+                          disabled={savingUid}
+                          onClick={() => void handleSaveUidProfile()}
+                          className="px-3 py-1.5 rounded-lg bg-cyan-600 text-white text-xs font-bold cursor-pointer">
+                          {savingUid ? '...' : 'Save'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -367,7 +518,7 @@ export function ProductDetailPage() {
             </div>
 
             {/* Step 3: Order Summary & Continue CTA */}
-            {selectedPackage && (
+            {selectedPackage && selectedPricing && (
               <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-4 sm:p-5 space-y-4 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
                 <div className="flex items-center gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
                   <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white text-xs font-extrabold flex items-center justify-center shrink-0 shadow-2xs">
@@ -405,12 +556,38 @@ export function ProductDetailPage() {
                       </span>
                     </div>
                   )}
+                  {selectedPricing.flashSaleDiscount > 0 && (
+                    <div className="flex justify-between gap-3 text-rose-600 dark:text-rose-400">
+                      <span className="inline-flex items-center gap-1 font-semibold">
+                        <Flame className="w-3.5 h-3.5" /> Flash Sale ({selectedPricing.flashSalePercent}%)
+                      </span>
+                      <span className="font-bold tabular-nums">
+                        -{formatCurrency(selectedPricing.flashSaleDiscount)}
+                      </span>
+                    </div>
+                  )}
+                  {selectedPricing.tierDiscount > 0 && (
+                    <div className="flex justify-between gap-3 text-emerald-700 dark:text-emerald-400">
+                      <span className="font-semibold uppercase">
+                        {selectedPricing.appliedTier} {t('tier.discount')} ({selectedPricing.tierPercent}%)
+                      </span>
+                      <span className="font-bold tabular-nums">
+                        -{formatCurrency(selectedPricing.tierDiscount)}
+                      </span>
+                    </div>
+                  )}
+                  {selectedPricing.estimatedLoyaltyPoints > 0 && (
+                    <div className="flex justify-between gap-3 text-amber-700 dark:text-amber-400 text-xs">
+                      <span>{t('loyalty.earnPreview')}</span>
+                      <span className="font-bold">+{selectedPricing.estimatedLoyaltyPoints} pts</span>
+                    </div>
+                  )}
                   <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between items-baseline">
                     <span className="font-bold text-slate-900 dark:text-white">
                       {t('product.payableAmount')}
                     </span>
                     <span className="text-lg font-extrabold text-cyan-600 dark:text-cyan-400 tabular-nums">
-                      {formatCurrency(selectedPackage.price)}
+                      {formatCurrency(selectedPricing.finalPriceBeforeCoupon)}
                     </span>
                   </div>
                 </div>

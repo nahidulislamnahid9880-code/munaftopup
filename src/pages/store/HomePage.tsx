@@ -5,6 +5,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Copy,
+  Flame,
   Headphones,
   Search,
   ShieldCheck,
@@ -12,9 +14,17 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react';
+import {useAuth} from '../../contexts/AuthContext';
 import {useLanguage} from '../../contexts/LanguageContext';
 import {useStore} from '../../contexts/StoreContext';
+import {useToast} from '../../contexts/ToastContext';
 import {formatCurrency} from '../../lib/firebase';
+import {
+  calculateCountdownParts,
+  calculatePackagePricing,
+  getActiveFlashSaleForProduct,
+  isFlashSaleActive,
+} from '../../lib/pricing';
 import {resolveTelegramHref, resolveWhatsAppHref} from '../../lib/supportLinks';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
 import {TelegramIcon, WhatsAppIcon} from '../../components/SupportIcons';
@@ -22,11 +32,15 @@ import {StoreLayout} from '../../components/store/StoreLayout';
 import type {Product} from '../../types';
 
 export function HomePage() {
-  const {siteSettings, categories, products, loading, catalogInitialized} = useStore();
+  const {siteSettings, categories, products, flashSales, programConfig, loading, catalogInitialized} =
+    useStore();
+  const {customerProfile} = useAuth();
   const {t} = useLanguage();
+  const toast = useToast();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [bannerIdx, setBannerIdx] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const whatsappHref = resolveWhatsAppHref(siteSettings.contact);
   const telegramHref = resolveTelegramHref(siteSettings.contact);
@@ -100,6 +114,19 @@ export function HomePage() {
     return groups;
   }, [activeCategories, activeProducts, selectedCategory]);
 
+  const activeFlashSales = useMemo(
+    () => flashSales.filter((s) => isFlashSaleActive(s, nowMs)),
+    [flashSales, nowMs],
+  );
+
+  useEffect(() => {
+    if (flashSales.length === 0) return;
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [flashSales.length]);
+
   useEffect(() => {
     if (activeBanners.length <= 1) return;
     const timer = setInterval(() => {
@@ -110,10 +137,22 @@ export function HomePage() {
 
   const currentBanner = activeBanners[bannerIdx % Math.max(1, activeBanners.length)];
 
-  const getLowestPackagePrice = (product: Product): number | null => {
+  const getLowestPackagePrice = (product: Product): {base: number; discounted: number} | null => {
     const activePkgs = (product.packages || []).filter((pkg) => pkg.active && pkg.price > 0);
     if (activePkgs.length === 0) return null;
-    return Math.min(...activePkgs.map((pkg) => pkg.price));
+    const minBase = Math.min(...activePkgs.map((pkg) => pkg.price));
+    const sale = getActiveFlashSaleForProduct(flashSales, product.id, nowMs);
+    const pricing = calculatePackagePricing(minBase, sale, customerProfile?.tier, programConfig);
+    return {base: minBase, discounted: pricing.finalPriceBeforeCoupon};
+  };
+
+  const handleCopyPromoCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      toast.success(`Promo code ${code} copied!`);
+    } catch {
+      toast.info(`Promo code: ${code}`);
+    }
   };
 
   const getProductTag = (product: Product, index: number): 'popular' | 'best_selling' | null => {
@@ -269,6 +308,77 @@ export function HomePage() {
           </div>
         </section>
 
+        {/* Live Flash Sales Strip */}
+        {activeFlashSales.length > 0 && (
+          <section className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="w-7 h-7 rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center">
+                  <Flame className="w-4 h-4" />
+                </span>
+                <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white font-display">
+                  {t('flash.title')}
+                </h2>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {activeFlashSales.map((sale) => {
+                const matchedProd = products.find((p) => p.id === sale.productId && p.active);
+                if (!matchedProd) return null;
+                const cd = calculateCountdownParts(sale.endsAt, nowMs);
+                const lowest = getLowestPackagePrice(matchedProd);
+                return (
+                  <Link
+                    key={sale.id}
+                    to={`/product/${matchedProd.slug}`}
+                    className="group rounded-2xl bg-gradient-to-br from-rose-50 via-white to-amber-50/70 dark:from-rose-950/35 dark:via-slate-900 dark:to-amber-950/20 border-[1.5px] border-rose-200 dark:border-rose-800/70 hover:border-rose-400 dark:hover:border-rose-500 p-3.5 flex items-center gap-3.5 shadow-[0_8px_20px_-8px_rgba(244,63,94,0.2)] dark:shadow-none transition-all">
+                    <div className="w-16 h-16 rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800 border border-rose-200/80 dark:border-rose-800 shrink-0">
+                      <ImageWithFallback
+                        src={matchedProd.images?.[0]}
+                        alt={matchedProd.name}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="px-1.5 py-0.5 rounded-md bg-rose-600 text-white text-[10px] font-extrabold uppercase tracking-wide">
+                          -{sale.discountPercent}% {t('flash.off')}
+                        </span>
+                        {sale.badgeText && (
+                          <span className="text-[11px] font-bold text-rose-700 dark:text-rose-300 truncate">
+                            {sale.badgeText}
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                        {sale.title || matchedProd.name}
+                      </h3>
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        {lowest && (
+                          <span className="font-extrabold text-cyan-700 dark:text-cyan-400 tabular-nums">
+                            {t('home.from')} {formatCurrency(lowest.discounted)}{' '}
+                            <span className="text-[11px] font-normal text-slate-400 line-through">
+                              {formatCurrency(lowest.base)}
+                            </span>
+                          </span>
+                        )}
+                        {cd && (
+                          <span className="font-mono text-[11px] font-bold text-rose-700 dark:text-rose-300 tabular-nums">
+                            {cd.days > 0 ? `${cd.days}d ` : ''}
+                            {String(cd.hours).padStart(2, '0')}:{String(cd.minutes).padStart(2, '0')}:
+                            {String(cd.seconds).padStart(2, '0')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* Search & Category Filter Bar */}
         <section id="categories">
           <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-2 sm:p-2.5 shadow-[0_6px_20px_-6px_rgba(15,23,42,0.06)] dark:shadow-none flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
@@ -385,22 +495,29 @@ export function HomePage() {
                 {/* 3-Column Square Product Grid on Mobile -> 4/6 on Tablet & Desktop */}
                 <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-5">
                   {group.items.map((product, idx) => {
-                    const minPrice = getLowestPackagePrice(product);
+                    const priceInfo = getLowestPackagePrice(product);
+                    const activeSale = getActiveFlashSaleForProduct(flashSales, product.id, nowMs);
                     const tag = getProductTag(product, idx);
                     return (
                       <Link
                         key={product.id}
                         to={`/product/${product.slug}`}
                         className="group relative rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-1.5 sm:p-2 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] dark:shadow-none hover:shadow-[0_14px_30px_rgba(8,145,178,0.16)] hover:border-cyan-500 dark:hover:border-cyan-500 hover:-translate-y-0.5 transition-all duration-200 flex flex-col text-center focus:outline-none">
-                        {tag && (
-                          <span
-                            className={`absolute top-2.5 left-2.5 z-10 px-1.5 py-0.5 rounded-md text-[9px] sm:text-[10px] font-bold uppercase tracking-wide shadow-xs ${
-                              tag === 'best_selling'
-                                ? 'bg-amber-500 text-slate-950'
-                                : 'bg-cyan-600 text-white'
-                            }`}>
-                            {tag === 'best_selling' ? t('home.bestSelling') : t('home.popular')}
+                        {activeSale ? (
+                          <span className="absolute top-2.5 left-2.5 z-10 px-1.5 py-0.5 rounded-md text-[9px] sm:text-[10px] font-extrabold uppercase tracking-wide shadow-xs bg-rose-600 text-white">
+                            -{activeSale.discountPercent}%
                           </span>
+                        ) : (
+                          tag && (
+                            <span
+                              className={`absolute top-2.5 left-2.5 z-10 px-1.5 py-0.5 rounded-md text-[9px] sm:text-[10px] font-bold uppercase tracking-wide shadow-xs ${
+                                tag === 'best_selling'
+                                  ? 'bg-amber-500 text-slate-950'
+                                  : 'bg-cyan-600 text-white'
+                              }`}>
+                              {tag === 'best_selling' ? t('home.bestSelling') : t('home.popular')}
+                            </span>
+                          )
                         )}
                         <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700/80">
                           <ImageWithFallback
@@ -414,9 +531,14 @@ export function HomePage() {
                           <h3 className="text-[11px] sm:text-sm font-bold text-slate-900 dark:text-slate-100 group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition-colors leading-snug line-clamp-2">
                             {product.name}
                           </h3>
-                          {minPrice !== null && (
+                          {priceInfo !== null && (
                             <p className="text-[10px] sm:text-xs font-semibold text-cyan-700 dark:text-cyan-400 tabular-nums">
-                              {t('home.from')} {formatCurrency(minPrice)}
+                              {t('home.from')} {formatCurrency(priceInfo.discounted)}
+                              {priceInfo.discounted < priceInfo.base && (
+                                <span className="ml-1 text-[9px] text-slate-400 line-through">
+                                  {formatCurrency(priceInfo.base)}
+                                </span>
+                              )}
                             </p>
                           )}
                         </div>
@@ -448,12 +570,15 @@ export function HomePage() {
                     />
                   </div>
                   <div className="col-span-3 p-4 sm:p-5 flex flex-col justify-center space-y-1.5">
-                    <div className="flex items-center gap-2 text-[11px] font-bold text-cyan-700 dark:text-cyan-400">
+                    <div className="flex items-center gap-2 text-[11px] font-bold text-cyan-700 dark:text-cyan-400 flex-wrap">
                       <span>{promo.discountText || t('home.specialOffer')}</span>
                       {promo.code && (
-                        <span className="font-mono text-slate-500 dark:text-slate-400">
-                          · {promo.code}
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleCopyPromoCode(promo.code)}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-50 dark:bg-cyan-950/60 border border-cyan-200 dark:border-cyan-800 font-mono text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-900 cursor-pointer">
+                          {promo.code} <Copy className="w-3 h-3" />
+                        </button>
                       )}
                     </div>
                     <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white font-display">

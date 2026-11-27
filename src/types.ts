@@ -93,6 +93,7 @@ export interface DiamondPackage {
   quantityLabel: string;
   price: number;
   originalPrice: number;
+  costPrice?: number;
   promoLabel: string;
   bonusLabel?: string;
   badgeType?: PackageBadgeType;
@@ -139,6 +140,15 @@ export interface PaymentMethod {
 
 export type PaymentStatus = 'pending' | 'verified' | 'rejected';
 export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled' | 'expired';
+export type CustomerTier = 'regular' | 'vip' | 'reseller';
+
+export interface SavedPlayerUid {
+  id: string;
+  label: string;
+  gameName: string;
+  playerUid: string;
+  serverId: string;
+}
 
 export interface Order {
   id: string;
@@ -155,6 +165,19 @@ export interface Order {
   quantityLabel: string;
   unitPrice: number;
   totalAmount: number;
+  couponCode?: string;
+  couponDiscount?: number;
+  tierDiscount?: number;
+  flashSaleDiscount?: number;
+  appliedTier?: CustomerTier;
+  unitCost?: number;
+  netProfit?: number;
+  loyaltyPointsEarned?: number;
+  fraudFlag?: boolean;
+  fraudScore?: number;
+  fraudReasons?: string[];
+  distributorStatus?: 'none' | 'dispatched' | 'success' | 'failed';
+  distributorRef?: string;
   playerUid: string;
   serverId: string;
   paymentType?: 'manual' | 'wallet';
@@ -214,8 +237,100 @@ export interface CustomerProfile {
   walletBalance: number;
   suspended: boolean;
   suspendedReason: string;
+  tier?: CustomerTier;
+  tierLocked?: boolean;
+  loyaltyPoints?: number;
+  referralCode?: string;
+  referredBy?: string;
+  referralRewarded?: boolean;
+  totalSpent?: number;
+  savedUids?: SavedPlayerUid[];
   createdAt?: unknown;
   updatedAt?: unknown;
+}
+
+export interface Coupon {
+  id: string;
+  code: string;
+  title: string;
+  discountType: 'percent' | 'fixed';
+  discountValue: number;
+  minOrderAmount: number;
+  maxDiscountAmount: number;
+  usageLimit: number;
+  perUserLimit: number;
+  usedCount: number;
+  active: boolean;
+  expiresAt: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface FlashSale {
+  id: string;
+  title: string;
+  productId: string;
+  productName: string;
+  discountPercent: number;
+  badgeText: string;
+  startsAt: string;
+  endsAt: string;
+  active: boolean;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface VoucherCodeItem {
+  id: string;
+  productId: string;
+  productName: string;
+  packageId: string;
+  packageName: string;
+  code: string;
+  status: 'unused' | 'claimed';
+  claimedOrderId?: string;
+  claimedOrderNumber?: string;
+  claimedAt?: unknown;
+  createdAt?: unknown;
+}
+
+export interface ApiFulfillmentLog {
+  id: string;
+  type: 'distributor' | 'payment_gateway' | 'pin_vault' | 'fraud_guard';
+  orderNumber: string;
+  endpoint: string;
+  status: 'success' | 'failed' | 'pending';
+  httpStatus?: number;
+  message: string;
+  responsePreview?: string;
+  createdAt?: unknown;
+}
+
+export interface ReferralEvent {
+  id: string;
+  referrerUid: string;
+  referredUid: string;
+  referredEmail: string;
+  eventType: 'referral_bonus' | 'loyalty_earn' | 'loyalty_redeem';
+  orderNumber?: string;
+  walletDelta: number;
+  pointsDelta: number;
+  note: string;
+  createdAt?: unknown;
+}
+
+export interface StoreProgramConfig {
+  vipSpendThreshold: number;
+  vipDiscountPercent: number;
+  resellerSpendThreshold: number;
+  resellerDiscountPercent: number;
+  referralBonusAmount: number;
+  loyaltyPercent: number;
+  loyaltyPointValueBdt: number;
+  fraudMaxFailedTrxPerHour: number;
+  fraudMaxOrdersPer10Min: number;
+  gatewayEnabled: boolean;
+  gatewayProvider: 'none' | 'uddoktapay' | 'bkash_merchant' | 'nagad_merchant';
 }
 
 export interface SupportTicket {

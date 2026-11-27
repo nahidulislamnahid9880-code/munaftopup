@@ -13,6 +13,7 @@ import {DashboardOverview} from './pages/admin/DashboardOverview';
 import {OrdersManager} from './pages/admin/OrdersManager';
 import {PaymentsManager} from './pages/admin/PaymentsManager';
 import {ProductsManager} from './pages/admin/ProductsManager';
+import {PromotionsManager} from './pages/admin/PromotionsManager';
 import {AddMoneyPage} from './pages/store/AddMoneyPage';
 import {CheckoutPage} from './pages/store/CheckoutPage';
 import {CustomerAccountPage} from './pages/store/CustomerAccountPage';
@@ -49,6 +50,7 @@ export default function App() {
                     <Route path="/admin/login" element={<AdminLoginPage />} />
                     <Route path="/admin" element={<DashboardOverview />} />
                     <Route path="/admin/products" element={<ProductsManager />} />
+                    <Route path="/admin/promotions" element={<PromotionsManager />} />
                     <Route path="/admin/orders" element={<OrdersManager />} />
                     <Route path="/admin/payments" element={<PaymentsManager />} />
                     <Route path="/admin/customization" element={<CustomizationManager />} />

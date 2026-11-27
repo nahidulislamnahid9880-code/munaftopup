@@ -1,6 +1,8 @@
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
 import {
+  AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Clock,
   DollarSign,
@@ -81,17 +83,44 @@ export function DashboardOverview() {
     }
     setTg24hLoading(true);
     setTg24hError('');
+
+    const runQuery = async (): Promise<Response> => {
+      try {
+        return await adminFetch('/api/admin/telegram-orders-24h');
+      } catch {
+        await new Promise((r) => setTimeout(r, 1200));
+        return adminFetch('/api/admin/telegram-orders-24h');
+      }
+    };
+
     try {
-      const res = await adminFetch('/api/admin/telegram-orders-24h');
-      const data = (await res.json()) as TelegramOrders24hData;
-      if (!res.ok || !data.ok) {
-        setTg24hError(data.error || data.reason || 'Failed to fetch Telegram 24h order metrics');
+      const res = await runQuery();
+      const rawText = await res.text();
+      let data: TelegramOrders24hData | null = null;
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText) as TelegramOrders24hData;
+        } catch {
+          data = null;
+        }
+      }
+      if (!res.ok || !data?.ok) {
+        setTg24hError(
+          data?.error ||
+            data?.reason ||
+            `Server returned HTTP ${res.status} while querying Firebase Admin SDK.`,
+        );
         setTg24h(null);
       } else {
         setTg24h(data);
       }
-    } catch {
-      setTg24hError('Network error while querying Firebase Admin SDK.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      setTg24hError(
+        msg
+          ? `Unable to reach server (${msg}). Please wait a moment and click Refresh.`
+          : 'Unable to reach server while querying Firebase Admin SDK. Please click Refresh.',
+      );
     } finally {
       setTg24hLoading(false);
     }
@@ -139,40 +168,61 @@ export function DashboardOverview() {
     const todayMs = startOfToday.getTime();
 
     let totalRevenue = 0;
+    let totalProfit = 0;
+    let costTrackedRevenue = 0;
     let todaySales = 0;
     let pending = 0;
     let processing = 0;
     let completed = 0;
     let cancelled = 0;
+    let fraudCount = 0;
 
     for (const o of orders) {
+      if (o.fraudFlag && o.orderStatus !== 'cancelled' && o.orderStatus !== 'expired') {
+        fraudCount += 1;
+      }
       if (o.orderStatus === 'pending') pending += 1;
       if (o.orderStatus === 'processing') processing += 1;
       if (o.orderStatus === 'completed') completed += 1;
       if (o.orderStatus === 'cancelled' || o.orderStatus === 'expired') cancelled += 1;
 
       if (o.orderStatus !== 'cancelled' && o.orderStatus !== 'expired' && o.paymentStatus !== 'rejected') {
-        totalRevenue += Number(o.totalAmount || 0);
+        const amt = Number(o.totalAmount || 0);
+        totalRevenue += amt;
+        const unitCost = Number(o.unitCost || 0);
+        if (typeof o.netProfit === 'number' && unitCost > 0) {
+          totalProfit += o.netProfit;
+          costTrackedRevenue += amt;
+        } else if (unitCost > 0) {
+          totalProfit += amt - unitCost;
+          costTrackedRevenue += amt;
+        }
         if (timestampToMillis(o.createdAt) >= todayMs) {
-          todaySales += Number(o.totalAmount || 0);
+          todaySales += amt;
         }
       }
     }
 
+    const profitMarginPct =
+      costTrackedRevenue > 0 ? Math.round((totalProfit / costTrackedRevenue) * 1000) / 10 : 0;
+
     return {
       totalRevenue,
+      totalProfit,
+      profitMarginPct,
       todaySales,
       totalOrders: orders.length,
       pending,
       processing,
       completed,
       cancelled,
+      fraudCount,
       totalCustomers: customers.length,
     };
   }, [orders, customers]);
 
   const chartData = useMemo(() => {
-    const days: Array<{dateKey: string; label: string; revenue: number; orders: number}> = [];
+    const days: Array<{dateKey: string; label: string; revenue: number; profit: number; orders: number}> = [];
     for (let i = 13; i >= 0; i -= 1) {
       const d = new Date();
       d.setHours(0, 0, 0, 0);
@@ -182,6 +232,7 @@ export function DashboardOverview() {
         dateKey,
         label: d.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
         revenue: 0,
+        profit: 0,
         orders: 0,
       });
     }
@@ -194,7 +245,14 @@ export function DashboardOverview() {
       const key = new Date(ms).toISOString().slice(0, 10);
       const bucket = map.get(key);
       if (bucket) {
-        bucket.revenue += Number(o.totalAmount || 0);
+        const amt = Number(o.totalAmount || 0);
+        const unitCost = Number(o.unitCost || 0);
+        bucket.revenue += amt;
+        if (typeof o.netProfit === 'number' && unitCost > 0) {
+          bucket.profit += Math.max(0, o.netProfit);
+        } else if (unitCost > 0) {
+          bucket.profit += Math.max(0, amt - unitCost);
+        }
         bucket.orders += 1;
       }
     }
@@ -223,12 +281,17 @@ export function DashboardOverview() {
 
   const kpis = [
     {label: 'Total Revenue', value: formatCurrency(stats.totalRevenue), icon: DollarSign, color: 'text-emerald-600 dark:text-emerald-400'},
+    {
+      label: stats.profitMarginPct ? `Est. Profit (${stats.profitMarginPct}%)` : 'Est. Net Profit',
+      value: stats.totalProfit > 0 ? formatCurrency(stats.totalProfit) : 'Set Cost Price',
+      icon: BarChart3,
+      color: 'text-cyan-600 dark:text-cyan-400',
+    },
     {label: "Today's Sales", value: formatCurrency(stats.todaySales), icon: TrendingUp, color: 'text-blue-600 dark:text-blue-400'},
     {label: 'Total Orders', value: stats.totalOrders.toLocaleString(), icon: ShoppingBag, color: 'text-slate-700 dark:text-slate-300'},
     {label: 'Pending Orders', value: stats.pending.toLocaleString(), icon: Clock, color: 'text-amber-600 dark:text-amber-400'},
     {label: 'Processing Orders', value: stats.processing.toLocaleString(), icon: PackageCheck, color: 'text-blue-600 dark:text-blue-400'},
     {label: 'Completed Orders', value: stats.completed.toLocaleString(), icon: CheckCircle2, color: 'text-emerald-600 dark:text-emerald-400'},
-    {label: 'Cancelled Orders', value: stats.cancelled.toLocaleString(), icon: XCircle, color: 'text-red-600 dark:text-red-400'},
     {label: 'Total Customers', value: stats.totalCustomers.toLocaleString(), icon: Users, color: 'text-slate-700 dark:text-slate-300'},
   ];
 
@@ -270,6 +333,23 @@ export function DashboardOverview() {
               </button>
             </div>
           ) : null
+        )}
+
+        {/* Fraud Alert Banner */}
+        {stats.fraudCount > 0 && (
+          <div className="rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 text-xs text-rose-800 dark:text-rose-200 font-semibold">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>
+                {stats.fraudCount} active order(s) flagged by Fraud &amp; Velocity Guard for manual review.
+              </span>
+            </div>
+            <Link
+              to="/admin/orders?filter=fraud"
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold">
+              Review Flagged Orders
+            </Link>
+          </div>
         )}
 
         {/* 8 KPI Cards */}
@@ -399,6 +479,10 @@ export function DashboardOverview() {
                     <stop offset="5%" stopColor="#2563eb" stopOpacity={0.28} />
                     <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
                   </linearGradient>
+                  <linearGradient id="profitFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                  </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.2)" />
                 <XAxis dataKey="label" tick={{fontSize: 11}} stroke="#94a3b8" />
@@ -419,6 +503,14 @@ export function DashboardOverview() {
                   stroke="#2563eb"
                   strokeWidth={2}
                   fill="url(#revFill)"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="profit"
+                  name="Est. Profit (৳)"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  fill="url(#profitFill)"
                 />
               </AreaChart>
             </ResponsiveContainer>

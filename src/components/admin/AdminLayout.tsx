@@ -14,6 +14,7 @@ import {
   Shield,
   ShoppingBag,
   Sun,
+  Tag,
   Users,
   X,
 } from 'lucide-react';
@@ -32,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   {label: 'Overview', to: '/admin', icon: LayoutDashboard},
   {label: 'Orders', to: '/admin/orders', icon: ShoppingBag, perm: 'orders'},
   {label: 'Products & Packs', to: '/admin/products', icon: Package, perm: 'products'},
+  {label: 'Promos & Vault', to: '/admin/promotions', icon: Tag, perm: 'products'},
   {label: 'Payments & TrxID', to: '/admin/payments', icon: CreditCard, perm: 'payments'},
   {label: 'Customization', to: '/admin/customization', icon: Palette, perm: 'customization'},
   {label: 'Customers & Tickets', to: '/admin/customers', icon: Users, perm: 'customers'},
