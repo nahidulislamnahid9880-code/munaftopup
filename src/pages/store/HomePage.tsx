@@ -12,6 +12,7 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react';
+import {useLanguage} from '../../contexts/LanguageContext';
 import {useStore} from '../../contexts/StoreContext';
 import {formatCurrency} from '../../lib/firebase';
 import {resolveTelegramHref, resolveWhatsAppHref} from '../../lib/supportLinks';
@@ -22,6 +23,7 @@ import type {Product} from '../../types';
 
 export function HomePage() {
   const {siteSettings, categories, products, loading, catalogInitialized} = useStore();
+  const {t} = useLanguage();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [bannerIdx, setBannerIdx] = useState(0);
@@ -114,12 +116,22 @@ export function HomePage() {
     return Math.min(...activePkgs.map((pkg) => pkg.price));
   };
 
+  const getProductTag = (product: Product, index: number): 'popular' | 'best_selling' | null => {
+    const hasBest = (product.packages || []).some((p) => p.active && p.badgeType === 'best_selling');
+    if (hasBest) return 'best_selling';
+    const hasPopular = (product.packages || []).some((p) => p.active && p.badgeType === 'popular');
+    if (hasPopular) return 'popular';
+    if (product.featured && index === 0) return 'best_selling';
+    if (product.featured && index === 1) return 'popular';
+    return null;
+  };
+
   return (
     <StoreLayout>
       <div className="max-w-[1248px] mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-6 sm:space-y-8">
-        {/* 1200x450 Exact Proportioned Hero Banner */}
+        {/* Hero Banner */}
         {currentBanner && (
-          <section className="relative rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-slate-900/15 ring-1 ring-cyan-500/25 bg-slate-950 shadow-[0_20px_50px_rgba(15,23,42,0.16)]">
+          <section className="relative rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-slate-900/15 dark:border-slate-700/80 ring-1 ring-cyan-500/25 bg-slate-950 shadow-[0_20px_50px_rgba(15,23,42,0.16)] dark:shadow-[0_20px_50px_rgba(2,6,23,0.55)]">
             <Link
               to={currentBanner.linkUrl?.startsWith('#') ? '/' : currentBanner.linkUrl || '/'}
               onClick={(e) => {
@@ -138,7 +150,7 @@ export function HomePage() {
                   className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500"
                 />
               </div>
-              <div className="absolute inset-0 bg-gradient-to-r from-slate-950/90 via-slate-950/50 to-slate-950/15 flex flex-col justify-end sm:justify-center p-4 sm:p-8 lg:p-12">
+              <div className="absolute inset-0 bg-gradient-to-r from-slate-950/90 via-slate-950/55 to-slate-950/15 flex flex-col justify-end sm:justify-center p-4 sm:p-8 lg:p-12">
                 <div className="max-w-xl space-y-1.5 sm:space-y-3">
                   <h1 className="text-lg sm:text-3xl lg:text-[40px] font-extrabold text-white font-display leading-[1.12] tracking-tight text-balance">
                     {currentBanner.title}
@@ -150,7 +162,7 @@ export function HomePage() {
                   )}
                   <div className="hidden sm:flex items-center gap-3 pt-1">
                     <span className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 text-white text-xs sm:text-sm font-bold shadow-md shadow-cyan-500/25 group-hover:from-cyan-400 group-hover:to-teal-400 transition-all whitespace-nowrap">
-                      <span>{siteSettings.heroCtaText || 'Browse Top-Ups'}</span>
+                      <span>{siteSettings.heroCtaText || t('home.browseTopUps')}</span>
                       <ArrowRight className="w-4 h-4" />
                     </span>
                   </div>
@@ -202,40 +214,56 @@ export function HomePage() {
         {/* Value & Trust Strip */}
         <section aria-label="Service highlights">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
-            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
-              <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400/80 dark:hover:border-cyan-500/70 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
+              <div className="w-9 h-9 rounded-xl bg-cyan-50 dark:bg-cyan-950/70 border border-cyan-200/70 dark:border-cyan-800/70 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0">
                 <Zap className="w-4 h-4" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs sm:text-sm font-bold text-slate-900 truncate">Instant UID Top-Up</p>
-                <p className="text-[11px] text-slate-500 truncate">Direct in-game delivery</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                  {t('home.instantUid')}
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {t('home.instantUidDesc')}
+                </p>
               </div>
             </div>
-            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
-              <div className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200/70 text-emerald-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400/80 dark:hover:border-cyan-500/70 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200/70 dark:border-emerald-800/70 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                 <Wallet className="w-4 h-4" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs sm:text-sm font-bold text-slate-900 truncate">bKash, Nagad &amp; Wallet</p>
-                <p className="text-[11px] text-slate-500 truncate">Verified fast checkout</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                  {t('home.paymentMethods')}
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {t('home.paymentMethodsDesc')}
+                </p>
               </div>
             </div>
-            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
-              <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-200/70 text-blue-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400/80 dark:hover:border-cyan-500/70 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
+              <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/70 border border-blue-200/70 dark:border-blue-800/70 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                 <ShieldCheck className="w-4 h-4" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs sm:text-sm font-bold text-slate-900 truncate">100% Account Safe</p>
-                <p className="text-[11px] text-slate-500 truncate">No password needed</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                  {t('home.accountSafe')}
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {t('home.accountSafeDesc')}
+                </p>
               </div>
             </div>
-            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)]">
-              <div className="w-9 h-9 rounded-xl bg-sky-50 border border-sky-200/70 text-sky-600 flex items-center justify-center shrink-0">
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400/80 dark:hover:border-cyan-500/70 transition-colors px-3.5 py-3 flex items-center gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
+              <div className="w-9 h-9 rounded-xl bg-sky-50 dark:bg-sky-950/70 border border-sky-200/70 dark:border-sky-800/70 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
                 <Clock className="w-4 h-4" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs sm:text-sm font-bold text-slate-900 truncate">Active Support</p>
-                <p className="text-[11px] text-slate-500 truncate">WhatsApp &amp; Telegram</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
+                  {t('home.activeSupport')}
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {t('home.activeSupportDesc')}
+                </p>
               </div>
             </div>
           </div>
@@ -243,15 +271,15 @@ export function HomePage() {
 
         {/* Search & Category Filter Bar */}
         <section id="categories">
-          <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-2 sm:p-2.5 shadow-[0_6px_20px_-6px_rgba(15,23,42,0.06)] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-2 sm:p-2.5 shadow-[0_6px_20px_-6px_rgba(15,23,42,0.06)] dark:shadow-none flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="relative flex-1 sm:max-w-xs">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search games or passes..."
-                className="w-full pl-10 pr-3.5 py-2 text-xs sm:text-sm rounded-xl border-[1.5px] border-slate-300/90 bg-slate-50/70 text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
+                placeholder={t('home.searchPlaceholder')}
+                className="w-full pl-10 pr-3.5 py-2 text-xs sm:text-sm rounded-xl border-[1.5px] border-slate-300/90 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
               />
             </div>
 
@@ -262,10 +290,10 @@ export function HomePage() {
                   onClick={() => setSelectedCategory('all')}
                   className={`px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
                     selectedCategory === 'all'
-                      ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
-                      : 'bg-slate-50 border-slate-200/90 text-slate-600 hover:text-slate-900 hover:border-slate-300'
+                      ? 'bg-slate-900 dark:bg-cyan-600 border-slate-900 dark:border-cyan-500 text-white shadow-xs'
+                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200/90 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:border-slate-300'
                   }`}>
-                  All Categories
+                  {t('home.allCategories')}
                 </button>
                 {activeCategories.map((cat) => (
                   <button
@@ -275,7 +303,7 @@ export function HomePage() {
                     className={`px-3.5 py-2 rounded-xl border text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
                       selectedCategory === cat.id
                         ? 'bg-gradient-to-r from-cyan-500 to-teal-500 border-cyan-400 text-white shadow-sm shadow-cyan-500/20'
-                        : 'bg-slate-50 border-slate-200/90 text-slate-600 hover:text-slate-900 hover:border-slate-300'
+                        : 'bg-slate-50 dark:bg-slate-800 border-slate-200/90 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:border-slate-300'
                     }`}>
                     {cat.name}
                   </button>
@@ -285,49 +313,54 @@ export function HomePage() {
           </div>
         </section>
 
-        {/* Category-Grouped 3-Column Square Product Grids */}
+        {/* Category-Grouped Product Grids */}
         <section id="products" className="space-y-8 sm:space-y-10">
           {loading ? (
             <div className="space-y-4">
-              <div className="h-6 w-32 bg-slate-200 rounded mx-auto animate-pulse" />
+              <div className="h-6 w-40 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
               <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-5">
                 {[1, 2, 3, 4, 5, 6].map((n) => (
-                  <div key={n} className="space-y-2 animate-pulse">
-                    <div className="aspect-square rounded-2xl bg-slate-200" />
-                    <div className="h-3 w-4/5 mx-auto bg-slate-200 rounded" />
+                  <div
+                    key={n}
+                    className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-2 space-y-2.5 animate-pulse">
+                    <div className="aspect-square rounded-xl bg-slate-200 dark:bg-slate-800" />
+                    <div className="h-3 w-4/5 mx-auto bg-slate-200 dark:bg-slate-800 rounded" />
+                    <div className="h-2.5 w-1/2 mx-auto bg-slate-200 dark:bg-slate-800 rounded" />
                   </div>
                 ))}
               </div>
             </div>
           ) : !catalogInitialized && products.length === 0 ? (
-            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
-              <h2 className="text-lg font-bold text-slate-900 font-display">
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-8 text-center space-y-3 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white font-display">
                 Storefront Ready for Initial Catalog Setup
               </h2>
-              <p className="text-xs sm:text-sm text-slate-600 max-w-md mx-auto">
+              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto">
                 All products, square category icons, diamond packages, and payment numbers load dynamically from the database. Sign in as Admin to publish the live catalog.
               </p>
               <div className="pt-1">
                 <Link
                   to="/admin/login"
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold">
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-cyan-600 hover:bg-slate-800 text-white text-xs font-semibold">
                   Open Admin Login <ArrowRight className="w-4 h-4" />
                 </Link>
               </div>
             </div>
           ) : categorySections.length === 0 ? (
-            <div className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] p-8 text-center space-y-1.5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)]">
-              <p className="text-sm font-semibold text-slate-900">No matching products found</p>
-              <p className="text-xs text-slate-500">
-                Try clearing your search or selecting All Categories.
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-8 text-center space-y-1.5 shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] dark:shadow-none">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {t('home.noMatchingProducts')}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {t('home.clearSearchHint')}
               </p>
             </div>
           ) : (
             categorySections.map((group) => (
               <div key={group.id} className="space-y-4 sm:space-y-5">
-                <div className="flex items-end justify-between gap-4 border-b-[1.5px] border-slate-200/90 pb-3">
+                <div className="flex items-end justify-between gap-4 border-b-[1.5px] border-slate-200/90 dark:border-slate-800 pb-3">
                   <div className="space-y-1">
-                    <h2 className="text-lg sm:text-2xl font-extrabold text-slate-900 font-display tracking-tight">
+                    <h2 className="text-lg sm:text-2xl font-extrabold text-slate-900 dark:text-white font-display tracking-tight">
                       {group.name}
                     </h2>
                     <div className="w-12 h-1 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500" />
@@ -336,29 +369,40 @@ export function HomePage() {
                     <button
                       type="button"
                       onClick={() => setSelectedCategory(group.id)}
-                      className="text-xs sm:text-sm font-semibold text-cyan-600 hover:text-cyan-700 whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1">
-                      View all <ArrowRight className="w-3.5 h-3.5" />
+                      className="text-xs sm:text-sm font-semibold text-cyan-600 dark:text-cyan-400 hover:text-cyan-700 whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1">
+                      {t('home.viewAll')} <ArrowRight className="w-3.5 h-3.5" />
                     </button>
                   ) : selectedCategory !== 'all' ? (
                     <button
                       type="button"
                       onClick={() => setSelectedCategory('all')}
-                      className="text-xs sm:text-sm font-semibold text-cyan-600 hover:text-cyan-700 whitespace-nowrap shrink-0 cursor-pointer">
-                      Show all categories
+                      className="text-xs sm:text-sm font-semibold text-cyan-600 dark:text-cyan-400 hover:text-cyan-700 whitespace-nowrap shrink-0 cursor-pointer">
+                      {t('home.showAllCategories')}
                     </button>
                   ) : null}
                 </div>
 
                 {/* 3-Column Square Product Grid on Mobile -> 4/6 on Tablet & Desktop */}
                 <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-5">
-                  {group.items.map((product) => {
+                  {group.items.map((product, idx) => {
                     const minPrice = getLowestPackagePrice(product);
+                    const tag = getProductTag(product, idx);
                     return (
                       <Link
                         key={product.id}
                         to={`/product/${product.slug}`}
-                        className="group rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] p-1.5 sm:p-2 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] hover:shadow-[0_14px_30px_rgba(8,145,178,0.16)] hover:border-cyan-500 hover:ring-cyan-500/25 hover:-translate-y-0.5 transition-all duration-200 flex flex-col text-center focus:outline-none">
-                        <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-100 border border-slate-200/70">
+                        className="group relative rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-1.5 sm:p-2 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.06)] dark:shadow-none hover:shadow-[0_14px_30px_rgba(8,145,178,0.16)] hover:border-cyan-500 dark:hover:border-cyan-500 hover:-translate-y-0.5 transition-all duration-200 flex flex-col text-center focus:outline-none">
+                        {tag && (
+                          <span
+                            className={`absolute top-2.5 left-2.5 z-10 px-1.5 py-0.5 rounded-md text-[9px] sm:text-[10px] font-bold uppercase tracking-wide shadow-xs ${
+                              tag === 'best_selling'
+                                ? 'bg-amber-500 text-slate-950'
+                                : 'bg-cyan-600 text-white'
+                            }`}>
+                            {tag === 'best_selling' ? t('home.bestSelling') : t('home.popular')}
+                          </span>
+                        )}
+                        <div className="w-full aspect-square rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700/80">
                           <ImageWithFallback
                             src={product.images?.[0]}
                             alt={product.name}
@@ -367,12 +411,12 @@ export function HomePage() {
                           />
                         </div>
                         <div className="pt-2 pb-1 px-0.5 flex-1 flex flex-col justify-between gap-1">
-                          <h3 className="text-[11px] sm:text-sm font-bold text-slate-900 group-hover:text-cyan-600 transition-colors leading-snug line-clamp-2">
+                          <h3 className="text-[11px] sm:text-sm font-bold text-slate-900 dark:text-slate-100 group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition-colors leading-snug line-clamp-2">
                             {product.name}
                           </h3>
                           {minPrice !== null && (
-                            <p className="text-[10px] sm:text-xs font-semibold text-cyan-700 tabular-nums">
-                              From {formatCurrency(minPrice)}
+                            <p className="text-[10px] sm:text-xs font-semibold text-cyan-700 dark:text-cyan-400 tabular-nums">
+                              {t('home.from')} {formatCurrency(minPrice)}
                             </p>
                           )}
                         </div>
@@ -388,15 +432,15 @@ export function HomePage() {
         {/* Admin-Controlled Promotional Offers */}
         {siteSettings.homepageSections?.showPromos && activePromos.length > 0 && (
           <section className="pt-2 space-y-4">
-            <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 font-display">
-              Featured Offers
+            <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white font-display">
+              {t('home.featuredOffers')}
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {activePromos.map((promo) => (
                 <div
                   key={promo.id}
-                  className="rounded-2xl bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.04] hover:border-cyan-400 overflow-hidden grid grid-cols-5 items-stretch shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] transition-all">
-                  <div className="col-span-2 bg-slate-900 border-r border-slate-200/80">
+                  className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400 dark:hover:border-cyan-500 overflow-hidden grid grid-cols-5 items-stretch shadow-[0_8px_24px_-6px_rgba(15,23,42,0.06)] dark:shadow-none transition-all">
+                  <div className="col-span-2 bg-slate-900 border-r border-slate-200/80 dark:border-slate-800">
                     <ImageWithFallback
                       src={promo.imageUrl}
                       alt={promo.title}
@@ -404,14 +448,20 @@ export function HomePage() {
                     />
                   </div>
                   <div className="col-span-3 p-4 sm:p-5 flex flex-col justify-center space-y-1.5">
-                    <div className="flex items-center gap-2 text-[11px] font-bold text-cyan-700">
-                      <span>{promo.discountText || 'Special Offer'}</span>
-                      {promo.code && <span className="font-mono text-slate-500">· {promo.code}</span>}
+                    <div className="flex items-center gap-2 text-[11px] font-bold text-cyan-700 dark:text-cyan-400">
+                      <span>{promo.discountText || t('home.specialOffer')}</span>
+                      {promo.code && (
+                        <span className="font-mono text-slate-500 dark:text-slate-400">
+                          · {promo.code}
+                        </span>
+                      )}
                     </div>
-                    <h3 className="text-sm sm:text-base font-bold text-slate-900 font-display">
+                    <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white font-display">
                       {promo.title}
                     </h3>
-                    <p className="text-xs text-slate-600 line-clamp-2">{promo.description}</p>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
+                      {promo.description}
+                    </p>
                   </div>
                 </div>
               ))}
@@ -425,13 +475,13 @@ export function HomePage() {
             <div className="space-y-1.5 max-w-xl">
               <div className="flex items-center gap-2 text-cyan-400 text-xs font-bold">
                 <Headphones className="w-4 h-4" />
-                <span>Customer Support Desk</span>
+                <span>{t('home.supportDeskTag')}</span>
               </div>
               <h2 className="text-lg sm:text-2xl font-extrabold font-display tracking-tight">
-                Need Help With an Order or Deposit?
+                {t('home.needHelpTitle')}
               </h2>
               <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                Message our support team directly on WhatsApp or Telegram for quick UID verification and payment assistance.
+                {t('home.needHelpDesc')}
               </p>
             </div>
 
@@ -443,14 +493,14 @@ export function HomePage() {
                   rel="noopener noreferrer"
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <WhatsAppIcon className="w-5 h-5" />
-                  <span>WhatsApp Support</span>
+                  <span>{t('home.whatsappSupport')}</span>
                 </a>
               ) : (
                 <Link
                   to="/account?tab=support"
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <WhatsAppIcon className="w-5 h-5" />
-                  <span>WhatsApp Support</span>
+                  <span>{t('home.whatsappSupport')}</span>
                 </Link>
               )}
 
@@ -461,14 +511,14 @@ export function HomePage() {
                   rel="noopener noreferrer"
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sky-500 hover:bg-sky-400 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-sky-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <TelegramIcon className="w-5 h-5" />
-                  <span>Telegram Support</span>
+                  <span>{t('home.telegramSupport')}</span>
                 </a>
               ) : (
                 <Link
                   to="/account?tab=support"
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-sky-500 hover:bg-sky-400 border border-white/20 text-white text-xs sm:text-sm font-bold shadow-lg shadow-sky-900/30 transition-all cursor-pointer whitespace-nowrap">
                   <TelegramIcon className="w-5 h-5" />
-                  <span>Telegram Support</span>
+                  <span>{t('home.telegramSupport')}</span>
                 </Link>
               )}
             </div>
@@ -479,36 +529,42 @@ export function HomePage() {
         {siteSettings.homepageSections?.showHowItWorks && (
           <section className="pt-2">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)]">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
+              <div className="bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400/80 dark:hover:border-cyan-500/70 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)] dark:shadow-none">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 dark:bg-cyan-950/70 border border-cyan-200/70 dark:border-cyan-800/70 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0">
                   <Zap className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900">1. Enter Player UID</h3>
-                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                    Pick a service and enter only your Player UID—no password ever needed.
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    {t('home.step1Title')}
+                  </h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    {t('home.step1Desc')}
                   </p>
                 </div>
               </div>
-              <div className="bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)]">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
+              <div className="bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400/80 dark:hover:border-cyan-500/70 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)] dark:shadow-none">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 dark:bg-cyan-950/70 border border-cyan-200/70 dark:border-cyan-800/70 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0">
                   <ShieldCheck className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900">2. Wallet or bKash/Nagad</h3>
-                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                    Pay instantly with your Wallet Balance or submit your verified TrxID.
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    {t('home.step2Title')}
+                  </h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    {t('home.step2Desc')}
                   </p>
                 </div>
               </div>
-              <div className="bg-white border-[1.5px] border-slate-200/95 ring-1 ring-slate-900/[0.03] hover:border-cyan-400/80 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)]">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200/70 text-cyan-600 flex items-center justify-center shrink-0">
+              <div className="bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 hover:border-cyan-400/80 dark:hover:border-cyan-500/70 transition-colors rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-[0_6px_18px_-6px_rgba(15,23,42,0.05)] dark:shadow-none">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 dark:bg-cyan-950/70 border border-cyan-200/70 dark:border-cyan-800/70 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0">
                   <Sparkles className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900">3. Fast Fulfillment</h3>
-                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                    Track live order updates or copy delivered voucher pins in My Codes.
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    {t('home.step3Title')}
+                  </h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                    {t('home.step3Desc')}
                   </p>
                 </div>
               </div>

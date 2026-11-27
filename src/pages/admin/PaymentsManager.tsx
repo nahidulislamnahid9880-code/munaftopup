@@ -67,7 +67,7 @@ const GATEWAY_PRESETS = [
 ];
 
 export function PaymentsManager() {
-  const {adminUser, firebaseUser, adminLinkGoogleForSync} = useAuth();
+  const {adminUser, firebaseUser, adminLinkGoogleForSync, adminFetch} = useAuth();
   const {paymentMethods} = useStore();
   const canEdit = adminUser?.role === 'super_admin' || adminUser?.permissions.payments;
 
@@ -283,6 +283,31 @@ export function PaymentsManager() {
       });
 
       await batch.commit();
+      if (topup.customerEmail) {
+        void adminFetch('/api/admin/customer-email-event', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            toEmail: topup.customerEmail,
+            customerName: topup.customerName,
+            subject:
+              decision === 'approved'
+                ? `Wallet Credited (${formatCurrency(topup.amount)})`
+                : `Wallet Deposit Rejected (TrxID ${topup.trxId})`,
+            headline: decision === 'approved' ? 'Wallet Deposit Approved' : 'Wallet Deposit Rejected',
+            message:
+              decision === 'approved'
+                ? `${formatCurrency(topup.amount)} has been credited to your wallet balance.${note ? ` Note: ${note}` : ''}`
+                : `Your wallet deposit request (${topup.trxId}) was rejected.${note ? ` Reason: ${note}` : ''}`,
+            rows: [
+              {label: 'Amount', value: formatCurrency(topup.amount)},
+              {label: 'Method', value: topup.paymentMethodName},
+              {label: 'TrxID', value: topup.trxId},
+              {label: 'Status', value: decision.toUpperCase()},
+            ],
+          }),
+        }).catch(() => null);
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `walletTopups/${topup.id}`);
     } finally {

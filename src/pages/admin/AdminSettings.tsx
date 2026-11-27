@@ -103,6 +103,7 @@ interface SystemSettingsForm {
   smtpFromEmail: string;
   notificationEmail: string;
   smtpEnabled: boolean;
+  customerEmailNotificationsEnabled: boolean;
   distributorBaseUrl: string;
   distributorMerchantId: string;
   distributorApiKey: string;
@@ -110,6 +111,8 @@ interface SystemSettingsForm {
   distributorEnabled: boolean;
   telegramQuickRepliesEnabled: boolean;
   telegramQuickReplies: TelegramQuickReplyPreset[];
+  telegramAdminChatIdsInput: string;
+  telegramAdminOrderAlerts: boolean;
 }
 
 const DEFAULT_PERMS: StaffPermissions = {
@@ -154,6 +157,7 @@ export function AdminSettings() {
     smtpFromEmail: '',
     notificationEmail: 'abdulmunafadmin@gmail.com',
     smtpEnabled: false,
+    customerEmailNotificationsEnabled: true,
     distributorBaseUrl: '',
     distributorMerchantId: '',
     distributorApiKey: '',
@@ -161,6 +165,8 @@ export function AdminSettings() {
     distributorEnabled: false,
     telegramQuickRepliesEnabled: true,
     telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
+    telegramAdminChatIdsInput: '',
+    telegramAdminOrderAlerts: true,
   });
   const [newQuickLabel, setNewQuickLabel] = useState('');
   const [newQuickAction, setNewQuickAction] = useState<TelegramQuickReplyAction>('reply');
@@ -186,6 +192,7 @@ export function AdminSettings() {
     telegramBotProcessedUpdates: number;
     telegramBotLastPollAt: string;
     telegramBotLastError: string;
+    telegramAdminCount?: number;
     geminiConfigured?: boolean;
     geminiModel?: string;
     bkashNumberMasked: string;
@@ -206,16 +213,23 @@ export function AdminSettings() {
         setStaffList(d.staff || []);
       }
       if (sysRes.ok) {
-        const d = (await sysRes.json()) as {settings: Partial<SystemSettingsForm>};
+        const d = (await sysRes.json()) as {
+          settings: Partial<SystemSettingsForm> & {telegramAdminChatIds?: string[]};
+        };
         setSysForm((prev) => ({
           ...prev,
           ...d.settings,
           smtpPassword: '',
           distributorApiKey: '',
+          customerEmailNotificationsEnabled: d.settings.customerEmailNotificationsEnabled !== false,
           telegramQuickRepliesEnabled: d.settings.telegramQuickRepliesEnabled !== false,
           telegramQuickReplies: Array.isArray(d.settings.telegramQuickReplies)
             ? d.settings.telegramQuickReplies
             : prev.telegramQuickReplies,
+          telegramAdminChatIdsInput: Array.isArray(d.settings.telegramAdminChatIds)
+            ? d.settings.telegramAdminChatIds.join(', ')
+            : prev.telegramAdminChatIdsInput,
+          telegramAdminOrderAlerts: d.settings.telegramAdminOrderAlerts !== false,
         }));
       }
       if (logsRes.ok) {
@@ -396,6 +410,14 @@ export function AdminSettings() {
     setSysMsg('Default quick-reply presets restored in editor. Click Save to apply.');
   };
 
+  const buildSystemSettingsPayload = () => ({
+    ...sysForm,
+    telegramAdminChatIds: sysForm.telegramAdminChatIdsInput
+      .split(/[\s,;]+/)
+      .map((s) => s.trim())
+      .filter((s) => /^-?\d+$/.test(s)),
+  });
+
   const handleSaveSystemSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSysMsg('');
@@ -403,13 +425,13 @@ export function AdminSettings() {
     const res = await adminFetch('/api/admin/system-settings', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(sysForm),
+      body: JSON.stringify(buildSystemSettingsPayload()),
     });
     const data = (await res.json()) as {ok?: boolean; error?: string};
     if (!res.ok) {
       setSysErr(data.error || 'Failed to save system settings');
     } else {
-      setSysMsg('Server settings & Telegram quick-reply presets saved securely.');
+      setSysMsg('Server settings, Customer Email Alerts & Telegram Admin settings saved securely.');
       void loadServerData();
     }
   };
@@ -422,7 +444,7 @@ export function AdminSettings() {
       const saveRes = await adminFetch('/api/admin/system-settings', {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(sysForm),
+        body: JSON.stringify(buildSystemSettingsPayload()),
       });
       if (!saveRes.ok) {
         const saveErr = (await saveRes.json()) as {error?: string};
@@ -674,14 +696,26 @@ export function AdminSettings() {
               <p className="text-xs text-slate-600 dark:text-slate-400">
                 Customer orders, support complaints/tickets, and wallet deposits automatically notify the recipient email below. For Gmail, use host <code className="font-mono">smtp.gmail.com</code>, port <code className="font-mono">587</code>, your Gmail address as Username, and a 16-character Google App Password (or set <code className="font-mono">SMTP_USER</code> / <code className="font-mono">SMTP_PASSWORD</code> or <code className="font-mono">EMAIL_USER</code> / <code className="font-mono">EMAIL_PASS</code> env vars on Render).
               </p>
-              <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sysForm.smtpEnabled}
-                  onChange={(e) => setSysForm({...sysForm, smtpEnabled: e.target.checked})}
-                />
-                Enable Outbound SMTP Email Notifications
-              </label>
+              <div className="flex flex-wrap gap-4">
+                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={sysForm.smtpEnabled}
+                    onChange={(e) => setSysForm({...sysForm, smtpEnabled: e.target.checked})}
+                  />
+                  Enable Outbound SMTP Email Notifications
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={sysForm.customerEmailNotificationsEnabled}
+                    onChange={(e) =>
+                      setSysForm({...sysForm, customerEmailNotificationsEnabled: e.target.checked})
+                    }
+                  />
+                  Send Automated Order &amp; Voucher Emails to Customer Email
+                </label>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-500 mb-1">
@@ -1006,6 +1040,48 @@ export function AdminSettings() {
                 )}
             </div>
 
+            <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
+              <div>
+                <h2 className="text-base font-bold font-display flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-blue-600" /> Telegram Bot Full Admin Panel Access
+                </h2>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                  Manage orders, verify payments, approve wallet deposits, reply to tickets, edit package prices, and toggle storefront notice directly inside Telegram via <code className="font-mono">/admin</code> or <code className="font-mono">/panel</code>. Message <code className="font-mono">/myid</code> to your bot in private DM to get your Telegram Chat ID, or unlock using <code className="font-mono">/admin &lt;password&gt;</code>.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    Authorized Admin Telegram Chat IDs (comma-separated)
+                  </label>
+                  <input
+                    type="text"
+                    value={sysForm.telegramAdminChatIdsInput}
+                    onChange={(e) =>
+                      setSysForm({...sysForm, telegramAdminChatIdsInput: e.target.value})
+                    }
+                    placeholder="e.g. 8139244263, 123456789"
+                    className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                  <span className="block text-[11px] text-slate-400 mt-1">
+                    Also reads <code className="font-mono">ADMIN_TELEGRAM_CHAT_ID</code> env var if configured.
+                  </span>
+                </div>
+                <div className="pt-1 md:pt-5 space-y-2">
+                  <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sysForm.telegramAdminOrderAlerts}
+                      onChange={(e) =>
+                        setSysForm({...sysForm, telegramAdminOrderAlerts: e.target.checked})
+                      }
+                    />
+                    Send Real-Time New Order, Deposit &amp; Ticket Alerts to Telegram Admins
+                  </label>
+                </div>
+              </div>
+            </div>
+
             {sysErr && <p className="text-xs text-red-600 font-medium">{sysErr}</p>}
             {sysMsg && <p className="text-xs text-emerald-600 font-medium">{sysMsg}</p>}
 
@@ -1072,7 +1148,8 @@ export function AdminSettings() {
                     </span>
                     {autoStatus.telegramBotRunning && (
                       <span className="block text-[11px] text-slate-400 mt-0.5">
-                        Updates processed: {autoStatus.telegramBotProcessedUpdates}
+                        Updates: {autoStatus.telegramBotProcessedUpdates} · Admin IDs:{' '}
+                        {autoStatus.telegramAdminCount ?? 0}
                       </span>
                     )}
                     {autoStatus.telegramBotLastError && (

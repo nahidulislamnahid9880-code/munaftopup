@@ -1,8 +1,10 @@
 import {BrowserRouter, Navigate, Route, Routes} from 'react-router-dom';
 import {ErrorBoundary} from './components/ErrorBoundary';
 import {AuthProvider} from './contexts/AuthContext';
+import {LanguageProvider} from './contexts/LanguageContext';
 import {StoreProvider} from './contexts/StoreContext';
 import {ThemeProvider} from './contexts/ThemeContext';
+import {ToastProvider} from './contexts/ToastContext';
 import {AdminLoginPage} from './pages/admin/AdminLoginPage';
 import {AdminSettings} from './pages/admin/AdminSettings';
 import {CustomersManager} from './pages/admin/CustomersManager';
@@ -25,37 +27,41 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ThemeProvider>
-        <AuthProvider>
-          <StoreProvider>
-            <BrowserRouter>
-              <Routes>
-                {/* Customer Website Routes */}
-                <Route path="/" element={<HomePage />} />
-                <Route path="/product/:slug" element={<ProductDetailPage />} />
-                <Route path="/checkout" element={<CheckoutPage />} />
-                <Route path="/add-money" element={<AddMoneyPage />} />
-                <Route path="/orders" element={<MyOrdersPage />} />
-                <Route path="/codes" element={<MyCodesPage />} />
-                <Route path="/track" element={<OrderTrackingPage />} />
-                <Route path="/account" element={<CustomerAccountPage />} />
-                <Route path="/terms" element={<LegalPage type="terms" />} />
-                <Route path="/privacy" element={<LegalPage type="privacy" />} />
+        <LanguageProvider>
+          <ToastProvider>
+            <AuthProvider>
+              <StoreProvider>
+                <BrowserRouter>
+                  <Routes>
+                    {/* Customer Website Routes */}
+                    <Route path="/" element={<HomePage />} />
+                    <Route path="/product/:slug" element={<ProductDetailPage />} />
+                    <Route path="/checkout" element={<CheckoutPage />} />
+                    <Route path="/add-money" element={<AddMoneyPage />} />
+                    <Route path="/orders" element={<MyOrdersPage />} />
+                    <Route path="/codes" element={<MyCodesPage />} />
+                    <Route path="/track" element={<OrderTrackingPage />} />
+                    <Route path="/account" element={<CustomerAccountPage />} />
+                    <Route path="/terms" element={<LegalPage type="terms" />} />
+                    <Route path="/privacy" element={<LegalPage type="privacy" />} />
 
-                {/* Separate Admin Panel Routes */}
-                <Route path="/admin/login" element={<AdminLoginPage />} />
-                <Route path="/admin" element={<DashboardOverview />} />
-                <Route path="/admin/products" element={<ProductsManager />} />
-                <Route path="/admin/orders" element={<OrdersManager />} />
-                <Route path="/admin/payments" element={<PaymentsManager />} />
-                <Route path="/admin/customization" element={<CustomizationManager />} />
-                <Route path="/admin/customers" element={<CustomersManager />} />
-                <Route path="/admin/settings" element={<AdminSettings />} />
+                    {/* Separate Admin Panel Routes */}
+                    <Route path="/admin/login" element={<AdminLoginPage />} />
+                    <Route path="/admin" element={<DashboardOverview />} />
+                    <Route path="/admin/products" element={<ProductsManager />} />
+                    <Route path="/admin/orders" element={<OrdersManager />} />
+                    <Route path="/admin/payments" element={<PaymentsManager />} />
+                    <Route path="/admin/customization" element={<CustomizationManager />} />
+                    <Route path="/admin/customers" element={<CustomersManager />} />
+                    <Route path="/admin/settings" element={<AdminSettings />} />
 
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
-            </BrowserRouter>
-          </StoreProvider>
-        </AuthProvider>
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                </BrowserRouter>
+              </StoreProvider>
+            </AuthProvider>
+          </ToastProvider>
+        </LanguageProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

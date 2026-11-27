@@ -3,8 +3,8 @@ import {OperationType, db, handleFirestoreError} from './firebase';
 import type {Category, PaymentMethod, Product, SiteSettings} from '../types';
 
 export const DEFAULT_SITE_SHELL: SiteSettings = {
-  brandName: 'StrikeVault',
-  brandTagline: 'Instant UID Top-Up & Digital Game Vouchers',
+  brandName: 'MUNAFTOPUP.bd',
+  brandTagline: 'Instant Free Fire Diamond Top-Up & Digital Game Vouchers',
   logoUrl: '',
   faviconUrl: '',
   noticeText: '',
@@ -24,7 +24,7 @@ export const DEFAULT_SITE_SHELL: SiteSettings = {
     categoriesTitle: 'Browse by Category',
   },
   contact: {
-    email: 'support@strikevault.store',
+    email: 'support@munaftopup.bd',
     phone: '+880 1700-000000',
     whatsapp: '',
     telegram: '',
@@ -38,7 +38,7 @@ export const DEFAULT_SITE_SHELL: SiteSettings = {
     discord: '',
     tiktok: '',
   },
-  footerText: '© 2026 StrikeVault Digital Services. Independent digital top-up storefront.',
+  footerText: '© 2026 MUNAFTOPUP.bd. Trusted Free Fire Diamond & Digital Top-Up Platform.',
   termsContent:
     'All digital top-up orders are delivered to the Player UID provided at checkout. Please verify your UID and Server ID carefully before confirming payment. Duplicate or invalid Transaction IDs are automatically rejected. Refunds are issued only when an order cannot be fulfilled.',
   privacyContent:

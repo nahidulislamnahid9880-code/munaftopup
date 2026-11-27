@@ -18,6 +18,7 @@ import {syncRecommendedCatalog} from '../../lib/seedData';
 import type {Category, DiamondPackage, Product} from '../../types';
 import {ImageUploadField} from '../../components/ImageUploadField';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
+import {PackageVisual} from '../../components/PackageTypeIcon';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
 function slugify(val: string): string {
@@ -689,10 +690,18 @@ export function ProductsManager() {
                   <div
                     key={pkg.id}
                     className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3 bg-slate-50/50 dark:bg-slate-950/50">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
-                        Package #{idx + 1}
-                      </span>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <PackageVisual pkg={pkg} size="md" />
+                        <div>
+                          <span className="text-xs font-bold text-slate-700 dark:text-slate-200 block">
+                            Package #{idx + 1} · {pkg.name || 'Untitled'}
+                          </span>
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {pkg.imageUrl ? 'Using custom uploaded logo' : 'Using default package icon'}
+                          </span>
+                        </div>
+                      </div>
                       <div className="flex items-center gap-3">
                         <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                           <input
@@ -713,7 +722,7 @@ export function ProductsManager() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                       <div>
                         <label className="block text-[11px] font-medium mb-1">Package Name</label>
                         <input
@@ -755,6 +764,16 @@ export function ProductsManager() {
                         />
                       </div>
                       <div>
+                        <label className="block text-[11px] font-medium mb-1">Bonus Label</label>
+                        <input
+                          type="text"
+                          value={pkg.bonusLabel || ''}
+                          onChange={(e) => updatePackage(idx, {bonusLabel: e.target.value})}
+                          placeholder="e.g. +25 Bonus"
+                          className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                        />
+                      </div>
+                      <div>
                         <label className="block text-[11px] font-medium mb-1">Promo Label</label>
                         <input
                           type="text"
@@ -764,10 +783,51 @@ export function ProductsManager() {
                           className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                         />
                       </div>
+                      <div>
+                        <label className="block text-[11px] font-medium mb-1">Highlight Tag</label>
+                        <select
+                          value={pkg.badgeType || ''}
+                          onChange={(e) =>
+                            updatePackage(idx, {
+                              badgeType: e.target.value as '' | 'popular' | 'best_selling',
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+                          <option value="">None</option>
+                          <option value="popular">Popular</option>
+                          <option value="best_selling">Best Selling</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium mb-1">Default Icon Style</label>
+                        <select
+                          value={pkg.iconType || 'auto'}
+                          onChange={(e) =>
+                            updatePackage(idx, {
+                              iconType: e.target.value as
+                                | 'auto'
+                                | 'diamond'
+                                | 'weekly'
+                                | 'monthly'
+                                | 'levelup'
+                                | 'evo'
+                                | 'special',
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+                          <option value="auto">Auto Detect</option>
+                          <option value="diamond">Diamond Package</option>
+                          <option value="weekly">Weekly Membership</option>
+                          <option value="monthly">Monthly Membership</option>
+                          <option value="levelup">Level Up Pass</option>
+                          <option value="evo">Evo Access / Voucher</option>
+                          <option value="special">Special Package</option>
+                        </select>
+                      </div>
                     </div>
 
                     <ImageUploadField
-                      label="Package Icon / Image (Optional)"
+                      label="Custom Package Logo / Icon (Upload, Change or Remove · JPG/PNG/WEBP/GIF/ICO max 5MB)"
                       value={pkg.imageUrl}
                       onChange={(url) => updatePackage(idx, {imageUrl: url})}
                       compact

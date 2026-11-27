@@ -5,19 +5,24 @@ import {
   HelpCircle,
   Home,
   KeyRound,
+  Languages,
   LogIn,
   LogOut,
   Megaphone,
+  Moon,
   Package,
   PlusCircle,
   Search,
   ShoppingBag,
+  Sun,
   User,
   Wallet,
   X,
 } from 'lucide-react';
 import {useAuth} from '../../contexts/AuthContext';
+import {useLanguage} from '../../contexts/LanguageContext';
 import {useStore} from '../../contexts/StoreContext';
+import {useTheme} from '../../contexts/ThemeContext';
 import {formatCurrency} from '../../lib/firebase';
 import {resolveTelegramHref, resolveWhatsAppHref} from '../../lib/supportLinks';
 import {ImageWithFallback} from '../ImageWithFallback';
@@ -26,6 +31,8 @@ import {TelegramIcon, WhatsAppIcon} from '../SupportIcons';
 export function StoreLayout({children}: {children: React.ReactNode}) {
   const {siteSettings} = useStore();
   const {firebaseUser, customerProfile, signInCustomerWithGoogle, signOutCustomer} = useAuth();
+  const {dark, toggleDark} = useTheme();
+  const {lang, toggleLang, t} = useLanguage();
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();
@@ -39,19 +46,19 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
   const telegramHref = resolveTelegramHref(siteSettings.contact);
 
   const desktopLinks = [
-    {label: 'Home', to: '/'},
-    {label: 'Add Money', to: '/add-money'},
-    {label: 'My Orders', to: '/orders'},
-    {label: 'My Codes', to: '/codes'},
-    {label: 'Track Order', to: '/track'},
+    {label: t('nav.home'), to: '/'},
+    {label: t('nav.addMoney'), to: '/add-money'},
+    {label: t('nav.myOrders'), to: '/orders'},
+    {label: t('nav.myCodes'), to: '/codes'},
+    {label: t('nav.trackOrder'), to: '/track'},
   ];
 
   const bottomNavItems = [
-    {label: 'Home', to: '/', icon: Home},
-    {label: 'Add Money', to: '/add-money', icon: PlusCircle},
-    {label: 'My Orders', to: '/orders', icon: Package},
-    {label: 'My Codes', to: '/codes', icon: KeyRound},
-    {label: 'Profile', to: '/account', icon: User},
+    {label: t('nav.home'), to: '/', icon: Home},
+    {label: t('nav.addMoney'), to: '/add-money', icon: PlusCircle},
+    {label: t('nav.myOrders'), to: '/orders', icon: Package},
+    {label: t('nav.myCodes'), to: '/codes', icon: KeyRound},
+    {label: t('nav.profile'), to: '/account', icon: User},
   ];
 
   const isActive = (path: string) => {
@@ -60,7 +67,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
       {/* Larger 3D scrolling dismissible notice bar controlled by Admin */}
       {siteSettings.noticeActive && siteSettings.noticeText && !noticeDismissed && (
         <div
@@ -70,7 +77,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
           <div className="max-w-[1248px] mx-auto w-full flex items-center gap-2.5 sm:gap-4 min-w-0">
             <span className="notice-3d-badge shrink-0 inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold uppercase tracking-wider text-white">
               <Megaphone className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-              <span className="hidden sm:inline">Notice</span>
+              <span className="hidden sm:inline">{t('nav.notice')}</span>
             </span>
 
             <div className="notice-3d-stage flex-1 min-w-0 overflow-hidden rounded-xl py-2 sm:py-2.5 border border-slate-700/70">
@@ -108,35 +115,35 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
       )}
 
       {/* Top Sticky Header */}
-      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b-[1.5px] border-slate-200/95 shadow-[0_4px_20px_rgba(15,23,42,0.05)]">
+      <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b-[1.5px] border-slate-200/95 dark:border-slate-800 shadow-[0_4px_20px_rgba(15,23,42,0.05)] dark:shadow-[0_4px_20px_rgba(2,6,23,0.45)] transition-colors">
         <div className="max-w-[1248px] mx-auto px-3 sm:px-6 h-16 sm:h-20 flex items-center justify-between gap-2 sm:gap-3">
           {/* Left: Website Logo + Brand Name */}
           <Link
             to="/"
-            className="flex items-center gap-2 sm:gap-2.5 text-base sm:text-xl font-extrabold tracking-tight text-slate-900 whitespace-nowrap min-w-0 font-display">
+            className="flex items-center gap-2 sm:gap-2.5 text-base sm:text-xl font-extrabold tracking-tight text-slate-900 dark:text-white whitespace-nowrap min-w-0 font-display">
             {siteSettings.logoUrl ? (
               <ImageWithFallback
                 src={siteSettings.logoUrl}
                 alt={siteSettings.brandName}
-                className="h-11 sm:h-14 w-auto min-w-[44px] max-w-[120px] sm:max-w-[260px] rounded-xl object-contain border border-slate-200/80 bg-white/60 shrink-0"
+                className="h-10 sm:h-13 w-auto min-w-[40px] max-w-[110px] sm:max-w-[240px] rounded-xl object-contain border border-slate-200/80 dark:border-slate-700 bg-white/70 dark:bg-slate-800/70 shrink-0"
               />
             ) : (
-              <span className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 border border-cyan-400/50 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <span className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 border border-cyan-400/50 text-white flex items-center justify-center shrink-0 shadow-xs">
                 <Gem className="w-5 h-5 sm:w-6 sm:h-6" />
               </span>
             )}
-            <span className="truncate max-w-[165px] sm:max-w-none">{siteSettings.brandName}</span>
+            <span className="truncate max-w-[130px] sm:max-w-none">{siteSettings.brandName}</span>
           </Link>
 
           {/* Center: Desktop Navigation */}
-          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
+          <nav className="hidden md:flex items-center gap-5 lg:gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
             {desktopLinks.map((item) => (
               <Link
                 key={item.to}
                 to={item.to}
-                className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors hover:text-slate-950 ${
+                className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors hover:text-slate-950 dark:hover:text-white ${
                   isActive(item.to)
-                    ? 'text-cyan-600 font-semibold border-cyan-500'
+                    ? 'text-cyan-600 dark:text-cyan-400 font-semibold border-cyan-500'
                     : 'border-transparent'
                 }`}>
                 {item.label}
@@ -144,18 +151,36 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             ))}
           </nav>
 
-          {/* Right: Orders Bag Icon + Cyan Wallet Balance Pill + Profile Avatar */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Right: Language + Theme + Orders Bag + Wallet + Profile Avatar */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={toggleLang}
+              aria-label="Switch language"
+              title={lang === 'en' ? 'বাংলায় দেখুন' : 'Switch to English'}
+              className="h-9 px-2.5 rounded-lg border-[1.5px] border-slate-200 dark:border-slate-700 hover:border-cyan-500 dark:hover:border-cyan-500 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors">
+              {lang === 'en' ? 'বাং' : 'EN'}
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleDark}
+              aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={dark ? t('nav.lightTheme') : t('nav.darkTheme')}
+              className="w-9 h-9 rounded-lg border-[1.5px] border-slate-200 dark:border-slate-700 hover:border-cyan-500 dark:hover:border-cyan-500 bg-white dark:bg-slate-800 text-slate-700 dark:text-amber-300 flex items-center justify-center shrink-0 cursor-pointer transition-colors">
+              {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+
             <Link
               to="/orders"
-              aria-label="My Orders"
-              className="w-9 h-9 rounded-full border-[1.5px] border-slate-200 hover:border-cyan-500 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-center transition-colors shadow-2xs">
+              aria-label={t('nav.myOrders')}
+              className="hidden sm:flex w-9 h-9 rounded-lg border-[1.5px] border-slate-200 dark:border-slate-700 hover:border-cyan-500 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 items-center justify-center transition-colors">
               <ShoppingBag className="w-4 h-4" />
             </Link>
 
             <Link
               to="/add-money"
-              className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-full bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600 border border-cyan-400/60 text-white text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 shadow-sm shadow-cyan-500/20 transition-all tabular-nums">
+              className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-600 hover:to-teal-600 border border-cyan-400/60 text-white text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 shadow-sm shadow-cyan-500/20 transition-all tabular-nums">
               <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span>{formatCurrency(walletBalance)}</span>
             </Link>
@@ -164,7 +189,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
               type="button"
               onClick={() => setDrawerOpen(true)}
               aria-label="Open account menu"
-              className="w-9 h-9 rounded-full overflow-hidden border-2 border-slate-200 hover:border-cyan-500 bg-slate-900 text-white flex items-center justify-center shrink-0 cursor-pointer transition-colors shadow-2xs">
+              className="w-9 h-9 rounded-full overflow-hidden border-2 border-slate-200 dark:border-slate-700 hover:border-cyan-500 bg-slate-900 text-white flex items-center justify-center shrink-0 cursor-pointer transition-colors">
               {firebaseUser && avatarUrl ? (
                 <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
               ) : firebaseUser ? (
@@ -184,14 +209,14 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             type="button"
             aria-label="Close menu backdrop"
             onClick={() => setDrawerOpen(false)}
-            className="fixed inset-0 bg-slate-950/50 backdrop-blur-[1px] cursor-pointer"
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-[1px] cursor-pointer"
           />
-          <aside className="relative z-10 w-72 max-w-[85vw] bg-white h-full border-l-[1.5px] border-slate-200 shadow-2xl flex flex-col justify-between overflow-y-auto">
+          <aside className="relative z-10 w-72 max-w-[85vw] bg-white dark:bg-slate-900 h-full border-l-[1.5px] border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col justify-between overflow-y-auto">
             <div className="p-5 space-y-5">
               {/* Drawer User Header */}
-              <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-200/80">
+              <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-200/80 dark:border-slate-800">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-11 h-11 rounded-full overflow-hidden bg-slate-900 text-white flex items-center justify-center shrink-0 border-2 border-slate-200">
+                  <div className="w-11 h-11 rounded-full overflow-hidden bg-slate-900 text-white flex items-center justify-center shrink-0 border-2 border-slate-200 dark:border-slate-700">
                     {firebaseUser && avatarUrl ? (
                       <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
                     ) : (
@@ -199,11 +224,11 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
                     )}
                   </div>
                   <div className="min-w-0">
-                    <p className="text-sm font-bold text-slate-900 truncate">
-                      {firebaseUser ? displayName : 'Welcome Guest'}
+                    <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                      {firebaseUser ? displayName : t('nav.welcomeGuest')}
                     </p>
-                    <p className="text-xs text-slate-500 truncate">
-                      {firebaseUser?.email || 'Sign in to sync orders & wallet'}
+                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                      {firebaseUser?.email || t('nav.signInSync')}
                     </p>
                   </div>
                 </div>
@@ -211,62 +236,80 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
                   type="button"
                   onClick={() => setDrawerOpen(false)}
                   aria-label="Close drawer"
-                  className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-100 cursor-pointer shrink-0">
+                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer shrink-0">
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Drawer Wallet Pill */}
+              {/* Drawer Wallet Box */}
               <Link
                 to="/add-money"
                 onClick={() => setDrawerOpen(false)}
-                className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-cyan-50/80 border-[1.5px] border-cyan-300/80 text-cyan-900 hover:border-cyan-400 transition-colors">
+                className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-cyan-50/80 dark:bg-cyan-950/40 border-[1.5px] border-cyan-300/80 dark:border-cyan-700/60 text-cyan-900 dark:text-cyan-200 hover:border-cyan-400 transition-colors">
                 <div className="flex items-center gap-2 text-xs font-semibold">
-                  <Wallet className="w-4 h-4 text-cyan-600" />
-                  <span>Wallet Balance</span>
+                  <Wallet className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+                  <span>{t('nav.walletBalance')}</span>
                 </div>
                 <span className="text-sm font-extrabold tabular-nums">
                   {formatCurrency(walletBalance)}
                 </span>
               </Link>
 
+              {/* Theme & Language Preferences */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={toggleDark}
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border-[1.5px] border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold cursor-pointer hover:border-cyan-500 transition-colors">
+                  {dark ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5" />}
+                  <span>{dark ? t('nav.lightTheme') : t('nav.darkTheme')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleLang}
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border-[1.5px] border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold cursor-pointer hover:border-cyan-500 transition-colors">
+                  <Languages className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+                  <span>{lang === 'en' ? 'বাংলা' : 'English'}</span>
+                </button>
+              </div>
+
               {/* Drawer Navigation Links */}
               <nav className="space-y-1">
                 <Link
                   to="/account"
                   onClick={() => setDrawerOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-100">
-                  <User className="w-4 h-4 text-slate-500" /> My Account
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <User className="w-4 h-4 text-slate-500 dark:text-slate-400" /> {t('nav.myAccount')}
                 </Link>
                 <Link
                   to="/orders"
                   onClick={() => setDrawerOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-100">
-                  <Package className="w-4 h-4 text-slate-500" /> My Orders
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <Package className="w-4 h-4 text-slate-500 dark:text-slate-400" /> {t('nav.myOrders')}
                 </Link>
                 <Link
                   to="/codes"
                   onClick={() => setDrawerOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-100">
-                  <KeyRound className="w-4 h-4 text-slate-500" /> My Codes
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <KeyRound className="w-4 h-4 text-slate-500 dark:text-slate-400" /> {t('nav.myCodes')}
                 </Link>
                 <Link
                   to="/add-money"
                   onClick={() => setDrawerOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-100">
-                  <PlusCircle className="w-4 h-4 text-slate-500" /> Add Money
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <PlusCircle className="w-4 h-4 text-slate-500 dark:text-slate-400" /> {t('nav.addMoney')}
                 </Link>
                 <Link
                   to="/track"
                   onClick={() => setDrawerOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-100">
-                  <Search className="w-4 h-4 text-slate-500" /> Track Order
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <Search className="w-4 h-4 text-slate-500 dark:text-slate-400" /> {t('nav.trackOrder')}
                 </Link>
                 <Link
                   to="/account?tab=support"
                   onClick={() => setDrawerOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-100">
-                  <HelpCircle className="w-4 h-4 text-slate-500" /> Support Desk
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <HelpCircle className="w-4 h-4 text-slate-500 dark:text-slate-400" /> {t('nav.supportDesk')}
                 </Link>
               </nav>
 
@@ -314,7 +357,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
               </div>
 
               {/* Auth Action */}
-              <div className="pt-3 border-t border-slate-100">
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
                 {firebaseUser ? (
                   <button
                     type="button"
@@ -322,8 +365,8 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
                       setDrawerOpen(false);
                       void signOutCustomer();
                     }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-red-600 hover:bg-red-50 cursor-pointer">
-                    <LogOut className="w-4 h-4" /> Logout
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer">
+                    <LogOut className="w-4 h-4" /> {t('nav.logout')}
                   </button>
                 ) : (
                   <button
@@ -332,21 +375,21 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
                       setDrawerOpen(false);
                       void signInCustomerWithGoogle();
                     }}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer">
-                    <LogIn className="w-4 h-4" /> Sign in with Google
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-cyan-600 hover:bg-slate-800 dark:hover:bg-cyan-500 text-white text-sm font-semibold cursor-pointer">
+                    <LogIn className="w-4 h-4" /> {t('nav.signInGoogle')}
                   </button>
                 )}
               </div>
             </div>
 
-            <div className="p-4 border-t border-slate-100 text-xs text-slate-400 flex items-center justify-between">
-              <Link to="/terms" onClick={() => setDrawerOpen(false)} className="hover:text-slate-600">
-                Terms
+            <div className="p-4 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+              <Link to="/terms" onClick={() => setDrawerOpen(false)} className="hover:text-slate-600 dark:hover:text-slate-200">
+                {t('nav.terms')}
               </Link>
-              <Link to="/privacy" onClick={() => setDrawerOpen(false)} className="hover:text-slate-600">
-                Privacy
+              <Link to="/privacy" onClick={() => setDrawerOpen(false)} className="hover:text-slate-600 dark:hover:text-slate-200">
+                {t('nav.privacy')}
               </Link>
-              <Link to="/admin/login" onClick={() => setDrawerOpen(false)} className="hover:text-slate-600">
+              <Link to="/admin/login" onClick={() => setDrawerOpen(false)} className="hover:text-slate-600 dark:hover:text-slate-200">
                 Admin
               </Link>
             </div>
@@ -368,7 +411,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             rel="noopener noreferrer"
             aria-label="Telegram Customer Support"
             title="Telegram Support"
-            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-sky-500 hover:bg-sky-600 border-2 border-white/90 text-white shadow-[0_8px_20px_rgba(2,132,199,0.3)] hover:-translate-y-0.5 transition-all">
+            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-sky-500 hover:bg-sky-600 border-2 border-white/90 dark:border-slate-900 text-white shadow-[0_8px_20px_rgba(2,132,199,0.3)] hover:-translate-y-0.5 transition-all">
             <TelegramIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
             <span className="hidden sm:inline text-xs font-bold whitespace-nowrap">Telegram</span>
           </a>
@@ -377,7 +420,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             to="/account?tab=support"
             aria-label="Telegram Customer Support"
             title="Telegram Support"
-            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-sky-500 hover:bg-sky-600 border-2 border-white/90 text-white shadow-[0_8px_20px_rgba(2,132,199,0.3)] hover:-translate-y-0.5 transition-all">
+            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-sky-500 hover:bg-sky-600 border-2 border-white/90 dark:border-slate-900 text-white shadow-[0_8px_20px_rgba(2,132,199,0.3)] hover:-translate-y-0.5 transition-all">
             <TelegramIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
             <span className="hidden sm:inline text-xs font-bold whitespace-nowrap">Telegram</span>
           </Link>
@@ -390,7 +433,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             rel="noopener noreferrer"
             aria-label="WhatsApp Customer Support"
             title="WhatsApp Support"
-            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 border-2 border-white/90 text-white shadow-[0_8px_20px_rgba(5,150,105,0.3)] hover:-translate-y-0.5 transition-all">
+            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 border-2 border-white/90 dark:border-slate-900 text-white shadow-[0_8px_20px_rgba(5,150,105,0.3)] hover:-translate-y-0.5 transition-all">
             <WhatsAppIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
             <span className="hidden sm:inline text-xs font-bold whitespace-nowrap">WhatsApp</span>
           </a>
@@ -399,7 +442,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             to="/account?tab=support"
             aria-label="WhatsApp Customer Support"
             title="WhatsApp Support"
-            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 border-2 border-white/90 text-white shadow-[0_8px_20px_rgba(5,150,105,0.3)] hover:-translate-y-0.5 transition-all">
+            className="group inline-flex items-center justify-center gap-2 w-10 h-10 sm:w-auto sm:h-11 sm:px-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 border-2 border-white/90 dark:border-slate-900 text-white shadow-[0_8px_20px_rgba(5,150,105,0.3)] hover:-translate-y-0.5 transition-all">
             <WhatsAppIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
             <span className="hidden sm:inline text-xs font-bold whitespace-nowrap">WhatsApp</span>
           </Link>
@@ -429,7 +472,7 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             </p>
             {siteSettings.contact.supportHours && (
               <p className="text-xs text-slate-400">
-                Support Hours: {siteSettings.contact.supportHours}
+                {t('nav.supportHours')}: {siteSettings.contact.supportHours}
               </p>
             )}
             <div className="flex flex-wrap items-center gap-2.5 pt-2">
@@ -440,14 +483,14 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors">
                   <WhatsAppIcon className="w-4 h-4" />
-                  <span>WhatsApp Support</span>
+                  <span>{t('home.whatsappSupport')}</span>
                 </a>
               ) : (
                 <Link
                   to="/account?tab=support"
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors">
                   <WhatsAppIcon className="w-4 h-4" />
-                  <span>WhatsApp Support</span>
+                  <span>{t('home.whatsappSupport')}</span>
                 </Link>
               )}
               {telegramHref ? (
@@ -457,57 +500,61 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold transition-colors">
                   <TelegramIcon className="w-4 h-4" />
-                  <span>Telegram Support</span>
+                  <span>{t('home.telegramSupport')}</span>
                 </a>
               ) : (
                 <Link
                   to="/account?tab=support"
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold transition-colors">
                   <TelegramIcon className="w-4 h-4" />
-                  <span>Telegram Support</span>
+                  <span>{t('home.telegramSupport')}</span>
                 </Link>
               )}
             </div>
           </div>
 
           <div className="space-y-2.5">
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-white">Quick Links</h4>
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-white">
+              {t('nav.quickLinks')}
+            </h4>
             <ul className="space-y-1.5 text-xs sm:text-sm text-slate-400">
               <li>
                 <Link to="/add-money" className="hover:text-white transition-colors">
-                  Add Money
+                  {t('nav.addMoney')}
                 </Link>
               </li>
               <li>
                 <Link to="/orders" className="hover:text-white transition-colors">
-                  My Orders
+                  {t('nav.myOrders')}
                 </Link>
               </li>
               <li>
                 <Link to="/codes" className="hover:text-white transition-colors">
-                  My Codes
+                  {t('nav.myCodes')}
                 </Link>
               </li>
               <li>
                 <Link to="/track" className="hover:text-white transition-colors">
-                  Track Order
+                  {t('nav.trackOrder')}
                 </Link>
               </li>
               <li>
                 <Link to="/terms" className="hover:text-white transition-colors">
-                  Terms of Service
+                  {t('nav.terms')}
                 </Link>
               </li>
               <li>
                 <Link to="/privacy" className="hover:text-white transition-colors">
-                  Privacy Policy
+                  {t('nav.privacy')}
                 </Link>
               </li>
             </ul>
           </div>
 
           <div className="space-y-2.5">
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-white">Contact</h4>
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-white">
+              {t('nav.contact')}
+            </h4>
             <ul className="space-y-1.5 text-xs sm:text-sm text-slate-400">
               {siteSettings.contact.email && <li>{siteSettings.contact.email}</li>}
               {siteSettings.contact.phone && <li>{siteSettings.contact.phone}</li>}
@@ -541,16 +588,16 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
           <div className="max-w-[1248px] mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
             <p>{siteSettings.footerText}</p>
             <Link to="/admin/login" className="hover:text-slate-300 transition-colors">
-              Staff Console
+              {t('nav.staffConsole')}
             </Link>
           </div>
         </div>
       </footer>
 
-      {/* Fixed Mobile Bottom Navigation (5 items matching specification) */}
+      {/* Fixed Mobile Bottom Navigation */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/98 backdrop-blur-md border-t-[1.5px] border-slate-200/95 px-1 py-1.5 flex items-center justify-around shadow-[0_-6px_24px_rgba(15,23,42,0.08)]">
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/98 dark:bg-slate-900/95 backdrop-blur-md border-t-[1.5px] border-slate-200/95 dark:border-slate-800 px-1 py-1.5 flex items-center justify-around shadow-[0_-6px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_-6px_24px_rgba(2,6,23,0.5)]">
         {bottomNavItems.map((item) => {
           const Icon = item.icon;
           const active = isActive(item.to);
@@ -561,15 +608,15 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
               to={item.to}
               className={`flex flex-col items-center justify-center gap-0.5 px-2.5 py-1 rounded-xl border min-w-[58px] transition-colors ${
                 active
-                  ? 'text-cyan-700 bg-cyan-50/75 border-cyan-200/90'
-                  : 'text-slate-500 border-transparent hover:text-slate-900'
+                  ? 'text-cyan-700 dark:text-cyan-300 bg-cyan-50/75 dark:bg-cyan-950/60 border-cyan-200/90 dark:border-cyan-700/60'
+                  : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-900 dark:hover:text-white'
               }`}>
               {isProfile && firebaseUser && avatarUrl ? (
                 <img
                   src={avatarUrl}
                   alt={displayName}
                   className={`w-5 h-5 rounded-full object-cover border ${
-                    active ? 'border-cyan-500' : 'border-slate-300'
+                    active ? 'border-cyan-500' : 'border-slate-300 dark:border-slate-600'
                   }`}
                 />
               ) : (

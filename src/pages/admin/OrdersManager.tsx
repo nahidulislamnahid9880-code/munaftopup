@@ -84,16 +84,15 @@ export function OrdersManager() {
     setFeedback('');
   };
 
-  const notifyTelegramOrderUpdate = async (params: {
+  const notifyCustomerOrderUpdate = async (params: {
     order: Order;
     orderStatus: OrderStatus;
     paymentStatus: Order['paymentStatus'];
     voucherCode?: string;
     note?: string;
-  }): Promise<boolean> => {
-    if (!params.order.customerUid.startsWith('tg_')) return false;
+  }): Promise<{telegramSent: boolean; emailSent: boolean}> => {
     try {
-      const res = await adminFetch('/api/admin/orders/telegram-notify', {
+      const res = await adminFetch('/api/admin/orders/notify-customer', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -103,19 +102,25 @@ export function OrdersManager() {
           productName: params.order.productName,
           packageName: params.order.packageName,
           playerUid: params.order.playerUid,
+          serverId: params.order.serverId,
           totalAmount: params.order.totalAmount,
           paymentMethodName: params.order.paymentMethodName,
           trxId: params.order.trxId,
           voucherCode: params.voucherCode,
           note: params.note,
           customerUid: params.order.customerUid,
+          customerEmail: params.order.customerEmail,
+          customerName: params.order.customerName,
         }),
       });
-      if (!res.ok) return false;
-      const data = (await res.json()) as {sent?: boolean};
-      return Boolean(data.sent);
+      if (!res.ok) return {telegramSent: false, emailSent: false};
+      const data = (await res.json()) as {telegramSent?: boolean; sent?: boolean; emailSent?: boolean};
+      return {
+        telegramSent: Boolean(data.telegramSent ?? data.sent),
+        emailSent: Boolean(data.emailSent),
+      };
     } catch {
-      return false;
+      return {telegramSent: false, emailSent: false};
     }
   };
 
@@ -197,14 +202,20 @@ export function OrdersManager() {
       });
 
       await batch.commit();
-      const tgSent = await notifyTelegramOrderUpdate({
+      const notifyRes = await notifyCustomerOrderUpdate({
         order,
         orderStatus: nextOrderStatus,
         paymentStatus: nextPaymentStatus,
         note: msg,
       });
+      const channels = [
+        notifyRes.emailSent ? 'Email' : '',
+        notifyRes.telegramSent ? 'Telegram' : '',
+      ].filter(Boolean);
       setFeedback(
-        `Payment marked as ${nextPaymentStatus}.${tgSent ? ' Customer notified on Telegram.' : ''}`,
+        `Payment marked as ${nextPaymentStatus}.${
+          channels.length ? ` Customer notified via ${channels.join(' & ')}.` : ''
+        }`,
       );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
@@ -338,19 +349,23 @@ export function OrdersManager() {
               ? 'Top-up is currently being fulfilled to your Player UID.'
               : '');
 
-      const tgSent = await notifyTelegramOrderUpdate({
+      const notifyRes = await notifyCustomerOrderUpdate({
         order,
         orderStatus: nextStatus,
         paymentStatus: order.paymentStatus,
         voucherCode: voucherCode.trim(),
         note: tgStatusMsg,
       });
+      const channels = [
+        notifyRes.emailSent ? 'Email' : '',
+        notifyRes.telegramSent ? 'Telegram' : '',
+      ].filter(Boolean);
 
       setFeedback(
         (refundedAmount > 0
           ? `Order cancelled & ${formatCurrency(refundedAmount)} automatically refunded to customer wallet.`
           : `Order status updated to ${nextStatus}.`) +
-          (tgSent ? ' Customer notified on Telegram.' : ''),
+          (channels.length ? ` Customer notified via ${channels.join(' & ')}.` : ''),
       );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
@@ -397,19 +412,25 @@ export function OrdersManager() {
       }
 
       await batch.commit();
-      const tgSent =
+      const notifyRes =
         notifText.trim() || voucherCode.trim()
-          ? await notifyTelegramOrderUpdate({
+          ? await notifyCustomerOrderUpdate({
               order,
               orderStatus: order.orderStatus,
               paymentStatus: order.paymentStatus,
               voucherCode: voucherCode.trim(),
               note: msg,
             })
-          : false;
+          : {telegramSent: false, emailSent: false};
+      const channels = [
+        notifyRes.emailSent ? 'Email' : '',
+        notifyRes.telegramSent ? 'Telegram' : '',
+      ].filter(Boolean);
       setNotifText('');
       setFeedback(
-        `Admin note & customer notification saved.${tgSent ? ' Customer notified on Telegram.' : ''}`,
+        `Admin note & customer notification saved.${
+          channels.length ? ` Customer notified via ${channels.join(' & ')}.` : ''
+        }`,
       );
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);

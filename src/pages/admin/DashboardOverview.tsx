@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
 import {
   CheckCircle2,
@@ -6,6 +6,8 @@ import {
   DollarSign,
   Loader2,
   PackageCheck,
+  RefreshCw,
+  Send,
   ShoppingBag,
   Sparkles,
   TrendingUp,
@@ -35,15 +37,69 @@ import {initializeDefaultCatalogIfMissing, syncRecommendedCatalog} from '../../l
 import type {CustomerProfile, Order} from '../../types';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
+interface TelegramOrders24hData {
+  ok: boolean;
+  connected: boolean;
+  count: number;
+  completedCount: number;
+  pendingCount: number;
+  processingCount: number;
+  cancelledOrExpiredCount: number;
+  totalRevenue: number;
+  botRunning: boolean;
+  botUsername: string;
+  recentOrders?: Array<{
+    orderNumber: string;
+    packageName: string;
+    totalAmount: number;
+    orderStatus: string;
+  }>;
+  windowHours: number;
+  fetchedAt: string;
+  reason?: string;
+  error?: string;
+}
+
 export function DashboardOverview() {
-  const {adminUser, firebaseUser} = useAuth();
+  const {adminUser, firebaseUser, adminFetch} = useAuth();
   const {catalogInitialized} = useStore();
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<CustomerProfile[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [seeding, setSeeding] = useState(false);
 
+  const [tg24h, setTg24h] = useState<TelegramOrders24hData | null>(null);
+  const [tg24hLoading, setTg24hLoading] = useState(true);
+  const [tg24hError, setTg24hError] = useState('');
+
   const canReadOrders = Boolean(firebaseUser && adminUser);
+
+  const fetchTelegramOrders24h = useCallback(async () => {
+    if (!adminUser) {
+      setTg24hLoading(false);
+      return;
+    }
+    setTg24hLoading(true);
+    setTg24hError('');
+    try {
+      const res = await adminFetch('/api/admin/telegram-orders-24h');
+      const data = (await res.json()) as TelegramOrders24hData;
+      if (!res.ok || !data.ok) {
+        setTg24hError(data.error || data.reason || 'Failed to fetch Telegram 24h order metrics');
+        setTg24h(null);
+      } else {
+        setTg24h(data);
+      }
+    } catch {
+      setTg24hError('Network error while querying Firebase Admin SDK.');
+    } finally {
+      setTg24hLoading(false);
+    }
+  }, [adminFetch, adminUser]);
+
+  useEffect(() => {
+    void fetchTelegramOrders24h();
+  }, [fetchTelegramOrders24h]);
 
   useEffect(() => {
     if (!canReadOrders) {
@@ -237,6 +293,91 @@ export function DashboardOverview() {
             );
           })}
         </div>
+
+        {/* Telegram Bot 24h Orders Widget (Firebase Admin SDK) */}
+        <section
+          aria-label="Telegram Bot Orders Last 24 Hours"
+          className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-lg bg-sky-50 dark:bg-sky-950/50 border border-sky-200/80 dark:border-sky-900/60 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                <Send className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold font-display text-slate-900 dark:text-white">
+                  Telegram Bot Orders (Last 24 Hours)
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Live count queried via Firebase Admin SDK
+                  {tg24h?.botUsername ? ` · @${tg24h.botUsername}` : ''}
+                  {' · '}
+                  {tg24h?.botRunning ? 'Bot Active' : 'Bot Standby'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void fetchTelegramOrders24h()}
+              disabled={tg24hLoading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0">
+              <RefreshCw className={`w-3.5 h-3.5 ${tg24hLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+
+          {tg24hLoading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+              <div className="h-12 rounded-lg bg-slate-100 dark:bg-slate-800 animate-pulse" />
+              <div className="h-12 rounded-lg bg-slate-100 dark:bg-slate-800 animate-pulse" />
+              <div className="h-12 rounded-lg bg-slate-100 dark:bg-slate-800 animate-pulse" />
+            </div>
+          ) : tg24hError ? (
+            <p className="text-xs text-red-600 dark:text-red-400 font-medium">{tg24hError}</p>
+          ) : !tg24h?.connected ? (
+            <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+              {tg24h?.reason || 'Firebase Admin SDK is not connected on the server.'}
+            </p>
+          ) : (
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-1 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex flex-wrap items-baseline gap-6 pt-2">
+                <div>
+                  <span className="text-xs text-slate-500 dark:text-slate-400 block">
+                    Total Telegram Orders (24h)
+                  </span>
+                  <span className="text-3xl font-bold font-display tabular-nums text-slate-900 dark:text-white">
+                    {tg24h.count.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-xs text-slate-500 dark:text-slate-400 block">
+                    24h Telegram Revenue
+                  </span>
+                  <span className="text-xl font-bold font-display tabular-nums text-emerald-600 dark:text-emerald-400">
+                    {formatCurrency(tg24h.totalRevenue)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-400 pt-2">
+                <span className="tabular-nums">
+                  Completed: <strong className="text-emerald-600 dark:text-emerald-400">{tg24h.completedCount}</strong>
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums">
+                  Processing: <strong className="text-blue-600 dark:text-blue-400">{tg24h.processingCount}</strong>
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums">
+                  Pending: <strong className="text-amber-600 dark:text-amber-400">{tg24h.pendingCount}</strong>
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums">
+                  Cancelled / Expired: <strong className="text-slate-700 dark:text-slate-200">{tg24h.cancelledOrExpiredCount}</strong>
+                </span>
+              </div>
+            </div>
+          )}
+        </section>
 
         {/* Sales Analytics Chart */}
         <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 space-y-4">

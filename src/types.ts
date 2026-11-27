@@ -76,6 +76,17 @@ export interface Category {
   updatedAt?: unknown;
 }
 
+export type PackageIconType =
+  | 'auto'
+  | 'diamond'
+  | 'weekly'
+  | 'monthly'
+  | 'levelup'
+  | 'evo'
+  | 'special';
+
+export type PackageBadgeType = '' | 'popular' | 'best_selling';
+
 export interface DiamondPackage {
   id: string;
   name: string;
@@ -83,6 +94,9 @@ export interface DiamondPackage {
   price: number;
   originalPrice: number;
   promoLabel: string;
+  bonusLabel?: string;
+  badgeType?: PackageBadgeType;
+  iconType?: PackageIconType;
   imageUrl: string;
   active: boolean;
   displayOrder: number;

@@ -6,10 +6,18 @@ import dotenv from 'dotenv';
 import express, {type NextFunction, type Request, type Response} from 'express';
 import {cert, getApp, getApps, initializeApp as initializeAdminApp, type ServiceAccount} from 'firebase-admin/app';
 import {getAuth as getAdminAuth} from 'firebase-admin/auth';
-import {FieldValue, getFirestore, type Firestore} from 'firebase-admin/firestore';
+import {FieldValue, Timestamp, getFirestore, type Firestore} from 'firebase-admin/firestore';
 import {GoogleGenAI, ThinkingLevel, Type} from '@google/genai';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
+import {
+  getConfiguredTelegramAdminChatIds,
+  handleTelegramAdminCallback,
+  handleTelegramAdminCommand,
+  makeAdminOrderCallback,
+  notifyTelegramAdmins,
+  type TelegramAdminDeps,
+} from './server-telegram-admin.ts';
 
 dotenv.config();
 
@@ -104,12 +112,15 @@ interface SystemSettingsStore {
   smtpFromEmail: string;
   notificationEmail: string;
   smtpEnabled: boolean;
+  customerEmailNotificationsEnabled: boolean;
   distributorBaseUrl: string;
   distributorMerchantId: string;
   distributorApiKey: string;
   distributorEnabled: boolean;
   telegramQuickRepliesEnabled: boolean;
   telegramQuickReplies: TelegramQuickReplyPreset[];
+  telegramAdminChatIds: string[];
+  telegramAdminOrderAlerts: boolean;
   updatedAt: string;
 }
 
@@ -138,6 +149,8 @@ interface SessionPayload {
 
 interface AuthedRequest extends Request {
   adminSession?: SessionPayload;
+  firebaseAuthUid?: string;
+  firebaseAuthEmail?: string;
 }
 
 const FULL_PERMISSIONS: StaffPermissions = {
@@ -269,12 +282,15 @@ function defaultStore(): AdminStoreData {
       smtpFromEmail: '',
       notificationEmail: DEFAULT_NOTIFICATION_EMAIL,
       smtpEnabled: false,
+      customerEmailNotificationsEnabled: true,
       distributorBaseUrl: '',
       distributorMerchantId: '',
       distributorApiKey: '',
       distributorEnabled: false,
       telegramQuickRepliesEnabled: true,
       telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
+      telegramAdminChatIds: [],
+      telegramAdminOrderAlerts: true,
       updatedAt: now,
     },
     serverLogs: [],
@@ -340,11 +356,20 @@ function readStore(): AdminStoreData {
       if (!parsed.systemSettings.notificationEmail) {
         parsed.systemSettings.notificationEmail = DEFAULT_NOTIFICATION_EMAIL;
       }
+      if (typeof parsed.systemSettings.customerEmailNotificationsEnabled !== 'boolean') {
+        parsed.systemSettings.customerEmailNotificationsEnabled = true;
+      }
       if (typeof parsed.systemSettings.telegramQuickRepliesEnabled !== 'boolean') {
         parsed.systemSettings.telegramQuickRepliesEnabled = true;
       }
       if (!Array.isArray(parsed.systemSettings.telegramQuickReplies)) {
         parsed.systemSettings.telegramQuickReplies = DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p}));
+      }
+      if (!Array.isArray(parsed.systemSettings.telegramAdminChatIds)) {
+        parsed.systemSettings.telegramAdminChatIds = [];
+      }
+      if (typeof parsed.systemSettings.telegramAdminOrderAlerts !== 'boolean') {
+        parsed.systemSettings.telegramAdminOrderAlerts = true;
       }
     }
     if (!Array.isArray(parsed.serverLogs)) parsed.serverLogs = [];
@@ -500,7 +525,7 @@ function requireAdmin(permission?: keyof StaffPermissions) {
   };
 }
 
-async function requireSignedInFirebase(req: Request, res: Response, next: NextFunction): Promise<void> {
+async function requireSignedInFirebase(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({error: 'Authentication required'});
@@ -509,6 +534,8 @@ async function requireSignedInFirebase(req: Request, res: Response, next: NextFu
   const token = authHeader.slice(7).trim();
   const adminSession = verifySessionToken(token);
   if (adminSession) {
+    req.adminSession = adminSession;
+    req.firebaseAuthEmail = adminSession.email;
     next();
     return;
   }
@@ -521,6 +548,10 @@ async function requireSignedInFirebase(req: Request, res: Response, next: NextFu
     if (!decoded.uid) {
       res.status(401).json({error: 'Invalid user token'});
       return;
+    }
+    req.firebaseAuthUid = decoded.uid;
+    if (decoded.email && decoded.email_verified) {
+      req.firebaseAuthEmail = decoded.email.trim().toLowerCase();
     }
     next();
   } catch {
@@ -612,8 +643,17 @@ function resolveSmtpConfig(store: AdminStoreData) {
       (process.env.EMAIL_USER && process.env.EMAIL_PASS) ||
       (process.env.GMAIL_USER && process.env.GMAIL_PASS),
   );
-  const enabled = Boolean((s.smtpEnabled || envConfigured) && host && user && pass && toEmail);
-  return {host, port, user, pass, fromEmail, toEmail, enabled, envConfigured};
+  const smtpReady = Boolean((s.smtpEnabled || envConfigured) && host && user && pass);
+  const enabled = Boolean(smtpReady && toEmail);
+  const customerEnabled = Boolean(smtpReady && s.customerEmailNotificationsEnabled !== false);
+  return {host, port, user, pass, fromEmail, toEmail, enabled, customerEnabled, envConfigured};
+}
+
+function isValidEmailAddress(email: string | undefined | null): string {
+  const cleaned = String(email ?? '').trim().toLowerCase();
+  if (!cleaned || cleaned.length > 160) return '';
+  if (!/^[^\s@<>()[\]\\,;:\s"]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleaned)) return '';
+  return cleaned;
 }
 
 async function sendAdminNotificationEmail(
@@ -695,6 +735,304 @@ async function sendAdminNotificationEmail(
     appendServerLog(store, actorEmail, 'EMAIL_NOTIFY_FAILED', `Failed "${subject}": ${msg}`);
     writeStore(store);
     return {sent: false, reason: msg, toEmail: cfg.toEmail};
+  }
+}
+
+export interface CustomerOrderEmailPayload {
+  toEmail?: string;
+  customerName?: string;
+  orderNumber: string;
+  orderStatus: 'pending' | 'processing' | 'completed' | 'cancelled' | 'expired';
+  paymentStatus?: 'pending' | 'verified' | 'rejected';
+  productName: string;
+  packageName: string;
+  playerUid?: string;
+  serverId?: string;
+  totalAmount?: number | string;
+  paymentMethodName?: string;
+  trxId?: string;
+  voucherCode?: string;
+  note?: string;
+  isNewOrder?: boolean;
+}
+
+async function sendCustomerOrderEmail(
+  params: CustomerOrderEmailPayload,
+): Promise<{sent: boolean; skipped?: boolean; reason?: string; toEmail?: string}> {
+  const recipient = isValidEmailAddress(params.toEmail);
+  if (!recipient) {
+    return {sent: false, skipped: true, reason: 'No valid customer email on order'};
+  }
+
+  const store = readStore();
+  const cfg = resolveSmtpConfig(store);
+  if (!cfg.customerEnabled) {
+    const reason =
+      store.systemSettings.customerEmailNotificationsEnabled === false
+        ? 'Customer order emails disabled in Admin Settings'
+        : !cfg.user || !cfg.pass
+          ? 'SMTP credentials missing'
+          : 'Outbound SMTP disabled in Admin Settings';
+    return {sent: false, skipped: true, reason, toEmail: recipient};
+  }
+
+  let brandName = 'MUNAFTOPUP.bd';
+  try {
+    if (botSharedStoreCache?.brandName) {
+      brandName = botSharedStoreCache.brandName;
+    }
+  } catch {
+    // ignore
+  }
+
+  let subject = `[${brandName}] Order ${params.orderNumber} Update`;
+  let headline = 'Your order status has been updated';
+  let badgeBg = '#0ea5e9';
+  let statusText = params.orderStatus.toUpperCase();
+
+  if (params.isNewOrder) {
+    subject = `[${brandName}] Order Confirmed: ${params.orderNumber} (${params.packageName})`;
+    headline =
+      params.paymentStatus === 'verified'
+        ? 'Order Received & Payment Verified!'
+        : 'Order Received — Pending Verification';
+    badgeBg = params.paymentStatus === 'verified' ? '#0891b2' : '#d97706';
+    statusText = params.paymentStatus === 'verified' ? 'PROCESSING / QUEUED' : 'PENDING REVIEW';
+  } else if (params.orderStatus === 'completed') {
+    subject = `[${brandName}] Order Completed: ${params.orderNumber} — ${params.packageName}`;
+    headline = 'Your Top-Up Order is Completed!';
+    badgeBg = '#059669';
+    statusText = 'COMPLETED';
+  } else if (params.orderStatus === 'processing') {
+    subject = `[${brandName}] Order Processing: ${params.orderNumber}`;
+    headline =
+      params.paymentStatus === 'verified'
+        ? 'Payment Verified — Fulfilling Your Order!'
+        : 'Your Order is Now Processing';
+    badgeBg = '#0891b2';
+    statusText = 'PROCESSING';
+  } else if (params.orderStatus === 'cancelled') {
+    subject = `[${brandName}] Order Cancelled: ${params.orderNumber}`;
+    headline =
+      params.paymentStatus === 'rejected'
+        ? 'Payment Rejected & Order Cancelled'
+        : 'Your Order Has Been Cancelled';
+    badgeBg = '#dc2626';
+    statusText = 'CANCELLED';
+  } else if (params.orderStatus === 'expired') {
+    subject = `[${brandName}] Order Expired: ${params.orderNumber}`;
+    headline = 'Your Pending Order Expired After 30 Minutes';
+    badgeBg = '#475569';
+    statusText = 'EXPIRED';
+  } else if (params.paymentStatus === 'verified') {
+    subject = `[${brandName}] Payment Verified: ${params.orderNumber}`;
+    headline = 'Your Payment Has Been Verified!';
+    badgeBg = '#0891b2';
+    statusText = 'PAYMENT VERIFIED';
+  }
+
+  const amountDisplay =
+    typeof params.totalAmount === 'number'
+      ? `৳${params.totalAmount}`
+      : params.totalAmount
+        ? String(params.totalAmount)
+        : '—';
+
+  const trackUrl = `${WEBSITE_URL.replace(/\/$/, '')}/track?order=${encodeURIComponent(params.orderNumber)}`;
+
+  const detailRows: Array<{label: string; value: string}> = [
+    {label: 'Order Number', value: params.orderNumber},
+    {label: 'Product', value: params.productName || '—'},
+    {label: 'Package', value: params.packageName || '—'},
+    ...(params.playerUid ? [{label: 'Player UID', value: params.playerUid}] : []),
+    ...(params.serverId && params.serverId !== 'N/A' ? [{label: 'Server ID', value: params.serverId}] : []),
+    {label: 'Amount', value: amountDisplay},
+    ...(params.paymentMethodName ? [{label: 'Payment Method', value: params.paymentMethodName}] : []),
+    ...(params.trxId ? [{label: 'TrxID', value: params.trxId}] : []),
+    {label: 'Payment Status', value: (params.paymentStatus || 'pending').toUpperCase()},
+    {label: 'Order Status', value: statusText},
+  ];
+
+  const textLines = [
+    `Hello ${params.customerName || 'Customer'},`,
+    '',
+    headline,
+    '',
+    ...detailRows.map((r) => `${r.label}: ${r.value}`),
+    ...(params.voucherCode?.trim() ? ['', `Voucher / Redeem Code: ${params.voucherCode.trim()}`] : []),
+    ...(params.note?.trim() ? ['', `Message: ${params.note.trim()}`] : []),
+    '',
+    `Track your order live: ${trackUrl}`,
+    '',
+    `Thank you for choosing ${brandName}!`,
+  ];
+
+  const htmlRows = detailRows
+    .map(
+      (r) =>
+        `<tr><td style="padding:9px 14px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:13px;font-weight:600;width:155px;">${escapeHtml(r.label)}</td><td style="padding:9px 14px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-size:13px;font-weight:500;word-break:break-word;">${escapeHtml(r.value)}</td></tr>`,
+    )
+    .join('');
+
+  const voucherHtml = params.voucherCode?.trim()
+    ? `<div style="margin:16px 0;padding:14px 16px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;">
+         <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#047857;margin-bottom:4px;">Redeem / Voucher Code</div>
+         <div style="font-family:monospace;font-size:16px;font-weight:700;color:#065f46;word-break:break-all;">${escapeHtml(params.voucherCode.trim())}</div>
+       </div>`
+    : '';
+
+  const noteHtml = params.note?.trim()
+    ? `<div style="margin:14px 0;padding:12px 14px;background:#f8fafc;border-left:4px solid ${badgeBg};border-radius:6px;color:#334155;font-size:13px;line-height:1.5;">
+         <strong>Update Note:</strong> ${escapeHtml(params.note.trim())}
+       </div>`
+    : '';
+
+  const htmlBody = `
+    <div style="font-family:Arial,sans-serif;background:#f1f5f9;padding:24px 12px;">
+      <div style="max-width:580px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+        <div style="background:#0f172a;color:#ffffff;padding:20px 24px;">
+          <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#38bdf8;font-weight:700;">${escapeHtml(brandName)}</div>
+          <h2 style="margin:6px 0 10px;font-size:19px;line-height:1.3;">${escapeHtml(headline)}</h2>
+          <span style="display:inline-block;background:${badgeBg};color:#ffffff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;">${escapeHtml(statusText)}</span>
+        </div>
+        <div style="padding:20px 24px;">
+          <p style="margin:0 0 14px;color:#334155;font-size:14px;">Hello <strong>${escapeHtml(params.customerName || 'Valued Customer')}</strong>,</p>
+          ${noteHtml}
+          ${voucherHtml}
+          <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+            ${htmlRows}
+          </table>
+          <div style="margin-top:20px;text-align:center;">
+            <a href="${escapeHtml(trackUrl)}" style="display:inline-block;background:#0891b2;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;padding:11px 22px;border-radius:8px;">Track Order Live</a>
+          </div>
+        </div>
+        <div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;text-align:center;">
+          Thank you for shopping with ${escapeHtml(brandName)} • Order Ref: ${escapeHtml(params.orderNumber)}
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.port === 465,
+      auth: {user: cfg.user, pass: cfg.pass},
+      connectionTimeout: 12000,
+      greetingTimeout: 12000,
+      socketTimeout: 15000,
+    });
+    await transporter.sendMail({
+      from: `"${brandName}" <${cfg.fromEmail || cfg.user}>`,
+      to: recipient,
+      subject,
+      text: textLines.join('\n'),
+      html: htmlBody,
+    });
+    console.log(`[Customer Email Sent] "${subject}" -> ${recipient}`);
+    appendServerLog(
+      store,
+      'customer_email',
+      'CUSTOMER_EMAIL_SENT',
+      `Sent "${subject}" to ${recipient}`,
+    );
+    writeStore(store);
+    return {sent: true, toEmail: recipient};
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Customer Email Failed] "${subject}" -> ${recipient}: ${msg}`);
+    appendServerLog(
+      store,
+      'customer_email',
+      'CUSTOMER_EMAIL_FAILED',
+      `Failed "${subject}" to ${recipient}: ${msg}`,
+    );
+    writeStore(store);
+    return {sent: false, reason: msg, toEmail: recipient};
+  }
+}
+
+async function sendCustomerGenericEmail(params: {
+  toEmail?: string;
+  customerName?: string;
+  subject: string;
+  headline: string;
+  rows: Array<{label: string; value: string}>;
+  message?: string;
+}): Promise<{sent: boolean; skipped?: boolean; reason?: string}> {
+  const recipient = isValidEmailAddress(params.toEmail);
+  if (!recipient) return {sent: false, skipped: true, reason: 'No valid customer email'};
+
+  const store = readStore();
+  const cfg = resolveSmtpConfig(store);
+  if (!cfg.customerEnabled) {
+    return {sent: false, skipped: true, reason: 'Customer SMTP email notifications not enabled'};
+  }
+
+  const brandName = botSharedStoreCache?.brandName || 'MUNAFTOPUP.bd';
+  const textBody = [
+    `Hello ${params.customerName || 'Customer'},`,
+    '',
+    params.headline,
+    ...(params.message ? ['', params.message] : []),
+    '',
+    ...params.rows.map((r) => `${r.label}: ${r.value}`),
+    '',
+    `Visit: ${WEBSITE_URL}`,
+  ].join('\n');
+
+  const htmlRows = params.rows
+    .map(
+      (r) =>
+        `<tr><td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:13px;font-weight:600;width:145px;">${escapeHtml(r.label)}</td><td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-size:13px;word-break:break-word;">${escapeHtml(r.value)}</td></tr>`,
+    )
+    .join('');
+
+  const htmlBody = `
+    <div style="font-family:Arial,sans-serif;background:#f1f5f9;padding:24px 12px;">
+      <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+        <div style="background:#0f172a;color:#ffffff;padding:18px 22px;">
+          <div style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#38bdf8;font-weight:700;">${escapeHtml(brandName)}</div>
+          <h2 style="margin:6px 0 0;font-size:18px;">${escapeHtml(params.headline)}</h2>
+        </div>
+        <div style="padding:18px 22px;">
+          <p style="margin:0 0 12px;color:#334155;font-size:14px;">Hello <strong>${escapeHtml(params.customerName || 'Customer')}</strong>,</p>
+          ${params.message ? `<div style="margin:12px 0;padding:12px 14px;background:#f8fafc;border-left:4px solid #0891b2;border-radius:6px;color:#1e293b;font-size:13px;line-height:1.5;">${escapeHtml(params.message)}</div>` : ''}
+          <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;">${htmlRows}</table>
+        </div>
+        <div style="padding:12px 22px;background:#f8fafc;color:#64748b;font-size:12px;text-align:center;">
+          ${escapeHtml(brandName)} • ${escapeHtml(WEBSITE_URL)}
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.port === 465,
+      auth: {user: cfg.user, pass: cfg.pass},
+      connectionTimeout: 12000,
+      greetingTimeout: 12000,
+      socketTimeout: 15000,
+    });
+    await transporter.sendMail({
+      from: `"${brandName}" <${cfg.fromEmail || cfg.user}>`,
+      to: recipient,
+      subject: `[${brandName}] ${params.subject}`,
+      text: textBody,
+      html: htmlBody,
+    });
+    appendServerLog(store, 'customer_email', 'CUSTOMER_EMAIL_SENT', `Sent "${params.subject}" to ${recipient}`);
+    writeStore(store);
+    return {sent: true};
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    appendServerLog(store, 'customer_email', 'CUSTOMER_EMAIL_FAILED', `Failed "${params.subject}" to ${recipient}: ${msg}`);
+    writeStore(store);
+    return {sent: false, reason: msg};
   }
 }
 
@@ -1847,16 +2185,15 @@ async function escalateToHumanAgent(params: {
     'telegram_bot',
   );
 
-  const adminTelegramChatIdRaw = (process.env.ADMIN_TELEGRAM_CHAT_ID || '').trim();
-  const adminTelegramChatId = Number(adminTelegramChatIdRaw);
-  if (adminTelegramChatIdRaw && Number.isFinite(adminTelegramChatId)) {
-    const adminPing = [
+  await notifyTelegramAdmins(
+    getTelegramAdminDeps(),
+    token,
+    [
       '🚨 Telegram Customer Agent Request',
       `👤 Customer: ${customerName} (${tgUid})`,
       `💬 Message: ${rawText.slice(0, 300)}`,
-    ].join('\n');
-    await sendTelegramReply(token, adminTelegramChatId, adminPing).catch(() => null);
-  }
+    ].join('\n'),
+  ).catch(() => null);
 
   const replyText =
     customReply ||
@@ -2241,6 +2578,17 @@ async function verifyAndCompleteTelegramOrder(params: {
       chatId,
       businessConnectionId,
     });
+    void notifyTelegramAdmins(
+      getTelegramAdminDeps(),
+      token,
+      [
+        `🤖 Telegram Auto-Order: ${outcome.orderNumber}`,
+        `🎮 ${selected.productName} · ${selected.packageName}`,
+        `🆔 UID: ${playerUid} | 💰 ৳${selected.price} (${outcome.methodName})`,
+        `🔑 TrxID: ${trxId} | Status: Completed ✅`,
+      ].join('\n'),
+      {inline_keyboard: [[{text: `🔎 Inspect ${outcome.orderNumber}`, callback_data: makeAdminOrderCallback(outcome.orderId)}]]},
+    );
     pushSessionHistory(
       session,
       'model',
@@ -2495,6 +2843,42 @@ ${rawText}`;
   return null;
 }
 
+function getTelegramAdminDeps(): TelegramAdminDeps {
+  return {
+    adminDb,
+    firebaseInitMode,
+    websiteUrl: WEBSITE_URL,
+    superAdminEmail: SUPER_ADMIN_EMAIL,
+    callTelegramApi,
+    sendTelegramReply,
+    sendTelegramOrderStatusUpdate,
+    sendCustomerOrderEmail,
+    sendCustomerGenericEmail,
+    sendAdminNotificationEmail,
+    readStore,
+    writeStore,
+    appendServerLog,
+    verifyPassword,
+    timingSafeEqualsText,
+    parseTimestampMillis: parseFirestoreTimestampMillis,
+    invalidateBotStoreCache: () => {
+      botSharedStoreCache = null;
+    },
+    runOrderExpiryNow: () => expireStalePendingOrders(true),
+    getBotRuntimeStats: () => ({
+      running: telegramBotState.running,
+      username: telegramBotState.username,
+      processedUpdates: telegramBotState.processedUpdates,
+      lastPollAt: telegramBotState.lastPollAt,
+      lastError: telegramBotState.lastError,
+      expiryRunning: orderExpiryCronState.running,
+      expiryLastCheckAt: orderExpiryCronState.lastCheckAt,
+      expiryTotalExpired: orderExpiryCronState.totalExpired,
+      expiryLastError: orderExpiryCronState.lastError,
+    }),
+  };
+}
+
 async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage): Promise<void> {
   const rawText = (msg.text || msg.caption || '').trim();
   if (!rawText) return;
@@ -2503,6 +2887,18 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
 
   const chatId = msg.chat.id;
   const businessConnectionId = msg.business_connection_id;
+
+  // 0. Check Telegram Bot Admin Panel commands / active admin prompts (private DM only, never business chats)
+  const handledByAdmin = await handleTelegramAdminCommand(
+    getTelegramAdminDeps(),
+    token,
+    chatId,
+    msg.from?.id,
+    rawText,
+    businessConnectionId,
+  );
+  if (handledByAdmin) return;
+
   const sessionKey = `${businessConnectionId || 'dm'}:${chatId}`;
   const customerName =
     [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ').trim() ||
@@ -2848,8 +3244,22 @@ async function handleTelegramCallbackQuery(
   void saveTelegramChatRoute(tgUid, chatId, businessConnectionId, customerName);
 
   cleanupExpiredBotSessions();
-  const session = getOrCreateBotSession(sessionKey, customerName);
   const data = (cb.data || '').trim();
+
+  if (data.startsWith('adm:')) {
+    const handled = await handleTelegramAdminCallback(
+      getTelegramAdminDeps(),
+      token,
+      chatId,
+      cb.from.id,
+      cb.message?.message_id,
+      data,
+      businessConnectionId,
+    );
+    if (handled) return;
+  }
+
+  const session = getOrCreateBotSession(sessionKey, customerName);
   const quickReplies = readStore().systemSettings.telegramQuickReplies || [];
   const presetId = data.startsWith('qr:') ? data.slice(3) : data;
   const preset = quickReplies.find((p) => p.id === presetId && p.active);
@@ -3026,6 +3436,20 @@ function startTelegramBusinessBot(): void {
       const me = await callTelegramApi<{id: number; username?: string}>(token, 'getMe', undefined, 15000);
       telegramBotState.username = me.username || '';
       console.log(`Telegram Business Bot 24/7 active (@${telegramBotState.username || 'bot'})`);
+      await callTelegramApi(
+        token,
+        'setMyCommands',
+        {
+          commands: [
+            {command: 'start', description: 'স্টার্ট মেনু ও ডায়মন্ড রেট লিস্ট'},
+            {command: 'menu', description: 'সকল প্যাকেজ দেখুন'},
+            {command: 'cancel', description: 'চলমান অর্ডার বাতিল করুন'},
+            {command: 'admin', description: 'Telegram Admin Panel খুলুন'},
+            {command: 'myid', description: 'আপনার Telegram Chat ID দেখুন'},
+          ],
+        },
+        10000,
+      ).catch(() => null);
     } catch (err) {
       telegramBotState.lastError = err instanceof Error ? err.message : String(err);
       console.error('Telegram Bot getMe failed:', telegramBotState.lastError);
@@ -3529,8 +3953,8 @@ async function startServer(): Promise<void> {
     res.json({ok: true});
   });
 
-  // Customer -> Admin email notification endpoints (Orders, Support Complaints, Deposits)
-  const handleAdminNotifyRequest = async (req: Request, res: Response): Promise<void> => {
+  // Customer -> Admin & Customer email notification endpoints (Orders, Support Complaints, Deposits)
+  const handleAdminNotifyRequest = async (req: AuthedRequest, res: Response): Promise<void> => {
     const {type, details} = req.body as {
       type?: 'order' | 'ticket' | 'deposit';
       details?: Record<string, unknown>;
@@ -3547,6 +3971,7 @@ async function startServer(): Promise<void> {
     let subject = 'New Store Notification';
     let rows: Array<{label: string; value: string}> = [];
     let eventKey = '';
+    let telegramAdminAlertText = '';
 
     if (type === 'order') {
       const orderNumber = safeStr(details.orderNumber, 40);
@@ -3566,6 +3991,13 @@ async function startServer(): Promise<void> {
         {label: 'Customer Phone', value: safeStr(details.customerPhone, 30) || '—'},
         {label: 'Time (BD)', value: timestamp},
       ];
+      telegramAdminAlertText = [
+        `🛒 New Website Order: ${orderNumber || '—'}`,
+        `🎮 ${safeStr(details.productName, 120)} · ${safeStr(details.packageName, 120)}`,
+        `🆔 UID: ${safeStr(details.playerUid, 80) || '—'} | 💰 ${safeStr(details.amount, 40)}`,
+        `💳 ${safeStr(details.paymentMethod, 60)} | TrxID: ${safeStr(details.trxId, 64)}`,
+        `👤 ${safeStr(details.customerName, 100)} (${req.firebaseAuthEmail || safeStr(details.customerEmail, 160) || '—'})`,
+      ].join('\n');
     } else if (type === 'ticket') {
       const ticketId = safeStr(details.ticketId, 60);
       eventKey = ticketId ? `ticket:${ticketId}` : '';
@@ -3580,6 +4012,12 @@ async function startServer(): Promise<void> {
         {label: 'Customer Email', value: safeStr(details.customerEmail, 160) || '—'},
         {label: 'Time (BD)', value: timestamp},
       ];
+      telegramAdminAlertText = [
+        `🎫 New Support Ticket`,
+        `📌 Subject: ${subjectLine || '—'}`,
+        `👤 ${safeStr(details.customerName, 100)} (${safeStr(details.customerEmail, 160)})`,
+        `💬 ${safeStr(details.message, 250)}`,
+      ].join('\n');
     } else {
       const amount = safeStr(details.amount, 40);
       const trxId = safeStr(details.trxId, 64);
@@ -3593,6 +4031,11 @@ async function startServer(): Promise<void> {
         {label: 'Customer Email', value: safeStr(details.customerEmail, 160) || '—'},
         {label: 'Time (BD)', value: timestamp},
       ];
+      telegramAdminAlertText = [
+        `💰 New Wallet Deposit: ${amount}`,
+        `💳 ${safeStr(details.paymentMethod, 60)} | TrxID: ${trxId}`,
+        `👤 ${safeStr(details.customerName, 100)} (${safeStr(details.customerEmail, 160)})`,
+      ].join('\n');
     }
 
     if (eventKey && !markNotificationEventSent(eventKey)) {
@@ -3603,9 +4046,61 @@ async function startServer(): Promise<void> {
     const result = await sendAdminNotificationEmail(
       subject,
       rows,
-      safeStr(details.customerEmail, 160) || 'customer',
+      req.firebaseAuthEmail || safeStr(details.customerEmail, 160) || 'customer',
     );
-    res.json({ok: true, ...result});
+
+    // Send order confirmation email to the authenticated customer's verified email
+    let customerEmailResult: {sent: boolean; skipped?: boolean; reason?: string} = {
+      sent: false,
+      skipped: true,
+    };
+    if (type === 'order') {
+      const orderNumber = safeStr(details.orderNumber, 40);
+      const verifiedRecipient = req.adminSession
+        ? isValidEmailAddress(safeStr(details.customerEmail, 160))
+        : isValidEmailAddress(req.firebaseAuthEmail);
+      const paymentMethodStr = safeStr(details.paymentMethod, 60);
+      const isWalletPaid = paymentMethodStr.toLowerCase().includes('wallet');
+      if (
+        verifiedRecipient &&
+        orderNumber &&
+        markNotificationEventSent(`cust_order:${orderNumber}:pending`)
+      ) {
+        customerEmailResult = await sendCustomerOrderEmail({
+          toEmail: verifiedRecipient,
+          customerName: safeStr(details.customerName, 100),
+          orderNumber,
+          orderStatus: 'pending',
+          paymentStatus: isWalletPaid ? 'verified' : 'pending',
+          productName: safeStr(details.productName, 120) || 'Top-up',
+          packageName: safeStr(details.packageName, 120) || 'Package',
+          playerUid: safeStr(details.playerUid, 80),
+          serverId: safeStr(details.serverId, 80),
+          totalAmount: safeStr(details.amount, 40),
+          paymentMethodName: paymentMethodStr,
+          trxId: safeStr(details.trxId, 64),
+          note: isWalletPaid
+            ? 'Paid via Wallet Balance. Queued for instant top-up delivery.'
+            : 'Order received. Awaiting payment verification.',
+          isNewOrder: true,
+        });
+      }
+    }
+
+    const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (botToken && telegramAdminAlertText) {
+      const replyMarkup =
+        type === 'order' && details.orderId
+          ? {
+              inline_keyboard: [
+                [{text: `🔎 Inspect ${safeStr(details.orderNumber, 32)}`, callback_data: makeAdminOrderCallback(safeStr(details.orderId, 64))}],
+              ],
+            }
+          : {inline_keyboard: [[{text: '🛡️ Open Admin Panel', callback_data: 'adm:home'}]]};
+      void notifyTelegramAdmins(getTelegramAdminDeps(), botToken, telegramAdminAlertText, replyMarkup);
+    }
+
+    res.json({ok: true, ...result, customerEmailSent: customerEmailResult.sent});
   };
 
   app.post('/api/notify/admin', requireSignedInFirebase, handleAdminNotifyRequest);
@@ -3625,6 +4120,7 @@ async function startServer(): Promise<void> {
         smtpFromEmail: s.smtpFromEmail,
         notificationEmail: s.notificationEmail || cfg.toEmail || DEFAULT_NOTIFICATION_EMAIL,
         smtpEnabled: s.smtpEnabled || cfg.envConfigured,
+        customerEmailNotificationsEnabled: s.customerEmailNotificationsEnabled !== false,
         distributorBaseUrl: s.distributorBaseUrl,
         distributorMerchantId: s.distributorMerchantId,
         hasDistributorApiKey: Boolean(s.distributorApiKey),
@@ -3633,13 +4129,15 @@ async function startServer(): Promise<void> {
         telegramQuickReplies: Array.isArray(s.telegramQuickReplies)
           ? s.telegramQuickReplies
           : DEFAULT_TELEGRAM_QUICK_REPLIES,
+        telegramAdminChatIds: Array.isArray(s.telegramAdminChatIds) ? s.telegramAdminChatIds : [],
+        telegramAdminOrderAlerts: s.telegramAdminOrderAlerts !== false,
         updatedAt: s.updatedAt,
       },
     });
   });
 
   app.put('/api/admin/system-settings', requireAdmin('settings'), (req: AuthedRequest, res) => {
-    const body = req.body as Partial<SystemSettingsStore>;
+    const body = req.body as Partial<SystemSettingsStore> & {telegramAdminChatIds?: string[] | string};
     const store = readStore();
     const prev = store.systemSettings;
 
@@ -3673,6 +4171,26 @@ async function startServer(): Promise<void> {
         ? normalizeQuickRepliesInput(body.telegramQuickReplies)
         : prev.telegramQuickReplies || DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p}));
 
+    const normalizeAdminIds = (val: unknown): string[] => {
+      const items = Array.isArray(val)
+        ? val
+        : typeof val === 'string'
+          ? val.split(/[\s,;]+/)
+          : prev.telegramAdminChatIds || [];
+      return Array.from(
+        new Set(
+          items
+            .map((x) => String(x).trim())
+            .filter((x) => /^-?\d{5,20}$/.test(x)),
+        ),
+      ).slice(0, 20);
+    };
+
+    const nextAdminChatIds =
+      body.telegramAdminChatIds !== undefined
+        ? normalizeAdminIds(body.telegramAdminChatIds)
+        : prev.telegramAdminChatIds || [];
+
     store.systemSettings = {
       smtpHost: String(body.smtpHost ?? prev.smtpHost ?? 'smtp.gmail.com').trim().slice(0, 160),
       smtpPort: Math.min(65535, Math.max(1, Number(body.smtpPort ?? prev.smtpPort) || 587)),
@@ -3681,6 +4199,10 @@ async function startServer(): Promise<void> {
       smtpFromEmail: String(body.smtpFromEmail ?? prev.smtpFromEmail).trim().slice(0, 160),
       notificationEmail: cleanNotifEmail || DEFAULT_NOTIFICATION_EMAIL,
       smtpEnabled: Boolean(body.smtpEnabled ?? prev.smtpEnabled),
+      customerEmailNotificationsEnabled:
+        body.customerEmailNotificationsEnabled !== undefined
+          ? Boolean(body.customerEmailNotificationsEnabled)
+          : prev.customerEmailNotificationsEnabled !== false,
       distributorBaseUrl: cleanDistUrl,
       distributorMerchantId: String(body.distributorMerchantId ?? prev.distributorMerchantId).trim().slice(0, 120),
       distributorApiKey: body.distributorApiKey ? String(body.distributorApiKey) : prev.distributorApiKey,
@@ -3690,13 +4212,18 @@ async function startServer(): Promise<void> {
           ? Boolean(body.telegramQuickRepliesEnabled)
           : prev.telegramQuickRepliesEnabled !== false,
       telegramQuickReplies: nextQuickReplies,
+      telegramAdminChatIds: nextAdminChatIds,
+      telegramAdminOrderAlerts:
+        body.telegramAdminOrderAlerts !== undefined
+          ? Boolean(body.telegramAdminOrderAlerts)
+          : prev.telegramAdminOrderAlerts !== false,
       updatedAt: new Date().toISOString(),
     };
     appendServerLog(
       store,
       req.adminSession!.email,
       'SYSTEM_SETTINGS_UPDATED',
-      `Updated SMTP (${store.systemSettings.notificationEmail}), Distributor API, and Telegram Quick Replies (${nextQuickReplies.length})`,
+      `Updated SMTP (${store.systemSettings.notificationEmail}, customerEmails=${store.systemSettings.customerEmailNotificationsEnabled}), Telegram Admins (${nextAdminChatIds.length}), and Quick Replies (${nextQuickReplies.length})`,
     );
     writeStore(store);
 
@@ -3704,6 +4231,9 @@ async function startServer(): Promise<void> {
       ok: true,
       telegramQuickReplies: store.systemSettings.telegramQuickReplies,
       telegramQuickRepliesEnabled: store.systemSettings.telegramQuickRepliesEnabled,
+      telegramAdminChatIds: store.systemSettings.telegramAdminChatIds,
+      telegramAdminOrderAlerts: store.systemSettings.telegramAdminOrderAlerts,
+      customerEmailNotificationsEnabled: store.systemSettings.customerEmailNotificationsEnabled,
     });
   });
 
@@ -3807,6 +4337,7 @@ async function startServer(): Promise<void> {
       geminiModel: GEMINI_BOT_MODEL,
       bkashNumberMasked: maskPhone(process.env.BKASH_NUMBER || ''),
       nagadNumberMasked: maskPhone(process.env.NAGAD_NUMBER || ''),
+      telegramAdminCount: getConfiguredTelegramAdminChatIds(getTelegramAdminDeps()).length,
       pendingOrderExpiryCronRunning: orderExpiryCronState.running,
       lastOrderExpiryCheckAt: orderExpiryCronState.lastCheckAt,
       expiredOrdersCount: orderExpiryCronState.totalExpired,
@@ -3814,15 +4345,134 @@ async function startServer(): Promise<void> {
     });
   });
 
-  // Admin -> Customer Telegram Order Status Update Endpoint
-  app.post('/api/admin/orders/telegram-notify', requireAdmin(), async (req: AuthedRequest, res) => {
+  // Firebase Admin SDK metric: Total orders placed through the Telegram bot over the last 24 hours
+  app.get('/api/admin/telegram-orders-24h', requireAdmin(), async (_req, res) => {
+    const fetchedAt = new Date().toISOString();
+    if (!adminDb) {
+      res.json({
+        ok: true,
+        connected: false,
+        count: 0,
+        completedCount: 0,
+        pendingCount: 0,
+        processingCount: 0,
+        cancelledOrExpiredCount: 0,
+        totalRevenue: 0,
+        botRunning: telegramBotState.running,
+        botUsername: telegramBotState.username,
+        windowHours: 24,
+        fetchedAt,
+        reason: 'Firebase Admin SDK is not initialized',
+      });
+      return;
+    }
+
+    try {
+      const cutoffDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const snap = await adminDb
+        .collection('orders')
+        .where('createdAt', '>=', Timestamp.fromDate(cutoffDate))
+        .get();
+
+      let count = 0;
+      let completedCount = 0;
+      let pendingCount = 0;
+      let processingCount = 0;
+      let cancelledOrExpiredCount = 0;
+      let totalRevenue = 0;
+      const recentTelegramOrders: Array<{
+        orderNumber: string;
+        packageName: string;
+        totalAmount: number;
+        orderStatus: string;
+      }> = [];
+
+      for (const docSnap of snap.docs) {
+        const data = docSnap.data() as Record<string, unknown>;
+        const customerUid = String(data.customerUid || '').trim();
+        const senderNumber = String(data.senderNumber || '').trim().toLowerCase();
+        const adminNote = String(data.adminNote || '').toLowerCase();
+        const isTelegramOrder =
+          customerUid.startsWith('tg_') ||
+          senderNumber === 'telegram' ||
+          adminNote.includes('telegram business bot');
+
+        if (!isTelegramOrder) continue;
+
+        count += 1;
+        const orderStatus = String(data.orderStatus || 'pending');
+        const paymentStatus = String(data.paymentStatus || 'pending');
+        const amount = Number(data.totalAmount || 0);
+
+        if (orderStatus === 'completed') completedCount += 1;
+        else if (orderStatus === 'processing') processingCount += 1;
+        else if (orderStatus === 'pending') pendingCount += 1;
+        else if (orderStatus === 'cancelled' || orderStatus === 'expired') cancelledOrExpiredCount += 1;
+
+        if (orderStatus !== 'cancelled' && orderStatus !== 'expired' && paymentStatus !== 'rejected') {
+          totalRevenue += Number.isFinite(amount) ? amount : 0;
+        }
+
+        if (recentTelegramOrders.length < 4) {
+          recentTelegramOrders.push({
+            orderNumber: String(data.orderNumber || docSnap.id),
+            packageName: String(data.packageName || data.productName || 'Top-up'),
+            totalAmount: Number.isFinite(amount) ? amount : 0,
+            orderStatus,
+          });
+        }
+      }
+
+      expiryCronPermissionRetryAt = 0;
+
+      res.json({
+        ok: true,
+        connected: true,
+        count,
+        completedCount,
+        pendingCount,
+        processingCount,
+        cancelledOrExpiredCount,
+        totalRevenue: Number(totalRevenue.toFixed(2)),
+        botRunning: telegramBotState.running,
+        botUsername: telegramBotState.username,
+        recentOrders: recentTelegramOrders,
+        windowHours: 24,
+        fetchedAt,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isPermDenied = /PERMISSION_DENIED|insufficient permissions/i.test(message);
+      if (isPermDenied) {
+        console.warn('[Telegram 24h Metric] Firestore Admin SDK PERMISSION_DENIED (awaiting project IAM grant).');
+      } else {
+        console.error('[Telegram 24h Metric] Firebase Admin SDK query error:', message);
+      }
+      res.status(isPermDenied ? 403 : 500).json({
+        ok: false,
+        connected: !isPermDenied,
+        permissionDenied: isPermDenied,
+        error: isPermDenied
+          ? 'Firestore Admin SDK PERMISSION_DENIED: Grant Cloud Datastore User (roles/datastore.user) IAM role to your preview service account on project gen-lang-client-0552010536.'
+          : message,
+        fetchedAt,
+      });
+    }
+  });
+
+  // Admin -> Customer Order Status Update Endpoint (Email + Telegram)
+  const handleAdminCustomerOrderNotify = async (req: AuthedRequest, res: Response): Promise<void> => {
     const perms = req.adminSession!.permissions;
     if (req.adminSession!.role !== 'super_admin' && !perms.orders && !perms.payments) {
       res.status(403).json({error: 'Missing required permission to send order notifications'});
       return;
     }
 
-    const body = (req.body || {}) as Partial<OrderStatusTelegramPayload>;
+    const body = (req.body || {}) as Partial<OrderStatusTelegramPayload> & {
+      customerEmail?: string;
+      customerName?: string;
+      serverId?: string;
+    };
     const orderNumber = String(body.orderNumber || '').trim().slice(0, 32);
     const orderStatus = body.orderStatus;
     const productName = String(body.productName || '').trim().slice(0, 120);
@@ -3844,24 +4494,98 @@ async function startServer(): Promise<void> {
         ? body.paymentStatus
         : undefined;
 
-    const result = await sendTelegramOrderStatusUpdate({
-      orderNumber,
-      orderStatus,
-      paymentStatus,
-      productName,
-      packageName,
-      playerUid: body.playerUid ? String(body.playerUid).trim().slice(0, 80) : undefined,
-      totalAmount: typeof body.totalAmount === 'number' ? body.totalAmount : undefined,
-      paymentMethodName: body.paymentMethodName
-        ? String(body.paymentMethodName).trim().slice(0, 60)
-        : undefined,
-      trxId: body.trxId ? String(body.trxId).trim().slice(0, 64) : undefined,
-      voucherCode: body.voucherCode ? String(body.voucherCode).trim().slice(0, 500) : undefined,
-      note: body.note ? String(body.note).trim().slice(0, 500) : undefined,
-      customerUid: body.customerUid ? String(body.customerUid).trim().slice(0, 128) : undefined,
-      chatId: body.chatId,
-    });
+    const cleanCustomerUid = body.customerUid ? String(body.customerUid).trim().slice(0, 128) : undefined;
+    const cleanCustomerEmail = body.customerEmail ? String(body.customerEmail).trim().slice(0, 160) : undefined;
+    const cleanCustomerName = body.customerName ? String(body.customerName).trim().slice(0, 100) : undefined;
+    const cleanPlayerUid = body.playerUid ? String(body.playerUid).trim().slice(0, 80) : undefined;
+    const cleanServerId = body.serverId ? String(body.serverId).trim().slice(0, 80) : undefined;
+    const cleanPaymentMethod = body.paymentMethodName
+      ? String(body.paymentMethodName).trim().slice(0, 60)
+      : undefined;
+    const cleanTrxId = body.trxId ? String(body.trxId).trim().slice(0, 64) : undefined;
+    const cleanVoucher = body.voucherCode ? String(body.voucherCode).trim().slice(0, 500) : undefined;
+    const cleanNote = body.note ? String(body.note).trim().slice(0, 500) : undefined;
+    const cleanAmount = typeof body.totalAmount === 'number' ? body.totalAmount : undefined;
 
+    const [tgResult, emailResult] = await Promise.all([
+      sendTelegramOrderStatusUpdate({
+        orderNumber,
+        orderStatus,
+        paymentStatus,
+        productName,
+        packageName,
+        playerUid: cleanPlayerUid,
+        totalAmount: cleanAmount,
+        paymentMethodName: cleanPaymentMethod,
+        trxId: cleanTrxId,
+        voucherCode: cleanVoucher,
+        note: cleanNote,
+        customerUid: cleanCustomerUid,
+        chatId: body.chatId,
+      }),
+      sendCustomerOrderEmail({
+        toEmail: cleanCustomerEmail,
+        customerName: cleanCustomerName,
+        orderNumber,
+        orderStatus,
+        paymentStatus,
+        productName,
+        packageName,
+        playerUid: cleanPlayerUid,
+        serverId: cleanServerId,
+        totalAmount: cleanAmount,
+        paymentMethodName: cleanPaymentMethod,
+        trxId: cleanTrxId,
+        voucherCode: cleanVoucher,
+        note: cleanNote,
+      }),
+    ]);
+
+    res.json({
+      ok: true,
+      sent: tgResult.sent,
+      telegramSent: tgResult.sent,
+      telegramReason: tgResult.reason,
+      emailSent: emailResult.sent,
+      emailReason: emailResult.reason,
+      toEmail: emailResult.toEmail,
+    });
+  };
+
+  app.post('/api/admin/orders/telegram-notify', requireAdmin(), handleAdminCustomerOrderNotify);
+  app.post('/api/admin/orders/notify-customer', requireAdmin(), handleAdminCustomerOrderNotify);
+
+  app.post('/api/admin/customer-email-event', requireAdmin(), async (req: AuthedRequest, res: Response) => {
+    const perms = req.adminSession!.permissions;
+    if (req.adminSession!.role !== 'super_admin' && !perms.payments && !perms.customers && !perms.orders) {
+      res.status(403).json({error: 'Missing required permission'});
+      return;
+    }
+    const body = (req.body || {}) as {
+      toEmail?: string;
+      customerName?: string;
+      subject?: string;
+      headline?: string;
+      message?: string;
+      rows?: Array<{label?: string; value?: string}>;
+    };
+    const safeRows = Array.isArray(body.rows)
+      ? body.rows
+          .slice(0, 12)
+          .map((r) => ({
+            label: String(r?.label || '').trim().slice(0, 60),
+            value: String(r?.value || '').trim().slice(0, 240),
+          }))
+          .filter((r) => r.label && r.value)
+      : [];
+    const result = await sendCustomerGenericEmail({
+      toEmail: String(body.toEmail || '').trim().slice(0, 160),
+      customerName: String(body.customerName || '').trim().slice(0, 100),
+      subject: String(body.subject || 'Account Notification').trim().slice(0, 140),
+      headline: String(body.headline || 'Account Update').trim().slice(0, 140),
+      message: body.message ? String(body.message).trim().slice(0, 1500) : undefined,
+      rows: safeRows,
+    });
     res.json({ok: true, ...result});
   });
 
@@ -3945,14 +4669,18 @@ function parseFirestoreTimestampMillis(val: unknown): number {
   return 0;
 }
 
-async function expireStalePendingOrders(): Promise<void> {
+let expiryCronPermissionRetryAt = 0;
+
+async function expireStalePendingOrders(manualTrigger = false): Promise<void> {
   if (!adminDb || orderExpiryCronState.inFlight) return;
+  if (!manualTrigger && expiryCronPermissionRetryAt > Date.now()) return;
   orderExpiryCronState.inFlight = true;
   orderExpiryCronState.lastCheckAt = new Date().toISOString();
 
   try {
     const cutoffMs = Date.now() - PENDING_ORDER_EXPIRY_MS;
     const pendingSnap = await adminDb.collection('orders').where('orderStatus', '==', 'pending').get();
+    expiryCronPermissionRetryAt = 0;
 
     for (const docSnap of pendingSnap.docs) {
       const data = docSnap.data() as Record<string, unknown>;
@@ -4036,9 +4764,12 @@ async function expireStalePendingOrders(): Promise<void> {
           return {
             orderNumber: String(fresh.orderNumber || orderId),
             customerUid,
+            customerName: String(fresh.customerName || ''),
+            customerEmail: String(fresh.customerEmail || ''),
             productName: String(fresh.productName || 'Top-up'),
             packageName: String(fresh.packageName || 'Package'),
             playerUid: String(fresh.playerUid || ''),
+            serverId: String(fresh.serverId || ''),
             totalAmount,
             paymentMethodName: String(fresh.paymentMethodName || ''),
             paymentStatus: (fresh.paymentStatus === 'verified' || fresh.paymentStatus === 'rejected'
@@ -4046,6 +4777,7 @@ async function expireStalePendingOrders(): Promise<void> {
               : 'pending') as 'pending' | 'verified' | 'rejected',
             trxId: String(fresh.trxId || ''),
             refundedAmount,
+            expiryNote,
           };
         });
 
@@ -4067,22 +4799,39 @@ async function expireStalePendingOrders(): Promise<void> {
             ? `৩০ মিনিটের বেশি সময় পেন্ডিং থাকায় অর্ডারটি স্বয়ংক্রিয়ভাবে এক্সপায়ার্ড হয়েছে এবং ৳${txOutcome.refundedAmount} আপনার ওয়ালেটে রিফান্ড করা হয়েছে।`
             : '৩০ মিনিটের বেশি সময় পেন্ডিং থাকায় অর্ডারটি স্বয়ংক্রিয়ভাবে এক্সপায়ার্ড হয়েছে। অনুগ্রহ করে নতুন অর্ডার করুন বা সাপোর্টে যোগাযোগ করুন।';
 
-        const tgResult = await sendTelegramOrderStatusUpdate({
-          orderNumber: txOutcome.orderNumber,
-          orderStatus: 'expired',
-          paymentStatus: txOutcome.paymentStatus,
-          productName: txOutcome.productName,
-          packageName: txOutcome.packageName,
-          playerUid: txOutcome.playerUid || undefined,
-          totalAmount: txOutcome.totalAmount > 0 ? txOutcome.totalAmount : undefined,
-          paymentMethodName: txOutcome.paymentMethodName || undefined,
-          trxId: txOutcome.trxId || undefined,
-          note: telegramNote,
-          customerUid: txOutcome.customerUid || undefined,
-        });
+        const [tgResult, emailResult] = await Promise.all([
+          sendTelegramOrderStatusUpdate({
+            orderNumber: txOutcome.orderNumber,
+            orderStatus: 'expired',
+            paymentStatus: txOutcome.paymentStatus,
+            productName: txOutcome.productName,
+            packageName: txOutcome.packageName,
+            playerUid: txOutcome.playerUid || undefined,
+            totalAmount: txOutcome.totalAmount > 0 ? txOutcome.totalAmount : undefined,
+            paymentMethodName: txOutcome.paymentMethodName || undefined,
+            trxId: txOutcome.trxId || undefined,
+            note: telegramNote,
+            customerUid: txOutcome.customerUid || undefined,
+          }),
+          sendCustomerOrderEmail({
+            toEmail: txOutcome.customerEmail,
+            customerName: txOutcome.customerName,
+            orderNumber: txOutcome.orderNumber,
+            orderStatus: 'expired',
+            paymentStatus: txOutcome.paymentStatus,
+            productName: txOutcome.productName,
+            packageName: txOutcome.packageName,
+            playerUid: txOutcome.playerUid || undefined,
+            serverId: txOutcome.serverId || undefined,
+            totalAmount: txOutcome.totalAmount > 0 ? txOutcome.totalAmount : undefined,
+            paymentMethodName: txOutcome.paymentMethodName || undefined,
+            trxId: txOutcome.trxId || undefined,
+            note: txOutcome.expiryNote,
+          }),
+        ]);
 
         console.log(
-          `[Order Expiry Cron] Order ${txOutcome.orderNumber} expired (Telegram sent=${tgResult.sent}${tgResult.reason ? `, reason=${tgResult.reason}` : ''})`,
+          `[Order Expiry Cron] Order ${txOutcome.orderNumber} expired (Telegram=${tgResult.sent}, Email=${emailResult.sent})`,
         );
       } catch (orderErr) {
         const msg = orderErr instanceof Error ? orderErr.message : String(orderErr);
@@ -4094,7 +4843,14 @@ async function expireStalePendingOrders(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     orderExpiryCronState.lastError = msg;
-    console.error('[Order Expiry Cron] Query error:', msg);
+    if (/PERMISSION_DENIED|insufficient permissions/i.test(msg) && firebaseInitMode === 'project_config') {
+      expiryCronPermissionRetryAt = Date.now() + 5 * 60_000;
+      console.warn(
+        '[Order Expiry Cron] Backing off 5m due to Firestore Admin PERMISSION_DENIED (awaiting project IAM grant).',
+      );
+    } else {
+      console.error('[Order Expiry Cron] Query error:', msg);
+    }
   } finally {
     orderExpiryCronState.inFlight = false;
   }
@@ -4166,6 +4922,30 @@ function startFirestoreAdminEmailWatcher(): void {
           ],
           String(d.customerEmail || 'firestore_watcher'),
         );
+        const customerEmail = String(d.customerEmail || '').trim();
+        if (customerEmail && markNotificationEventSent(`cust_order:${orderNumber}:pending`)) {
+          void sendCustomerOrderEmail({
+            toEmail: customerEmail,
+            customerName: String(d.customerName || ''),
+            orderNumber,
+            orderStatus: (String(d.orderStatus || 'pending') as
+              | 'pending'
+              | 'processing'
+              | 'completed'
+              | 'cancelled'
+              | 'expired'),
+            paymentStatus: (String(d.paymentStatus || 'pending') as 'pending' | 'verified' | 'rejected'),
+            productName: String(d.productName || 'Top-up'),
+            packageName: String(d.packageName || 'Package'),
+            playerUid: String(d.playerUid || ''),
+            serverId: String(d.serverId || ''),
+            totalAmount: Number(d.totalAmount || 0),
+            paymentMethodName: String(d.paymentMethodName || ''),
+            trxId: String(d.trxId || ''),
+            note: String(d.notificationMessage || ''),
+            isNewOrder: true,
+          });
+        }
       }
     },
     (err) => {

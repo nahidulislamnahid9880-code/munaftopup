@@ -30,7 +30,7 @@ import type {CustomerProfile, Order, SupportTicket} from '../../types';
 import {AdminLayout} from '../../components/admin/AdminLayout';
 
 export function CustomersManager() {
-  const {adminUser, firebaseUser} = useAuth();
+  const {adminUser, firebaseUser, adminFetch} = useAuth();
   const canEdit = adminUser?.role === 'super_admin' || adminUser?.permissions.customers;
 
   const [tab, setTab] = useState<'customers' | 'tickets'>('customers');
@@ -124,6 +124,25 @@ export function CustomersManager() {
         repliedBy: adminUser.email,
         updatedAt: now,
       });
+      if (replyTarget.customerEmail) {
+        void adminFetch('/api/admin/customer-email-event', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            toEmail: replyTarget.customerEmail,
+            customerName: replyTarget.customerName,
+            subject: `Support Reply: ${replyTarget.subject}`,
+            headline: 'Support Ticket Updated',
+            message: replyText.trim().slice(0, 1500),
+            rows: [
+              {label: 'Ticket ID', value: replyTarget.id},
+              {label: 'Subject', value: replyTarget.subject},
+              ...(replyTarget.orderNumber ? [{label: 'Order', value: replyTarget.orderNumber}] : []),
+              {label: 'Replied By', value: adminUser.email},
+            ],
+          }),
+        }).catch(() => null);
+      }
       setReplyTarget(null);
       setReplyText('');
     } catch (err) {
