@@ -54,6 +54,14 @@ export interface CommerceDeps {
     actorEmail: string,
   ) => Promise<{sent: boolean; reason?: string; toEmail?: string}>;
   sendCustomerOrderEmail: (params: any) => Promise<{sent: boolean; skipped?: boolean; reason?: string; toEmail?: string}>;
+  sendCustomerGenericEmail: (params: {
+    toEmail?: string;
+    customerName?: string;
+    subject: string;
+    headline: string;
+    rows: Array<{label: string; value: string}>;
+    message?: string;
+  }) => Promise<{sent: boolean; skipped?: boolean; reason?: string}>;
   sendTelegramOrderStatusUpdate: (params: any) => Promise<{sent: boolean; skipped?: boolean; reason?: string}>;
   notifyTelegramAdmins: (text: string, replyMarkup?: any) => Promise<void>;
   makeAdminOrderCallback: (orderId: string) => string;
@@ -121,6 +129,37 @@ function maskPlayerUid(uid: string): string {
   if (!cleaned) return 'N/A';
   if (cleaned.length <= 4) return '****';
   return `${cleaned.slice(0, 2)}${'*'.repeat(Math.max(2, cleaned.length - 4))}${cleaned.slice(-2)}`;
+}
+
+async function resolveSmsPaymentRef(adminDb: Firestore, rawTrxId: string) {
+  const upperTrx = rawTrxId.trim().toUpperCase();
+  const exactRef = adminDb.collection('sms_payments').doc(upperTrx);
+  const exactSnap = await exactRef.get();
+  if (exactSnap.exists) {
+    return exactRef;
+  }
+
+  // Case-insensitive fallback scan over unused records in case an entry was created with lowercase/mixed-case ID
+  const unusedSnap = await adminDb.collection('sms_payments').where('used', '==', false).get();
+  const matchedUnused = unusedSnap.docs.find((d) => {
+    const data = d.data() as Record<string, unknown>;
+    return (
+      d.id.trim().toUpperCase() === upperTrx ||
+      String(data.trxId || '').trim().toUpperCase() === upperTrx
+    );
+  });
+  if (matchedUnused) {
+    return matchedUnused.ref;
+  }
+
+  // Fallback check if any matching TrxID already exists in lowercase/mixed case as used
+  const lowerRef = adminDb.collection('sms_payments').doc(rawTrxId.trim().toLowerCase());
+  const lowerSnap = await lowerRef.get();
+  if (lowerSnap.exists) {
+    return lowerRef;
+  }
+
+  return exactRef;
 }
 
 function isFlashSaleCurrentlyActive(sale: Record<string, unknown>, productId: string): boolean {
@@ -749,7 +788,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
   });
 
   // Enhanced Server-Authoritative Order Creation (Promo + VIP Tier + Flash Sale + Vault PIN + Fraud Guard + SMS Auto-Verify + Distributor)
-  app.post('/api/orders/create-enhanced', deps.requireSignedInFirebase, async (req: any, res: Response) => {
+  const handleCreateOrder = async (req: any, res: Response) => {
     const uid = String(req.firebaseAuthUid || '').trim();
     if (!uid || !deps.adminDb) {
       res.status(401).json({error: 'Customer authentication required'});
@@ -778,19 +817,19 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
     const packageId = String(body.packageId || '').trim().slice(0, 128);
     const playerUid = String(body.playerUid || '').trim().slice(0, 80);
     const serverId = String(body.serverId || 'N/A').trim().slice(0, 80) || 'N/A';
-    const customerName = String(body.customerName || '').trim().slice(0, 100);
-    const customerPhone = String(body.customerPhone || '').trim().slice(0, 30);
+    const rawCustomerName = String(body.customerName || '').trim().slice(0, 100);
+    const rawCustomerPhone = String(body.customerPhone || '').trim().slice(0, 30);
     const paymentType = body.paymentType === 'wallet' ? 'wallet' : 'manual';
     const paymentMethodId = paymentType === 'wallet' ? 'wallet' : String(body.paymentMethodId || '').trim().slice(0, 128);
-    const senderNumber =
+    const rawSenderNumber =
       paymentType === 'wallet' ? 'WALLET' : String(body.senderNumber || '').trim().slice(0, 40);
     const rawTrxId = paymentType === 'wallet' ? '' : String(body.trxId || '').trim().toUpperCase().slice(0, 64);
     const screenshotUrl = String(body.screenshotUrl || '').trim().slice(0, 1000);
     const couponCode = String(body.couponCode || '').trim().toUpperCase().slice(0, 40);
     const confirmDuplicate = Boolean(body.confirmDuplicate);
 
-    if (!productId || !packageId || !customerName || customerPhone.length < 5) {
-      res.status(400).json({error: 'Missing required product, package, or customer details'});
+    if (!productId || !packageId) {
+      res.status(400).json({error: 'Missing required product or package ID'});
       return;
     }
 
@@ -800,7 +839,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
       await writeApiLog(deps.adminDb, {
         type: 'fraud_guard',
         orderNumber: 'BLOCKED',
-        endpoint: '/api/orders/create-enhanced',
+        endpoint: req.path || '/api/orders',
         status: 'failed',
         message: `Blocked checkout for UID ${uid} due to ${recentFailures} failed payment attempts in 1h.`,
       });
@@ -815,8 +854,8 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
         res.status(400).json({error: 'Select a payment method'});
         return;
       }
-      if (senderNumber.length < 3 || rawTrxId.length < 4) {
-        res.status(400).json({error: 'Provide valid sender number and TrxID (min 4 chars)'});
+      if (rawTrxId.length < 4) {
+        res.status(400).json({error: 'Provide a valid TrxID (min 4 chars)'});
         return;
       }
     }
@@ -949,21 +988,24 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
         return;
       }
 
-      // Check if an unused voucher PIN exists for this (productId, packageId)
-      const unusedPinsSnap = await deps.adminDb
-        .collection('voucherStock')
-        .where('productId', '==', productId)
-        .where('packageId', '==', packageId)
-        .where('status', '==', 'unused')
-        .limit(6)
-        .get();
+      // Check if an unused voucher PIN exists for this (productId, packageId) and resolve SMS payment ref (case-insensitive)
+      const [unusedPinsSnap, candidateSmsRef] = await Promise.all([
+        deps.adminDb
+          .collection('voucherStock')
+          .where('productId', '==', productId)
+          .where('packageId', '==', packageId)
+          .where('status', '==', 'unused')
+          .limit(6)
+          .get(),
+        paymentType === 'manual' ? resolveSmsPaymentRef(deps.adminDb, rawTrxId) : Promise.resolve(null),
+      ]);
       const candidatePinRef = !unusedPinsSnap.empty ? unusedPinsSnap.docs[0].ref : null;
       const remainingStockAfterClaim = Math.max(0, unusedPinsSnap.size - 1);
 
       const txResult = await deps.adminDb.runTransaction(async (tx) => {
         const custRef = deps.adminDb!.collection('customers').doc(uid);
         const trxRef = deps.adminDb!.collection('trxRegistry').doc(trxKey);
-        const smsRef = paymentType === 'manual' ? deps.adminDb!.collection('sms_payments').doc(rawTrxId) : null;
+        const smsRef = candidateSmsRef;
 
         const [custSnap, trxSnap, smsSnap, couponSnap, pinSnap] = await Promise.all([
           tx.get(custRef),
@@ -1071,16 +1113,34 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           }
         }
 
+        const resolvedCustomerName = (
+          rawCustomerName ||
+          String(cust.displayName || req.firebaseAuthName || 'Customer')
+        )
+          .trim()
+          .slice(0, 100);
+        const resolvedCustomerPhone = (
+          rawCustomerPhone.length >= 5
+            ? rawCustomerPhone
+            : String(cust.phone || '').trim().length >= 5
+              ? String(cust.phone).trim()
+              : 'Not Required'
+        ).slice(0, 30);
+        const resolvedSenderNumber =
+          paymentType === 'wallet'
+            ? 'WALLET'
+            : (rawSenderNumber.length >= 3 ? rawSenderNumber : resolvedCustomerPhone).slice(0, 40);
+
         const fraudFlag = fraudReasons.length > 0;
         const fraudScore = Math.min(100, fraudReasons.length * 40);
         const now = FieldValue.serverTimestamp();
 
         const notificationMessage = claimedVoucherCode
-          ? `Payment verified & voucher code delivered instantly (${claimedVoucherCode}).`
+          ? `Payment verified automatically & voucher code delivered instantly (${claimedVoucherCode}).`
           : paymentStatus === 'verified'
             ? paymentType === 'wallet'
               ? 'Paid via Wallet Balance. Top-up is processing.'
-              : 'Payment auto-verified via SMS! Your top-up is processing.'
+              : 'Payment verified automatically. Processing top-up.'
             : 'Order placed. Awaiting payment verification.';
 
         // ALL WRITES BELOW
@@ -1107,6 +1167,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           tx.update(smsRef, {
             used: true,
             usedAt: now,
+            usedOrderId: orderId,
             usedOrderNumber: orderNumber,
           });
         }
@@ -1131,9 +1192,9 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           id: orderId,
           orderNumber,
           customerUid: uid,
-          customerName,
+          customerName: resolvedCustomerName,
           customerEmail: String(req.firebaseAuthEmail || cust.email || ''),
-          customerPhone,
+          customerPhone: resolvedCustomerPhone,
           productId: product.id,
           productName: product.name,
           productImage: product.images?.[0] || '',
@@ -1159,7 +1220,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           paymentType,
           paymentMethodId,
           paymentMethodName,
-          senderNumber,
+          senderNumber: resolvedSenderNumber,
           trxId: finalTrxId,
           trxKey,
           screenshotUrl,
@@ -1216,9 +1277,9 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           packageName: selectedPkg.name,
           playerUid: product.requiresUid === false ? 'N/A' : playerUid,
           serverId: product.requiresServerId ? serverId : 'N/A',
-          customerName,
+          customerName: resolvedCustomerName,
           customerEmail: String(req.firebaseAuthEmail || cust.email || ''),
-          customerPhone,
+          customerPhone: resolvedCustomerPhone,
           paymentMethodName,
           trxId: finalTrxId,
           totalAmount,
@@ -1230,6 +1291,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           paymentStatus,
           orderStatus,
           claimedVoucherCode,
+          matchedSmsPayment,
           fraudFlag,
           fraudReasons,
         };
@@ -1238,6 +1300,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
       // Deduplicate watcher emails
       deps.markNotificationEventSent(`order:${txResult.orderNumber}`);
       deps.markNotificationEventSent(`cust_order:${txResult.orderNumber}:pending`);
+      deps.markNotificationEventSent(`cust_order:${txResult.orderNumber}:${txResult.orderStatus}`);
 
       if (txResult.claimedVoucherCode) {
         await writeApiLog(deps.adminDb, {
@@ -1322,10 +1385,12 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           trxId: txResult.trxId,
           voucherCode: txResult.claimedVoucherCode || undefined,
           note: txResult.claimedVoucherCode
-            ? 'Your payment is verified and your voucher code is ready above!'
-            : txResult.paymentStatus === 'verified'
-              ? 'Payment verified! Your top-up is queued for delivery.'
-              : 'Order received. Pending verification.',
+            ? 'Payment verified automatically and your voucher code is ready above!'
+            : txResult.matchedSmsPayment
+              ? 'Payment verified automatically. Processing top-up.'
+              : txResult.paymentStatus === 'verified'
+                ? 'Payment verified! Your top-up is queued for delivery.'
+                : 'Order received. Pending verification.',
           isNewOrder: txResult.orderStatus !== 'completed',
         });
       }
@@ -1336,6 +1401,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
         `🆔 UID: ${txResult.playerUid} | 💰 ৳${txResult.totalAmount}`,
         `💳 ${txResult.paymentMethodName} | TrxID: ${txResult.trxId}`,
         `👤 ${txResult.customerName} (${txResult.customerEmail})`,
+        ...(txResult.matchedSmsPayment ? [`✅ Payment auto-verified via SMS`] : []),
         ...(txResult.claimedVoucherCode ? [`🔑 Instant PIN delivered from Vault`] : []),
         ...(txResult.fraudFlag ? [`🚨 Flag: ${txResult.fraudReasons.join(', ')}`] : []),
       ].join('\n');
@@ -1353,6 +1419,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
         totalAmount: txResult.totalAmount,
         paymentStatus: txResult.paymentStatus,
         orderStatus: txResult.orderStatus,
+        autoVerified: txResult.matchedSmsPayment,
         voucherCode: txResult.claimedVoucherCode,
         couponDiscount: txResult.couponDiscount,
         tierDiscount: txResult.tierDiscount,
@@ -1366,12 +1433,269 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
         await writeApiLog(deps.adminDb, {
           type: 'fraud_guard',
           orderNumber: 'DUP_TRX',
-          endpoint: '/api/orders/create-enhanced',
+          endpoint: req.path || '/api/orders',
           status: 'failed',
           message: `Duplicate TrxID attempt by UID ${uid}: ${rawTrxId}`,
         });
         res.status(409).json({
           error: 'This Transaction ID (TrxID) has already been used. Please double check your payment.',
+        });
+        return;
+      }
+      res.status(400).json({error: msg});
+    }
+  };
+
+  app.post('/api/orders', deps.requireSignedInFirebase, handleCreateOrder);
+  app.post('/api/orders/create-enhanced', deps.requireSignedInFirebase, handleCreateOrder);
+
+  // Add Money (Wallet Deposit) with Instant SMS Auto-Approval against sms_payments
+  app.post('/api/wallet-topups/create', deps.requireSignedInFirebase, async (req: any, res: Response) => {
+    const uid = String(req.firebaseAuthUid || '').trim();
+    if (!uid || !deps.adminDb) {
+      res.status(401).json({error: 'Customer authentication required'});
+      return;
+    }
+
+    const body = (req.body || {}) as {
+      amount?: number | string;
+      paymentMethodId?: string;
+      trxId?: string;
+      senderNumber?: string;
+      screenshotUrl?: string;
+    };
+
+    const numAmount = Number(body.amount);
+    const paymentMethodId = String(body.paymentMethodId || '').trim().slice(0, 128);
+    const rawTrxId = String(body.trxId || '').trim().toUpperCase().slice(0, 64);
+    const rawSender = String(body.senderNumber || '').trim().slice(0, 40);
+    const screenshotUrl = String(body.screenshotUrl || '').trim().slice(0, 1000);
+
+    if (!Number.isFinite(numAmount) || numAmount < 10 || numAmount > 500000) {
+      res.status(400).json({error: 'Enter a valid amount between ৳10 and ৳500,000.'});
+      return;
+    }
+    if (!paymentMethodId) {
+      res.status(400).json({error: 'Select a payment gateway.'});
+      return;
+    }
+    if (rawTrxId.length < 4 || rawTrxId.length > 64) {
+      res.status(400).json({error: 'Enter a valid Transaction ID (TrxID) between 4 and 64 characters.'});
+      return;
+    }
+
+    const recentFailures = recordAndCountWindow(failedTrxAttempts, uid, 60 * 60 * 1000, false);
+    const cfg = normalizeCommerceSettings(deps.readStore().systemSettings?.commerce);
+    if (recentFailures >= cfg.fraudMaxFailedTrxPerHour) {
+      res.status(429).json({
+        error: 'Too many invalid or duplicate TrxID attempts. Please wait before trying again.',
+      });
+      return;
+    }
+
+    try {
+      const pmSnap = await deps.adminDb.collection('paymentMethods').doc(paymentMethodId).get();
+      if (!pmSnap.exists || pmSnap.data()?.active === false) {
+        res.status(400).json({error: 'Selected payment gateway is inactive or unavailable.'});
+        return;
+      }
+      const pmName = String(pmSnap.data()?.name || 'Mobile Banking').slice(0, 60);
+      const trxKey = `${paymentMethodId}_${rawTrxId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+      if (trxKey.length < 4) {
+        res.status(400).json({error: 'Enter a valid Transaction ID (TrxID).'});
+        return;
+      }
+
+      const topupId = `top_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+      const smsCandidateRef = await resolveSmsPaymentRef(deps.adminDb, rawTrxId);
+
+      const txResult = await deps.adminDb.runTransaction(async (tx) => {
+        const custRef = deps.adminDb!.collection('customers').doc(uid);
+        const trxRef = deps.adminDb!.collection('trxRegistry').doc(trxKey);
+        const topupRef = deps.adminDb!.collection('walletTopups').doc(topupId);
+
+        const [custSnap, trxSnap, smsSnap] = await Promise.all([
+          tx.get(custRef),
+          tx.get(trxRef),
+          tx.get(smsCandidateRef),
+        ]);
+
+        if (!custSnap.exists) {
+          throw new Error('Customer profile not initialized. Please refresh and try again.');
+        }
+        const cust = custSnap.data() as Record<string, unknown>;
+        if (cust.suspended === true) {
+          throw new Error(String(cust.suspendedReason || 'Suspended accounts cannot submit wallet deposits.'));
+        }
+        if (trxSnap.exists) {
+          throw new Error('DUPLICATE_TRX_ID');
+        }
+
+        let autoApproved = false;
+        let matchedSmsMethod = '';
+        let matchedSmsAmount = 0;
+        if (smsSnap.exists) {
+          const sms = smsSnap.data() as {used?: boolean; amount?: number; method?: string};
+          if (sms.used) {
+            throw new Error('DUPLICATE_TRX_ID');
+          }
+          const smsAmt = Number(sms.amount || 0);
+          if (smsAmt + 0.01 >= numAmount) {
+            autoApproved = true;
+            matchedSmsMethod = String(sms.method || pmName);
+            matchedSmsAmount = smsAmt;
+          }
+        }
+
+        const now = FieldValue.serverTimestamp();
+        const customerName = String(cust.displayName || req.firebaseAuthName || 'Customer')
+          .trim()
+          .slice(0, 100);
+        const customerEmail = String(req.firebaseAuthEmail || cust.email || '')
+          .trim()
+          .slice(0, 160);
+        const senderNumber = (
+          rawSender.length >= 5
+            ? rawSender
+            : String(cust.phone || '').trim().length >= 5
+              ? String(cust.phone).trim()
+              : 'Not Required'
+        ).slice(0, 40);
+
+        const topupStatus: 'pending' | 'approved' = autoApproved ? 'approved' : 'pending';
+        const prevBalance = Number(cust.walletBalance || 0);
+        const newWalletBalance = autoApproved
+          ? Number((prevBalance + numAmount).toFixed(2))
+          : prevBalance;
+
+        tx.set(trxRef, {
+          trxKey,
+          trxId: rawTrxId,
+          orderId: topupId,
+          customerUid: uid,
+          paymentMethodId,
+          amount: numAmount,
+          status: autoApproved ? 'verified' : 'pending',
+          createdAt: now,
+        });
+
+        tx.set(topupRef, {
+          id: topupId,
+          customerUid: uid,
+          customerName,
+          customerEmail,
+          amount: numAmount,
+          paymentMethodId,
+          paymentMethodName: pmName,
+          senderNumber,
+          trxId: rawTrxId,
+          trxKey,
+          screenshotUrl,
+          status: topupStatus,
+          adminNote: autoApproved
+            ? `Auto-approved via ${matchedSmsMethod} SMS (৳${matchedSmsAmount}).`
+            : '',
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        if (autoApproved) {
+          tx.update(smsCandidateRef, {
+            used: true,
+            usedAt: now,
+            usedOrderId: topupId,
+            usedOrderNumber: topupId,
+            usedType: 'wallet_topup',
+          });
+          tx.update(custRef, {
+            walletBalance: newWalletBalance,
+            updatedAt: now,
+          });
+          const notifId = `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+          tx.set(deps.adminDb!.collection('notifications').doc(notifId), {
+            id: notifId,
+            customerUid: uid,
+            orderId: topupId,
+            orderNumber: topupId,
+            title: `Wallet Deposit Approved — ৳${numAmount}`,
+            message: `Your Add Money deposit of ৳${numAmount} (${rawTrxId}) was verified automatically and credited to your wallet.`,
+            read: false,
+            createdAt: now,
+          });
+        }
+
+        return {
+          topupId,
+          status: topupStatus,
+          autoApproved,
+          amount: numAmount,
+          newWalletBalance,
+          customerName,
+          customerEmail,
+          pmName,
+          trxId: rawTrxId,
+        };
+      });
+
+      deps.markNotificationEventSent(`deposit:${txResult.trxId}`);
+
+      const timeStr = new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'});
+      void deps.sendAdminNotificationEmail(
+        txResult.autoApproved
+          ? `Wallet Deposit Auto-Approved (৳${txResult.amount})`
+          : `New Wallet Deposit Request (৳${txResult.amount})`,
+        [
+          {label: 'Deposit ID', value: txResult.topupId},
+          {label: 'Deposit Amount', value: `৳${txResult.amount}`},
+          {label: 'Payment Method', value: txResult.pmName},
+          {label: 'TrxID', value: txResult.trxId},
+          {label: 'Status', value: txResult.autoApproved ? 'APPROVED (Auto-Verified via SMS)' : 'PENDING REVIEW'},
+          {label: 'Customer Name', value: txResult.customerName},
+          {label: 'Customer Email', value: txResult.customerEmail || '—'},
+          {label: 'Time (BD)', value: timeStr},
+        ],
+        txResult.customerEmail || 'customer',
+      );
+
+      if (txResult.autoApproved && txResult.customerEmail) {
+        void deps.sendCustomerGenericEmail({
+          toEmail: txResult.customerEmail,
+          customerName: txResult.customerName,
+          subject: `Wallet Deposit Approved — ৳${txResult.amount}`,
+          headline: 'Your Wallet Deposit Has Been Credited Automatically!',
+          message: `We verified your ${txResult.pmName} payment automatically and added ৳${txResult.amount} to your wallet balance.`,
+          rows: [
+            {label: 'Deposit ID', value: txResult.topupId},
+            {label: 'Amount Credited', value: `৳${txResult.amount}`},
+            {label: 'Payment Method', value: txResult.pmName},
+            {label: 'TrxID', value: txResult.trxId},
+            {label: 'New Wallet Balance', value: `৳${txResult.newWalletBalance}`},
+          ],
+        });
+      }
+
+      const tgAlertText = [
+        txResult.autoApproved
+          ? `✅ Wallet Deposit Auto-Approved: ৳${txResult.amount}`
+          : `💰 New Wallet Deposit Request: ৳${txResult.amount}`,
+        `💳 ${txResult.pmName} | TrxID: ${txResult.trxId}`,
+        `👤 ${txResult.customerName} (${txResult.customerEmail || uid})`,
+        ...(txResult.autoApproved ? [`💵 New Wallet Balance: ৳${txResult.newWalletBalance}`] : []),
+      ].join('\n');
+      void deps.notifyTelegramAdmins(tgAlertText, {
+        inline_keyboard: [[{text: '🛡️ Open Admin Panel', callback_data: 'adm:home'}]],
+      });
+
+      res.status(201).json({
+        ok: true,
+        ...txResult,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to submit wallet deposit';
+      if (msg === 'DUPLICATE_TRX_ID') {
+        recordAndCountWindow(failedTrxAttempts, uid, 60 * 60 * 1000, true);
+        res.status(409).json({
+          error: 'This Transaction ID (TrxID) has already been submitted or used.',
         });
         return;
       }
@@ -1889,6 +2213,475 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
 
     res.json({ok: true});
   });
+}
+
+export interface SmsReconcileOutcome {
+  matched: boolean;
+  matchedType?: 'order' | 'wallet_topup';
+  orderId?: string;
+  orderNumber?: string;
+  orderStatus?: 'processing' | 'completed';
+  voucherCode?: string;
+  topupId?: string;
+  amount?: number;
+  newWalletBalance?: number;
+}
+
+export async function reconcilePendingTransactionsForSms(
+  deps: CommerceDeps,
+  sms: {
+    trxId: string;
+    amount: number;
+    method: string;
+  },
+): Promise<SmsReconcileOutcome> {
+  if (!deps.adminDb) return {matched: false};
+
+  const upperTrx = sms.trxId.trim().toUpperCase();
+  if (!upperTrx) return {matched: false};
+  const smsAmt = Number(sms.amount || 0);
+  if (!(smsAmt > 0)) return {matched: false};
+
+  const smsRef = await resolveSmsPaymentRef(deps.adminDb, upperTrx);
+
+  // 1. Check existing Pending Website Orders matching this TrxID (case-insensitive) & amount >= totalAmount
+  try {
+    const pendingOrdersSnap = await deps.adminDb
+      .collection('orders')
+      .where('paymentStatus', '==', 'pending')
+      .get();
+
+    const matchedOrderDoc = pendingOrdersSnap.docs.find((d) => {
+      const o = d.data() as Record<string, unknown>;
+      if (o.orderStatus !== 'pending') return false;
+      if (o.paymentType === 'wallet') return false;
+      const orderTrx = String(o.trxId || '').trim().toUpperCase();
+      const requiredTotal = Number(o.totalAmount || 0);
+      return orderTrx === upperTrx && requiredTotal > 0 && smsAmt + 0.01 >= requiredTotal;
+    });
+
+    if (matchedOrderDoc) {
+      const o = matchedOrderDoc.data() as Record<string, unknown>;
+      const productId = String(o.productId || '').trim();
+      const packageId = String(o.packageId || '').trim();
+      const unusedPinsSnap =
+        productId && packageId
+          ? await deps.adminDb
+              .collection('voucherStock')
+              .where('productId', '==', productId)
+              .where('packageId', '==', packageId)
+              .where('status', '==', 'unused')
+              .limit(6)
+              .get()
+          : null;
+      const candidatePinRef = unusedPinsSnap && !unusedPinsSnap.empty ? unusedPinsSnap.docs[0].ref : null;
+      const remainingStockAfterClaim = unusedPinsSnap ? Math.max(0, unusedPinsSnap.size - 1) : 0;
+
+      const orderTxOutcome = await deps.adminDb.runTransaction(async (tx) => {
+        const orderRef = matchedOrderDoc.ref;
+        const orderNumber = String(o.orderNumber || matchedOrderDoc.id).trim();
+        const trxKey = String(o.trxKey || '').trim();
+        const trackingRef = deps.adminDb!.collection('orderTracking').doc(orderNumber);
+        const trxRef = trxKey ? deps.adminDb!.collection('trxRegistry').doc(trxKey) : null;
+
+        const [smsSnap, freshOrderSnap, trxSnap, trackingSnap, pinSnap] = await Promise.all([
+          tx.get(smsRef),
+          tx.get(orderRef),
+          trxRef ? tx.get(trxRef) : Promise.resolve(null),
+          tx.get(trackingRef),
+          candidatePinRef ? tx.get(candidatePinRef) : Promise.resolve(null),
+        ]);
+
+        if (!smsSnap.exists || smsSnap.data()?.used === true) {
+          return null;
+        }
+        if (!freshOrderSnap.exists) return null;
+        const freshOrder = freshOrderSnap.data() as Record<string, unknown>;
+        if (freshOrder.paymentStatus !== 'pending' || freshOrder.orderStatus !== 'pending') {
+          return null;
+        }
+
+        let claimedVoucherCode = '';
+        if (pinSnap?.exists && pinSnap.data()?.status === 'unused') {
+          claimedVoucherCode = String(pinSnap.data()?.code || '').trim();
+        }
+
+        const nextOrderStatus: 'processing' | 'completed' = claimedVoucherCode ? 'completed' : 'processing';
+        const notificationMessage = claimedVoucherCode
+          ? `Payment verified automatically & voucher code delivered instantly (${claimedVoucherCode}).`
+          : 'Payment verified automatically. Processing top-up.';
+        const now = FieldValue.serverTimestamp();
+        const orderId = freshOrderSnap.id;
+
+        tx.update(smsRef, {
+          used: true,
+          usedAt: now,
+          usedOrderId: orderId,
+          usedOrderNumber: orderNumber,
+        });
+
+        tx.update(orderRef, {
+          paymentStatus: 'verified',
+          orderStatus: nextOrderStatus,
+          ...(claimedVoucherCode ? {voucherCode: claimedVoucherCode} : {}),
+          adminNote: claimedVoucherCode
+            ? `Auto-verified via incoming ${sms.method} SMS (৳${smsAmt}) & delivered PIN from Vault.`
+            : `Auto-verified via incoming ${sms.method} SMS (৳${smsAmt}).`,
+          notificationMessage,
+          updatedAt: now,
+          ...(nextOrderStatus === 'completed' ? {completedAt: now} : {}),
+        });
+
+        if (trackingSnap.exists) {
+          tx.update(trackingRef, {
+            paymentStatus: 'verified',
+            orderStatus: nextOrderStatus,
+            notificationMessage,
+            updatedAt: now,
+          });
+        } else {
+          tx.set(trackingRef, {
+            orderNumber,
+            productName: String(freshOrder.productName || 'Top-up').slice(0, 120),
+            packageName: String(freshOrder.packageName || 'Package').slice(0, 120),
+            playerUidMasked: maskPlayerUid(String(freshOrder.playerUid || 'N/A')),
+            paymentStatus: 'verified',
+            orderStatus: nextOrderStatus,
+            notificationMessage,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        if (trxRef && trxSnap?.exists) {
+          tx.update(trxRef, {status: 'verified'});
+        }
+
+        if (claimedVoucherCode && candidatePinRef) {
+          tx.update(candidatePinRef, {
+            status: 'claimed',
+            claimedOrderId: orderId,
+            claimedOrderNumber: orderNumber,
+            claimedAt: now,
+          });
+        }
+
+        const histId = `ph_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+        tx.set(deps.adminDb!.collection('paymentHistory').doc(histId), {
+          id: histId,
+          orderId,
+          orderNumber,
+          trxId: upperTrx,
+          paymentMethodName: String(freshOrder.paymentMethodName || sms.method).slice(0, 60),
+          senderNumber: String(freshOrder.senderNumber || 'N/A').slice(0, 40),
+          amount: Number(freshOrder.totalAmount || smsAmt),
+          action: 'approved',
+          note: `Auto-verified via incoming ${sms.method} SMS (৳${smsAmt}).`,
+          adminEmail: 'sms_auto_verifier',
+          createdAt: now,
+        });
+
+        const customerUid = String(freshOrder.customerUid || '').trim();
+        if (customerUid) {
+          const notifId = `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+          tx.set(deps.adminDb!.collection('notifications').doc(notifId), {
+            id: notifId,
+            customerUid,
+            orderId,
+            orderNumber,
+            title: claimedVoucherCode
+              ? `Order Completed — ${orderNumber}`
+              : `Payment Verified — ${orderNumber}`,
+            message: notificationMessage,
+            read: false,
+            createdAt: now,
+          });
+        }
+
+        return {
+          orderId,
+          orderNumber,
+          customerUid,
+          customerName: String(freshOrder.customerName || 'Customer'),
+          customerEmail: String(freshOrder.customerEmail || ''),
+          customerPhone: String(freshOrder.customerPhone || ''),
+          productId: String(freshOrder.productId || ''),
+          productName: String(freshOrder.productName || 'Top-up'),
+          packageId: String(freshOrder.packageId || ''),
+          packageName: String(freshOrder.packageName || 'Package'),
+          playerUid: String(freshOrder.playerUid || 'N/A'),
+          serverId: String(freshOrder.serverId || 'N/A'),
+          totalAmount: Number(freshOrder.totalAmount || 0),
+          paymentMethodName: String(freshOrder.paymentMethodName || sms.method),
+          orderStatus: nextOrderStatus,
+          claimedVoucherCode,
+          notificationMessage,
+        };
+      });
+
+      if (orderTxOutcome) {
+        deps.markNotificationEventSent(`cust_order:${orderTxOutcome.orderNumber}:verified`);
+        deps.markNotificationEventSent(`cust_order:${orderTxOutcome.orderNumber}:${orderTxOutcome.orderStatus}`);
+
+        if (orderTxOutcome.claimedVoucherCode) {
+          await writeApiLog(deps.adminDb, {
+            type: 'pin_vault',
+            orderNumber: orderTxOutcome.orderNumber,
+            endpoint: 'voucherStock',
+            status: 'success',
+            message: `Auto-claimed PIN after incoming SMS verification. Remaining unused in batch: ${remainingStockAfterClaim}.`,
+          });
+          if (remainingStockAfterClaim <= 5) {
+            void deps.notifyTelegramAdmins(
+              `⚠️ Low Voucher PIN Stock Alert!\n📦 ${orderTxOutcome.productName} · ${orderTxOutcome.packageName}\n🔑 Remaining unused PINs: ${remainingStockAfterClaim}`,
+            );
+          }
+        }
+
+        if (orderTxOutcome.orderStatus !== 'completed') {
+          void dispatchDistributorWithLog(deps, {
+            orderId: orderTxOutcome.orderId,
+            orderNumber: orderTxOutcome.orderNumber,
+            productId: orderTxOutcome.productId,
+            productName: orderTxOutcome.productName,
+            packageId: orderTxOutcome.packageId,
+            packageName: orderTxOutcome.packageName,
+            playerUid: orderTxOutcome.playerUid,
+            serverId: orderTxOutcome.serverId,
+            amount: orderTxOutcome.totalAmount,
+          });
+        } else {
+          void settleOrderCompletionEffects(deps, orderTxOutcome.orderId);
+        }
+
+        if (orderTxOutcome.customerEmail) {
+          void deps.sendCustomerOrderEmail({
+            toEmail: orderTxOutcome.customerEmail,
+            customerName: orderTxOutcome.customerName,
+            orderNumber: orderTxOutcome.orderNumber,
+            orderStatus: orderTxOutcome.orderStatus,
+            paymentStatus: 'verified',
+            productName: orderTxOutcome.productName,
+            packageName: orderTxOutcome.packageName,
+            playerUid: orderTxOutcome.playerUid,
+            serverId: orderTxOutcome.serverId,
+            totalAmount: orderTxOutcome.totalAmount,
+            paymentMethodName: orderTxOutcome.paymentMethodName,
+            trxId: upperTrx,
+            voucherCode: orderTxOutcome.claimedVoucherCode || undefined,
+            note: orderTxOutcome.notificationMessage,
+          });
+        }
+
+        void deps.sendTelegramOrderStatusUpdate({
+          orderNumber: orderTxOutcome.orderNumber,
+          orderStatus: orderTxOutcome.orderStatus,
+          paymentStatus: 'verified',
+          productName: orderTxOutcome.productName,
+          packageName: orderTxOutcome.packageName,
+          playerUid: orderTxOutcome.playerUid,
+          totalAmount: orderTxOutcome.totalAmount,
+          paymentMethodName: orderTxOutcome.paymentMethodName,
+          trxId: upperTrx,
+          voucherCode: orderTxOutcome.claimedVoucherCode || undefined,
+          note: orderTxOutcome.notificationMessage,
+          customerUid: orderTxOutcome.customerUid,
+        });
+
+        void deps.sendAdminNotificationEmail(
+          `Payment Auto-Verified via SMS — Order ${orderTxOutcome.orderNumber}`,
+          [
+            {label: 'Order Number', value: orderTxOutcome.orderNumber},
+            {label: 'Product', value: `${orderTxOutcome.productName} · ${orderTxOutcome.packageName}`},
+            {label: 'Amount', value: `৳${orderTxOutcome.totalAmount}`},
+            {label: 'SMS Received', value: `${sms.method} ৳${smsAmt}`},
+            {label: 'TrxID', value: upperTrx},
+            {label: 'New Order Status', value: orderTxOutcome.orderStatus.toUpperCase()},
+            {label: 'Customer', value: `${orderTxOutcome.customerName} (${orderTxOutcome.customerEmail || orderTxOutcome.customerUid})`},
+          ],
+          'sms_auto_verifier',
+        );
+
+        void deps.notifyTelegramAdmins(
+          [
+            `⚡ Order Auto-Verified by Incoming ${sms.method} SMS!`,
+            `🧾 Order: ${orderTxOutcome.orderNumber} (${orderTxOutcome.orderStatus.toUpperCase()})`,
+            `🎮 ${orderTxOutcome.productName} · ${orderTxOutcome.packageName}`,
+            `💰 ৳${orderTxOutcome.totalAmount} | 🔑 TrxID: ${upperTrx}`,
+            ...(orderTxOutcome.claimedVoucherCode ? [`🔑 Instant PIN Delivered`] : []),
+          ].join('\n'),
+          {
+            inline_keyboard: [
+              [
+                {
+                  text: `🔎 Inspect ${orderTxOutcome.orderNumber}`,
+                  callback_data: deps.makeAdminOrderCallback(orderTxOutcome.orderId),
+                },
+              ],
+            ],
+          },
+        );
+
+        return {
+          matched: true,
+          matchedType: 'order',
+          orderId: orderTxOutcome.orderId,
+          orderNumber: orderTxOutcome.orderNumber,
+          orderStatus: orderTxOutcome.orderStatus,
+          voucherCode: orderTxOutcome.claimedVoucherCode || undefined,
+          amount: orderTxOutcome.totalAmount,
+        };
+      }
+    }
+  } catch (err) {
+    console.error('[SMS Reconcile Orders] Error:', err instanceof Error ? err.message : err);
+  }
+
+  // 2. Check existing Pending Add Money Wallet Deposits matching this TrxID (case-insensitive) & amount >= topup.amount
+  try {
+    const pendingTopupsSnap = await deps.adminDb
+      .collection('walletTopups')
+      .where('status', '==', 'pending')
+      .get();
+
+    const matchedTopupDoc = pendingTopupsSnap.docs.find((d) => {
+      const t = d.data() as Record<string, unknown>;
+      const topupTrx = String(t.trxId || '').trim().toUpperCase();
+      const requiredAmt = Number(t.amount || 0);
+      return topupTrx === upperTrx && requiredAmt > 0 && smsAmt + 0.01 >= requiredAmt;
+    });
+
+    if (matchedTopupDoc) {
+      const t = matchedTopupDoc.data() as Record<string, unknown>;
+      const topupTxOutcome = await deps.adminDb.runTransaction(async (tx) => {
+        const topupRef = matchedTopupDoc.ref;
+        const customerUid = String(t.customerUid || '').trim();
+        if (!customerUid) return null;
+        const custRef = deps.adminDb!.collection('customers').doc(customerUid);
+        const trxKey = String(t.trxKey || '').trim();
+        const trxRef = trxKey ? deps.adminDb!.collection('trxRegistry').doc(trxKey) : null;
+
+        const [smsSnap, freshTopupSnap, custSnap, trxSnap] = await Promise.all([
+          tx.get(smsRef),
+          tx.get(topupRef),
+          tx.get(custRef),
+          trxRef ? tx.get(trxRef) : Promise.resolve(null),
+        ]);
+
+        if (!smsSnap.exists || smsSnap.data()?.used === true) return null;
+        if (!freshTopupSnap.exists || !custSnap.exists) return null;
+        const freshTopup = freshTopupSnap.data() as Record<string, unknown>;
+        if (freshTopup.status !== 'pending') return null;
+
+        const topupAmount = Number(freshTopup.amount || 0);
+        const prevBalance = Number(custSnap.data()?.walletBalance || 0);
+        const newWalletBalance = Number((prevBalance + topupAmount).toFixed(2));
+        const now = FieldValue.serverTimestamp();
+        const topupId = freshTopupSnap.id;
+
+        tx.update(smsRef, {
+          used: true,
+          usedAt: now,
+          usedOrderId: topupId,
+          usedOrderNumber: topupId,
+          usedType: 'wallet_topup',
+        });
+
+        tx.update(topupRef, {
+          status: 'approved',
+          adminNote: `Auto-approved via incoming ${sms.method} SMS (৳${smsAmt}).`,
+          updatedAt: now,
+        });
+
+        tx.update(custRef, {
+          walletBalance: newWalletBalance,
+          updatedAt: now,
+        });
+
+        if (trxRef && trxSnap?.exists) {
+          tx.update(trxRef, {status: 'verified'});
+        }
+
+        const notifId = `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+        tx.set(deps.adminDb!.collection('notifications').doc(notifId), {
+          id: notifId,
+          customerUid,
+          orderId: topupId,
+          orderNumber: topupId,
+          title: `Wallet Deposit Approved — ৳${topupAmount}`,
+          message: `Your Add Money deposit of ৳${topupAmount} (${upperTrx}) was verified automatically and credited to your wallet.`,
+          read: false,
+          createdAt: now,
+        });
+
+        return {
+          topupId,
+          customerUid,
+          customerName: String(freshTopup.customerName || custSnap.data()?.displayName || 'Customer'),
+          customerEmail: String(freshTopup.customerEmail || custSnap.data()?.email || ''),
+          paymentMethodName: String(freshTopup.paymentMethodName || sms.method),
+          amount: topupAmount,
+          newWalletBalance,
+        };
+      });
+
+      if (topupTxOutcome) {
+        deps.markNotificationEventSent(`deposit:${upperTrx}`);
+
+        if (topupTxOutcome.customerEmail) {
+          void deps.sendCustomerGenericEmail({
+            toEmail: topupTxOutcome.customerEmail,
+            customerName: topupTxOutcome.customerName,
+            subject: `Wallet Deposit Approved — ৳${topupTxOutcome.amount}`,
+            headline: 'Your Wallet Deposit Has Been Credited Automatically!',
+            message: `We verified your ${topupTxOutcome.paymentMethodName} payment automatically via SMS and added ৳${topupTxOutcome.amount} to your wallet balance.`,
+            rows: [
+              {label: 'Deposit ID', value: topupTxOutcome.topupId},
+              {label: 'Amount Credited', value: `৳${topupTxOutcome.amount}`},
+              {label: 'Payment Method', value: topupTxOutcome.paymentMethodName},
+              {label: 'TrxID', value: upperTrx},
+              {label: 'New Wallet Balance', value: `৳${topupTxOutcome.newWalletBalance}`},
+            ],
+          });
+        }
+
+        void deps.sendAdminNotificationEmail(
+          `Wallet Deposit Auto-Approved via SMS (৳${topupTxOutcome.amount})`,
+          [
+            {label: 'Deposit ID', value: topupTxOutcome.topupId},
+            {label: 'Amount Credited', value: `৳${topupTxOutcome.amount}`},
+            {label: 'SMS Received', value: `${sms.method} ৳${smsAmt}`},
+            {label: 'TrxID', value: upperTrx},
+            {label: 'Customer', value: `${topupTxOutcome.customerName} (${topupTxOutcome.customerEmail || topupTxOutcome.customerUid})`},
+            {label: 'New Wallet Balance', value: `৳${topupTxOutcome.newWalletBalance}`},
+          ],
+          'sms_auto_verifier',
+        );
+
+        void deps.notifyTelegramAdmins(
+          [
+            `⚡ Wallet Deposit Auto-Approved by Incoming ${sms.method} SMS!`,
+            `💰 Credited: ৳${topupTxOutcome.amount} | TrxID: ${upperTrx}`,
+            `👤 ${topupTxOutcome.customerName} (${topupTxOutcome.customerEmail || topupTxOutcome.customerUid})`,
+            `💵 New Balance: ৳${topupTxOutcome.newWalletBalance}`,
+          ].join('\n'),
+          {inline_keyboard: [[{text: '🛡️ Open Admin Panel', callback_data: 'adm:home'}]]},
+        );
+
+        return {
+          matched: true,
+          matchedType: 'wallet_topup',
+          topupId: topupTxOutcome.topupId,
+          amount: topupTxOutcome.amount,
+          newWalletBalance: topupTxOutcome.newWalletBalance,
+        };
+      }
+    }
+  } catch (err) {
+    console.error('[SMS Reconcile WalletTopups] Error:', err instanceof Error ? err.message : err);
+  }
+
+  return {matched: false};
 }
 
 function pRefFallback<T>(ref: T): T {

@@ -227,6 +227,9 @@ export function AdminSettings() {
     firebaseProjectId: string;
     firestoreDatabaseId: string;
     firestoreConnected: boolean;
+    emailTransport?: 'brevo' | 'smtp' | 'none';
+    brevoConfigured?: boolean;
+    brevoSenderConfigured?: boolean;
     smsWebhookConfigured: boolean;
     telegramBotConfigured: boolean;
     telegramBotRunning: boolean;
@@ -816,7 +819,7 @@ export function AdminSettings() {
                 <Mail className="w-4 h-4 text-blue-600" /> Server SMTP &amp; Email Alerts
               </h2>
               <p className="text-xs text-slate-600 dark:text-slate-400">
-                Customer orders, support complaints/tickets, and wallet deposits automatically notify the recipient email below. For Gmail, use host <code className="font-mono">smtp.gmail.com</code>, port <code className="font-mono">587</code>, your Gmail address as Username, and a 16-character Google App Password (or set <code className="font-mono">SMTP_USER</code> / <code className="font-mono">SMTP_PASSWORD</code> or <code className="font-mono">EMAIL_USER</code> / <code className="font-mono">EMAIL_PASS</code> env vars on Render).
+                Customer orders, support complaints/tickets, and wallet deposits automatically notify the recipient email below. When <code className="font-mono">BREVO_API_KEY</code> and <code className="font-mono">BREVO_SENDER_EMAIL</code> are set, emails are sent over HTTPS via Brevo REST API (recommended on Render to bypass SMTP port limits). Otherwise Nodemailer SMTP is used.
               </p>
               <div className="flex flex-wrap gap-4">
                 <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
@@ -1266,6 +1269,25 @@ export function AdminSettings() {
                     <span className="text-slate-500 block">SMS Webhook Secret</span>
                     <span className={`font-bold ${autoStatus.smsWebhookConfigured ? 'text-emerald-600' : 'text-amber-600'}`}>
                       {autoStatus.smsWebhookConfigured ? 'Configured & Protected' : 'Missing SMS_WEBHOOK_SECRET'}
+                    </span>
+                    <span className="block text-[11px] text-slate-500 mt-1">
+                      Mail:{' '}
+                      <strong
+                        className={
+                          autoStatus.emailTransport === 'brevo'
+                            ? 'text-emerald-600'
+                            : autoStatus.emailTransport === 'smtp'
+                              ? 'text-blue-600'
+                              : 'text-amber-600'
+                        }>
+                        {autoStatus.emailTransport === 'brevo'
+                          ? autoStatus.brevoSenderConfigured
+                            ? 'Brevo REST API (HTTPS)'
+                            : 'Brevo (Missing BREVO_SENDER_EMAIL)'
+                          : autoStatus.emailTransport === 'smtp'
+                            ? 'Nodemailer SMTP'
+                            : 'Not Configured'}
+                      </strong>
                     </span>
                   </div>
                   <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">

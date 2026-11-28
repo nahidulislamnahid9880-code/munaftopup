@@ -40,6 +40,7 @@ interface ConfirmedOrderResult {
   totalAmount: number;
   paymentStatus: string;
   orderStatus: string;
+  autoVerified?: boolean;
   voucherCode?: string;
   fraudFlag?: boolean;
 }
@@ -285,6 +286,7 @@ export function CheckoutPage() {
         totalAmount?: number;
         paymentStatus?: string;
         orderStatus?: string;
+        autoVerified?: boolean;
         voucherCode?: string;
         fraudFlag?: boolean;
       };
@@ -299,12 +301,17 @@ export function CheckoutPage() {
       }
 
       setDuplicateOrderWarning(null);
-      toast.success(`Order ${payload.orderNumber} placed!`);
+      toast.success(
+        payload.autoVerified
+          ? `Order ${payload.orderNumber} placed & payment verified automatically!`
+          : `Order ${payload.orderNumber} placed!`,
+      );
       setConfirmedResult({
         orderNumber: payload.orderNumber,
         totalAmount: payload.totalAmount ?? finalTotal,
         paymentStatus: payload.paymentStatus || 'pending',
         orderStatus: payload.orderStatus || 'pending',
+        autoVerified: payload.autoVerified,
         voucherCode: payload.voucherCode,
         fraudFlag: payload.fraudFlag,
       });
@@ -367,9 +374,11 @@ export function CheckoutPage() {
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300">
                 {confirmedResult.voucherCode
                   ? 'Payment verified & your Voucher PIN has been delivered automatically!'
-                  : confirmedResult.paymentStatus === 'verified'
-                    ? t('checkout.placedWallet')
-                    : t('checkout.placedManual')}
+                  : confirmedResult.autoVerified
+                    ? 'Payment verified automatically. Processing top-up.'
+                    : confirmedResult.paymentStatus === 'verified'
+                      ? t('checkout.placedWallet')
+                      : t('checkout.placedManual')}
               </p>
             </div>
             <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-4 space-y-1">

@@ -9,14 +9,10 @@ import {
 } from 'lucide-react';
 import {
   collection,
-  doc,
-  getDoc,
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp,
   where,
-  writeBatch,
 } from 'firebase/firestore';
 import {useAuth} from '../../contexts/AuthContext';
 import {useLanguage} from '../../contexts/LanguageContext';
@@ -27,7 +23,6 @@ import {
   db,
   formatCurrency,
   handleFirestoreError,
-  normalizeTrxKey,
   timestampToMillis,
 } from '../../lib/firebase';
 import type {WalletTopup} from '../../types';
@@ -124,117 +119,52 @@ export function AddMoneyPage() {
 
     setSubmitting(true);
     try {
-      const trxKey = normalizeTrxKey(selectedMethod.id, trxId);
-      if (trxKey.length < 4) {
-        fail('Enter a valid Transaction ID (TrxID).');
-        setSubmitting(false);
-        return;
-      }
-
-      try {
-        const existingTrx = await getDoc(doc(db, 'trxRegistry', trxKey));
-        if (existingTrx.exists()) {
-          fail('This Transaction ID (TrxID) has already been submitted. Duplicate TrxIDs are blocked.');
-          setSubmitting(false);
-          return;
-        }
-      } catch (checkErr) {
-        const checkMsg = checkErr instanceof Error ? checkErr.message.toLowerCase() : '';
-        if (checkMsg.includes('permission')) {
-          fail('This Transaction ID (TrxID) has already been submitted. Duplicate TrxIDs are blocked.');
-          setSubmitting(false);
-          return;
-        }
-        throw checkErr;
-      }
-
-      const topupId = `top_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      const now = serverTimestamp();
-      const batch = writeBatch(db);
-
+      const cleanTrx = trxId.trim().toUpperCase().slice(0, 64);
+      const token = await firebaseUser.getIdToken();
       const defaultSender =
         customerProfile?.phone?.trim() && customerProfile.phone.trim().length >= 5
           ? customerProfile.phone.trim()
           : 'Not Required';
 
-      batch.set(doc(db, 'walletTopups', topupId), {
-        id: topupId,
-        customerUid: firebaseUser.uid,
-        customerName: (customerProfile?.displayName || firebaseUser.displayName || 'Customer').slice(0, 100),
-        customerEmail: (firebaseUser.email || '').slice(0, 160),
-        amount: numAmount,
-        paymentMethodId: selectedMethod.id,
-        paymentMethodName: selectedMethod.name.slice(0, 60),
-        senderNumber: defaultSender.slice(0, 40),
-        trxId: trxId.trim().toUpperCase().slice(0, 64),
-        trxKey,
-        screenshotUrl: '',
-        status: 'pending',
-        adminNote: '',
-        createdAt: now,
-        updatedAt: now,
+      const res = await fetch('/api/wallet-topups/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          amount: numAmount,
+          paymentMethodId: selectedMethod.id,
+          trxId: cleanTrx,
+          senderNumber: defaultSender,
+        }),
       });
 
-      batch.set(doc(db, 'trxRegistry', trxKey), {
-        trxKey,
-        trxId: trxId.trim().toUpperCase().slice(0, 64),
-        orderId: topupId,
-        customerUid: firebaseUser.uid,
-        paymentMethodId: selectedMethod.id,
-        amount: numAmount,
-        status: 'pending',
-        createdAt: now,
-      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        autoApproved?: boolean;
+        amount?: number;
+        newWalletBalance?: number;
+      };
 
-      await batch.commit();
-
-      const submittedTrx = trxId.trim().toUpperCase();
-      const submittedMethod = selectedMethod.name;
-      void (async () => {
-        try {
-          const token = await firebaseUser.getIdToken();
-          const notifyRes = await fetch('/api/notify/admin', {
-            method: 'POST',
-            keepalive: true,
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              type: 'deposit',
-              details: {
-                amount: formatCurrency(numAmount),
-                paymentMethod: submittedMethod,
-                trxId: submittedTrx,
-                customerName: customerProfile?.displayName || firebaseUser.displayName || 'Customer',
-                customerEmail: firebaseUser.email || '',
-              },
-            }),
-          });
-          if (!notifyRes.ok) {
-            console.error('Deposit admin notify HTTP error:', notifyRes.status);
-          } else {
-            const notifyData = (await notifyRes.json()) as {sent?: boolean; reason?: string};
-            if (notifyData.sent === false) {
-              console.warn('Deposit admin email skipped:', notifyData.reason);
-            }
-          }
-        } catch (notifyErr) {
-          console.error('Deposit admin notify request failed:', notifyErr);
-        }
-      })();
+      if (!res.ok || !data.ok) {
+        fail(data.error || 'Unable to submit deposit. Please verify your TrxID and try again.');
+        return;
+      }
 
       setTrxId('');
-      const msg = `Deposit request for ${formatCurrency(numAmount)} submitted! Wallet balance updates automatically once verified.`;
-      setSuccessMsg(msg);
-      toast.success(`Deposit request for ${formatCurrency(numAmount)} submitted`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('already exists')) {
-        fail('Unable to submit deposit: verify your TrxID is unique and your account is active.');
+      if (data.autoApproved) {
+        const msg = `Deposit of ${formatCurrency(numAmount)} verified automatically and credited to your wallet!`;
+        setSuccessMsg(msg);
+        toast.success(`৳${numAmount} added to your wallet instantly!`);
       } else {
-        handleFirestoreError(err, OperationType.WRITE, 'walletTopups');
+        const msg = `Deposit request for ${formatCurrency(numAmount)} submitted! Wallet balance updates automatically once verified.`;
+        setSuccessMsg(msg);
+        toast.success(`Deposit request for ${formatCurrency(numAmount)} submitted`);
       }
+    } catch (err) {
+      fail(err instanceof Error ? err.message : 'Unable to submit deposit request.');
     } finally {
       setSubmitting(false);
     }

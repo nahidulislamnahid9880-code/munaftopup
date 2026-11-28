@@ -21,8 +21,11 @@ import {
 import {
   DEFAULT_COMMERCE_SETTINGS,
   normalizeCommerceSettings,
+  reconcilePendingTransactionsForSms,
   registerCommerceRoutes,
+  type CommerceDeps,
   type CommerceSettings,
+  type SmsReconcileOutcome,
 } from './server-commerce.ts';
 
 dotenv.config();
@@ -647,15 +650,43 @@ function resolveSmtpConfig(store: AdminStoreData) {
     process.env.ADMIN_EMAIL ||
     DEFAULT_NOTIFICATION_EMAIL
   ).trim();
+
+  const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
+  const brevoSenderEmail = (process.env.BREVO_SENDER_EMAIL || '').trim();
+  const useBrevo = Boolean(brevoApiKey);
+  const resolvedBrevoSender =
+    isValidEmailAddress(brevoSenderEmail) ||
+    isValidEmailAddress(process.env.SMTP_USER) ||
+    isValidEmailAddress(process.env.EMAIL_USER) ||
+    isValidEmailAddress(fromEmail) ||
+    isValidEmailAddress(user);
+
   const envConfigured = Boolean(
     (process.env.SMTP_USER && process.env.SMTP_PASSWORD) ||
       (process.env.EMAIL_USER && process.env.EMAIL_PASS) ||
       (process.env.GMAIL_USER && process.env.GMAIL_PASS),
   );
   const smtpReady = Boolean((s.smtpEnabled || envConfigured) && host && user && pass);
-  const enabled = Boolean(smtpReady && toEmail);
-  const customerEnabled = Boolean(smtpReady && s.customerEmailNotificationsEnabled !== false);
-  return {host, port, user, pass, fromEmail, toEmail, enabled, customerEnabled, envConfigured};
+  const transportReady = useBrevo ? Boolean(resolvedBrevoSender) : smtpReady;
+  const enabled = Boolean(transportReady && toEmail);
+  const customerEnabled = Boolean(transportReady && s.customerEmailNotificationsEnabled !== false);
+  const mailTransport: 'brevo' | 'smtp' | 'none' = useBrevo ? 'brevo' : smtpReady ? 'smtp' : 'none';
+
+  return {
+    host,
+    port,
+    user,
+    pass,
+    fromEmail,
+    toEmail,
+    brevoApiKey,
+    brevoSenderEmail: resolvedBrevoSender,
+    useBrevo,
+    mailTransport,
+    enabled,
+    customerEnabled,
+    envConfigured,
+  };
 }
 
 function isValidEmailAddress(email: string | undefined | null): string {
@@ -665,18 +696,105 @@ function isValidEmailAddress(email: string | undefined | null): string {
   return cleaned;
 }
 
+async function dispatchEmailTransport(
+  cfg: ReturnType<typeof resolveSmtpConfig>,
+  params: {
+    senderName?: string;
+    toEmail: string;
+    subject: string;
+    text: string;
+    html: string;
+  },
+): Promise<'brevo' | 'smtp'> {
+  if (cfg.useBrevo) {
+    const senderEmail =
+      cfg.brevoSenderEmail ||
+      isValidEmailAddress(process.env.SMTP_USER) ||
+      isValidEmailAddress(process.env.EMAIL_USER) ||
+      isValidEmailAddress(cfg.fromEmail) ||
+      isValidEmailAddress(cfg.user);
+    if (!senderEmail) {
+      throw new Error('BREVO_SENDER_EMAIL (or SMTP_USER / EMAIL_USER) is missing or invalid while BREVO_API_KEY is set.');
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': cfg.brevoApiKey,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          sender: {
+            name: (params.senderName || 'MUNAFTOPUP.bd').replace(/"/g, '').slice(0, 80),
+            email: senderEmail,
+          },
+          to: [{email: params.toEmail}],
+          subject: params.subject,
+          htmlContent: params.html,
+          textContent: params.text,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        let detail = errText.slice(0, 300);
+        try {
+          const parsed = JSON.parse(errText) as {message?: string; code?: string};
+          if (parsed.message) {
+            detail = `${parsed.code ? `[${parsed.code}] ` : ''}${parsed.message}`;
+          }
+        } catch {
+          // keep raw text
+        }
+        throw new Error(`Brevo API HTTP ${resp.status}: ${detail || 'Failed to send email'}`);
+      }
+      return 'brevo';
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.port === 465,
+    auth: {user: cfg.user, pass: cfg.pass},
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 15000,
+  });
+  const fromAddr = cfg.fromEmail || cfg.user;
+  await transporter.sendMail({
+    from: params.senderName ? `"${params.senderName.replace(/"/g, '')}" <${fromAddr}>` : fromAddr,
+    to: params.toEmail,
+    subject: params.subject,
+    text: params.text,
+    html: params.html,
+  });
+  return 'smtp';
+}
+
 async function sendAdminNotificationEmail(
   subject: string,
   rows: Array<{label: string; value: string}>,
   actorEmail: string,
-): Promise<{sent: boolean; reason?: string; toEmail?: string}> {
+): Promise<{sent: boolean; reason?: string; toEmail?: string; transport?: 'brevo' | 'smtp'}> {
   const store = readStore();
   const cfg = resolveSmtpConfig(store);
 
   if (!cfg.enabled) {
     const missingParts: string[] = [];
-    if (!cfg.user) missingParts.push('SMTP_USER / EMAIL_USER');
-    if (!cfg.pass) missingParts.push('SMTP_PASSWORD / EMAIL_PASS');
+    if (cfg.useBrevo) {
+      if (!cfg.brevoSenderEmail) missingParts.push('BREVO_SENDER_EMAIL (or SMTP_USER / EMAIL_USER)');
+    } else {
+      if (!cfg.user) missingParts.push('SMTP_USER / EMAIL_USER');
+      if (!cfg.pass) missingParts.push('SMTP_PASSWORD / EMAIL_PASS');
+    }
     if (!cfg.toEmail) missingParts.push('NOTIFICATION_EMAIL');
     const detail =
       missingParts.length > 0
@@ -718,26 +836,22 @@ async function sendAdminNotificationEmail(
   `;
 
   try {
-    const transporter = nodemailer.createTransport({
-      host: cfg.host,
-      port: cfg.port,
-      secure: cfg.port === 465,
-      auth: {user: cfg.user, pass: cfg.pass},
-      connectionTimeout: 12000,
-      greetingTimeout: 12000,
-      socketTimeout: 15000,
-    });
-    await transporter.sendMail({
-      from: cfg.fromEmail || cfg.user,
-      to: cfg.toEmail,
+    const transport = await dispatchEmailTransport(cfg, {
+      senderName: botSharedStoreCache?.brandName || 'MUNAFTOPUP.bd',
+      toEmail: cfg.toEmail,
       subject,
       text: textBody,
       html: htmlBody,
     });
-    console.log(`[Admin Email Sent] "${subject}" -> ${cfg.toEmail}`);
-    appendServerLog(store, actorEmail, 'EMAIL_NOTIFY_SENT', `Sent "${subject}" to ${cfg.toEmail}`);
+    console.log(`[Admin Email Sent via ${transport.toUpperCase()}] "${subject}" -> ${cfg.toEmail}`);
+    appendServerLog(
+      store,
+      actorEmail,
+      'EMAIL_NOTIFY_SENT',
+      `Sent "${subject}" to ${cfg.toEmail} (${transport})`,
+    );
     writeStore(store);
-    return {sent: true, toEmail: cfg.toEmail};
+    return {sent: true, toEmail: cfg.toEmail, transport};
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Admin Email Failed] "${subject}" -> ${msg}`);
@@ -779,9 +893,11 @@ async function sendCustomerOrderEmail(
     const reason =
       store.systemSettings.customerEmailNotificationsEnabled === false
         ? 'Customer order emails disabled in Admin Settings'
-        : !cfg.user || !cfg.pass
-          ? 'SMTP credentials missing'
-          : 'Outbound SMTP disabled in Admin Settings';
+        : cfg.useBrevo && !cfg.brevoSenderEmail
+          ? 'BREVO_SENDER_EMAIL missing'
+          : !cfg.user || !cfg.pass
+            ? 'SMTP credentials missing'
+            : 'Outbound email disabled in Admin Settings';
     return {sent: false, skipped: true, reason, toEmail: recipient};
   }
 
@@ -923,28 +1039,19 @@ async function sendCustomerOrderEmail(
   `;
 
   try {
-    const transporter = nodemailer.createTransport({
-      host: cfg.host,
-      port: cfg.port,
-      secure: cfg.port === 465,
-      auth: {user: cfg.user, pass: cfg.pass},
-      connectionTimeout: 12000,
-      greetingTimeout: 12000,
-      socketTimeout: 15000,
-    });
-    await transporter.sendMail({
-      from: `"${brandName}" <${cfg.fromEmail || cfg.user}>`,
-      to: recipient,
+    const transport = await dispatchEmailTransport(cfg, {
+      senderName: brandName,
+      toEmail: recipient,
       subject,
       text: textLines.join('\n'),
       html: htmlBody,
     });
-    console.log(`[Customer Email Sent] "${subject}" -> ${recipient}`);
+    console.log(`[Customer Email Sent via ${transport.toUpperCase()}] "${subject}" -> ${recipient}`);
     appendServerLog(
       store,
       'customer_email',
       'CUSTOMER_EMAIL_SENT',
-      `Sent "${subject}" to ${recipient}`,
+      `Sent "${subject}" to ${recipient} (${transport})`,
     );
     writeStore(store);
     return {sent: true, toEmail: recipient};
@@ -976,7 +1083,7 @@ async function sendCustomerGenericEmail(params: {
   const store = readStore();
   const cfg = resolveSmtpConfig(store);
   if (!cfg.customerEnabled) {
-    return {sent: false, skipped: true, reason: 'Customer SMTP email notifications not enabled'};
+    return {sent: false, skipped: true, reason: 'Customer email notifications not enabled'};
   }
 
   const brandName = botSharedStoreCache?.brandName || 'MUNAFTOPUP.bd';
@@ -1018,23 +1125,19 @@ async function sendCustomerGenericEmail(params: {
   `;
 
   try {
-    const transporter = nodemailer.createTransport({
-      host: cfg.host,
-      port: cfg.port,
-      secure: cfg.port === 465,
-      auth: {user: cfg.user, pass: cfg.pass},
-      connectionTimeout: 12000,
-      greetingTimeout: 12000,
-      socketTimeout: 15000,
-    });
-    await transporter.sendMail({
-      from: `"${brandName}" <${cfg.fromEmail || cfg.user}>`,
-      to: recipient,
+    const transport = await dispatchEmailTransport(cfg, {
+      senderName: brandName,
+      toEmail: recipient,
       subject: `[${brandName}] ${params.subject}`,
       text: textBody,
       html: htmlBody,
     });
-    appendServerLog(store, 'customer_email', 'CUSTOMER_EMAIL_SENT', `Sent "${params.subject}" to ${recipient}`);
+    appendServerLog(
+      store,
+      'customer_email',
+      'CUSTOMER_EMAIL_SENT',
+      `Sent "${params.subject}" to ${recipient} (${transport})`,
+    );
     writeStore(store);
     return {sent: true};
   } catch (err) {
@@ -1155,6 +1258,7 @@ async function recordSmsPaymentInFirestore(params: {
       duplicate: boolean;
       used: boolean;
       parsed: ParsedSmsPayment;
+      reconciled?: SmsReconcileOutcome;
     }
   | {
       ok: false;
@@ -1175,8 +1279,13 @@ async function recordSmsPaymentInFirestore(params: {
   const result = await adminDb.runTransaction(async (tx) => {
     const snap = await tx.get(docRef);
     if (snap.exists) {
-      const existing = snap.data() as {used?: boolean};
-      return {duplicate: true, used: Boolean(existing.used)};
+      const existing = snap.data() as {used?: boolean; amount?: number; method?: string};
+      return {
+        duplicate: true,
+        used: Boolean(existing.used),
+        amount: Number(existing.amount || parsed.amount),
+        method: String(existing.method || parsed.method),
+      };
     }
     tx.set(docRef, {
       trxId: parsed.trxId,
@@ -1186,7 +1295,12 @@ async function recordSmsPaymentInFirestore(params: {
       used: false,
       receivedAt: FieldValue.serverTimestamp(),
     });
-    return {duplicate: false, used: false};
+    return {
+      duplicate: false,
+      used: false,
+      amount: parsed.amount,
+      method: parsed.method,
+    };
   });
 
   if (!result.duplicate) {
@@ -1200,11 +1314,25 @@ async function recordSmsPaymentInFirestore(params: {
     writeStore(store);
   }
 
+  let reconciled: SmsReconcileOutcome | undefined;
+  let finalUsed = result.used;
+  if (!result.used) {
+    reconciled = await reconcilePendingTransactionsForSms(getCommerceDeps(), {
+      trxId: parsed.trxId,
+      amount: result.amount,
+      method: result.method,
+    });
+    if (reconciled.matched) {
+      finalUsed = true;
+    }
+  }
+
   return {
     ok: true,
     duplicate: result.duplicate,
-    used: result.used,
+    used: finalUsed,
     parsed,
+    reconciled,
   };
 }
 
@@ -2888,6 +3016,30 @@ function getTelegramAdminDeps(): TelegramAdminDeps {
   };
 }
 
+function getCommerceDeps(): CommerceDeps {
+  return {
+    adminDb,
+    readStore,
+    writeStore,
+    appendServerLog,
+    requireSignedInFirebase,
+    requireAdmin,
+    timingSafeEqualsText,
+    markNotificationEventSent,
+    sendAdminNotificationEmail,
+    sendCustomerOrderEmail,
+    sendCustomerGenericEmail,
+    sendTelegramOrderStatusUpdate,
+    notifyTelegramAdmins: (text, replyMarkup) => {
+      const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+      if (!botToken) return Promise.resolve();
+      return notifyTelegramAdmins(getTelegramAdminDeps(), botToken, text, replyMarkup);
+    },
+    makeAdminOrderCallback,
+    websiteUrl: WEBSITE_URL,
+  };
+}
+
 async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage): Promise<void> {
   const rawText = (msg.text || msg.caption || '').trim();
   if (!rawText) return;
@@ -3393,9 +3545,13 @@ async function handleAdminSmsForwarderMessage(token: string, msg: TelegramMessag
       return;
     }
 
-    const statusLine = result.duplicate
-      ? `ℹ️ Duplicate SMS (already recorded, used=${result.used})`
-      : '✅ SMS Payment Saved (Unused)';
+    const statusLine = result.reconciled?.matched
+      ? result.reconciled.matchedType === 'order'
+        ? `⚡ Auto-Verified Order ${result.reconciled.orderNumber} (${result.reconciled.orderStatus?.toUpperCase()})`
+        : `⚡ Auto-Approved Wallet Deposit ৳${result.reconciled.amount} (${result.reconciled.topupId})`
+      : result.duplicate
+        ? `ℹ️ Duplicate SMS (already recorded, used=${result.used})`
+        : '✅ SMS Payment Saved (Unused)';
     await sendTelegramReply(
       token,
       msg.chat.id,
@@ -4248,10 +4404,17 @@ async function startServer(): Promise<void> {
   });
 
   app.post('/api/admin/test-email', requireAdmin('settings'), async (req: AuthedRequest, res) => {
+    const cfg = resolveSmtpConfig(readStore());
     const result = await sendAdminNotificationEmail(
       'Test Notification — Order & Complaint Email Alerts Active',
       [
-        {label: 'Status', value: 'SMTP connection working'},
+        {
+          label: 'Status',
+          value: cfg.useBrevo
+            ? 'Brevo HTTPS REST API working'
+            : 'SMTP connection working',
+        },
+        {label: 'Transport', value: cfg.useBrevo ? 'Brevo REST API (HTTPS)' : `SMTP (${cfg.host}:${cfg.port})`},
         {label: 'Triggered By', value: req.adminSession!.email},
         {label: 'Time (BD)', value: new Date().toLocaleString('en-US', {timeZone: 'Asia/Dhaka'})},
       ],
@@ -4261,7 +4424,7 @@ async function startServer(): Promise<void> {
       res.status(400).json({error: result.reason || 'Failed to send test email', ...result});
       return;
     }
-    res.json({ok: true, toEmail: result.toEmail});
+    res.json({ok: true, toEmail: result.toEmail, transport: result.transport});
   });
 
   // Automated SMS Payment Webhook (bKash / Nagad Android SMS Forwarder -> Firestore sms_payments/{trxId})
@@ -4315,6 +4478,7 @@ async function startServer(): Promise<void> {
         trxId: result.parsed.trxId,
         amount: result.parsed.amount,
         method: result.parsed.method,
+        ...(result.reconciled?.matched ? {autoVerified: result.reconciled} : {}),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -4331,11 +4495,15 @@ async function startServer(): Promise<void> {
       if (trimmed.length <= 5) return '***';
       return `${trimmed.slice(0, 3)}****${trimmed.slice(-3)}`;
     };
+    const mailCfg = resolveSmtpConfig(readStore());
     res.json({
       firebaseAdminMode: firebaseInitMode,
       firebaseProjectId: firebaseProjectId || '',
       firestoreDatabaseId: firestoreDatabaseId || '(default)',
       firestoreConnected: Boolean(adminDb),
+      emailTransport: mailCfg.mailTransport,
+      brevoConfigured: mailCfg.useBrevo,
+      brevoSenderConfigured: Boolean(mailCfg.brevoSenderEmail),
       smsWebhookConfigured: Boolean((process.env.SMS_WEBHOOK_SECRET || '').trim()),
       telegramBotConfigured: Boolean((process.env.TELEGRAM_BOT_TOKEN || '').trim()),
       telegramBotRunning: telegramBotState.running,
@@ -4619,27 +4787,8 @@ async function startServer(): Promise<void> {
     res.json({logs: store.serverLogs});
   });
 
-  // Advanced Commerce Routes (Coupons, Flash Sales, VIP Tiers, Vault PINs, Fraud Guard, Loyalty/Referrals, Gateway)
-  registerCommerceRoutes(app, {
-    adminDb,
-    readStore,
-    writeStore,
-    appendServerLog,
-    requireSignedInFirebase,
-    requireAdmin,
-    timingSafeEqualsText,
-    markNotificationEventSent,
-    sendAdminNotificationEmail,
-    sendCustomerOrderEmail,
-    sendTelegramOrderStatusUpdate,
-    notifyTelegramAdmins: (text, replyMarkup) => {
-      const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-      if (!botToken) return Promise.resolve();
-      return notifyTelegramAdmins(getTelegramAdminDeps(), botToken, text, replyMarkup);
-    },
-    makeAdminOrderCallback,
-    websiteUrl: WEBSITE_URL,
-  });
+  // Advanced Commerce Routes (Coupons, Flash Sales, VIP Tiers, Vault PINs, Fraud Guard, Loyalty/Referrals, Gateway, Auto-Verified Orders & Deposits)
+  registerCommerceRoutes(app, getCommerceDeps());
 
   // Multer & API error handler
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
@@ -4667,12 +4816,20 @@ async function startServer(): Promise<void> {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`StrikeVault server running on http://0.0.0.0:${PORT}`);
-    const smtpCfg = resolveSmtpConfig(readStore());
-    if (smtpCfg.enabled) {
-      console.log(`[Admin Email] SMTP ready (host=${smtpCfg.host}:${smtpCfg.port}, to=${smtpCfg.toEmail})`);
+    const mailCfg = resolveSmtpConfig(readStore());
+    if (mailCfg.useBrevo && mailCfg.enabled) {
+      console.log(
+        `[Admin Email] Brevo API ready (from=${mailCfg.brevoSenderEmail}, to=${mailCfg.toEmail})`,
+      );
+    } else if (mailCfg.useBrevo && !mailCfg.enabled) {
+      console.warn(
+        '[Admin Email] Brevo API configured (BREVO_API_KEY present), but sender email (BREVO_SENDER_EMAIL / SMTP_USER / EMAIL_USER) is missing.',
+      );
+    } else if (mailCfg.enabled) {
+      console.log(`[Admin Email] SMTP ready (host=${mailCfg.host}:${mailCfg.port}, to=${mailCfg.toEmail})`);
     } else {
       console.warn(
-        '[Admin Email] SMTP credentials missing or disabled. Set SMTP_USER/SMTP_PASSWORD (or EMAIL_USER/EMAIL_PASS) or configure in Admin Settings.',
+        '[Admin Email] Email transport missing or disabled. Set BREVO_API_KEY + BREVO_SENDER_EMAIL (recommended) or SMTP_USER/SMTP_PASSWORD.',
       );
     }
     startTelegramBusinessBot();
