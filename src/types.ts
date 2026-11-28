@@ -179,6 +179,7 @@ export interface Order {
   distributorStatus?: 'none' | 'dispatched' | 'success' | 'failed';
   distributorRef?: string;
   playerUid: string;
+  playerIgn?: string;
   serverId: string;
   paymentType?: 'manual' | 'wallet';
   paymentMethodId: string;
@@ -330,7 +331,7 @@ export interface StoreProgramConfig {
   fraudMaxFailedTrxPerHour: number;
   fraudMaxOrdersPer10Min: number;
   gatewayEnabled: boolean;
-  gatewayProvider: 'none' | 'uddoktapay' | 'bkash_merchant' | 'nagad_merchant';
+  gatewayProvider: 'none' | 'uddoktapay' | 'sslcommerz' | 'bkash_merchant' | 'nagad_merchant';
 }
 
 export interface SupportTicket {
@@ -422,3 +423,34 @@ export interface SmsPaymentRecord {
   usedAt?: unknown;
   usedOrderNumber?: string;
 }
+
+export interface CustomerReview {
+  id: string;
+  customerUid: string;
+  customerName: string;
+  productId?: string;
+  productName: string;
+  packageName?: string;
+  orderNumber?: string;
+  rating: number;
+  comment: string;
+  approved: boolean;
+  verifiedPurchase: boolean;
+  source?: 'customer' | 'seeded';
+  createdAt?: unknown;
+  createdAtMs?: number;
+}
+
+export interface ResellerApiKey {
+  id: string;
+  label: string;
+  customerUid: string;
+  customerEmail: string;
+  keyPrefix: string;
+  active: boolean;
+  totalRequests: number;
+  totalSpent: number;
+  createdAtMs?: number;
+  lastUsedAtMs?: number;
+}
+

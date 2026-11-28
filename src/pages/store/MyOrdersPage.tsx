@@ -5,15 +5,14 @@ import {
   CheckCircle2,
   Clock,
   Copy,
-  Download,
   Eye,
   FileText,
   KeyRound,
   Loader2,
   Package,
-  Printer,
   RefreshCw,
   Search,
+  Star,
   User,
   X,
   XCircle,
@@ -32,6 +31,8 @@ import {
 } from '../../lib/firebase';
 import type {Order, OrderStatus} from '../../types';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
+import {OrderReceiptModal} from '../../components/store/OrderReceiptModal';
+import {WriteReviewModal} from '../../components/store/ReviewsSection';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
 export function MyOrdersPage() {
@@ -43,6 +44,7 @@ export function MyOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | OrderStatus>('all');
   const [detailOrder, setDetailOrder] = useState<Order | null>(null);
   const [invoiceOrder, setInvoiceOrder] = useState<Order | null>(null);
+  const [reviewOrder, setReviewOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     if (!authReady || !firebaseUser) {
@@ -94,61 +96,6 @@ export function MyOrdersPage() {
       order.notificationMessage?.trim() ||
       'Order was cancelled by administrator.'
     );
-  };
-
-  const escapeHtmlText = (val: unknown) =>
-    String(val ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-
-  const handleDownloadHtmlReceipt = (order: Order) => {
-    const brand = escapeHtmlText(siteSettings.brandName || 'MUNAFTOPUP.bd');
-    const createdStr = escapeHtmlText(new Date(timestampToMillis(order.createdAt)).toLocaleString());
-    const html = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>Invoice ${escapeHtmlText(order.orderNumber)} — ${brand}</title>
-<style>
-  body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; max-width: 680px; margin: 32px auto; padding: 24px; border: 1px solid #cbd5e1; border-radius: 14px; }
-  h1 { margin: 0 0 4px; font-size: 22px; }
-  .muted { color: #64748b; font-size: 13px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  td, th { padding: 10px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; font-size: 14px; }
-  .right { text-align: right; }
-  .total { font-weight: 800; font-size: 16px; color: #0891b2; }
-  .pin { margin-top: 16px; padding: 12px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; font-family: monospace; font-weight: 700; }
-</style>
-</head>
-<body>
-  <h1>${brand} — Official Payment Receipt</h1>
-  <p class="muted">Order #${escapeHtmlText(order.orderNumber)} · ${createdStr}</p>
-  <table>
-    <tr><th>Customer</th><td class="right">${escapeHtmlText(order.customerName)} (${escapeHtmlText(order.customerEmail)})</td></tr>
-    <tr><th>Product</th><td class="right">${escapeHtmlText(order.productName)}</td></tr>
-    <tr><th>Package</th><td class="right">${escapeHtmlText(order.packageName)}</td></tr>
-    <tr><th>Player UID / Server</th><td class="right">${escapeHtmlText(order.playerUid || '—')} / ${escapeHtmlText(order.serverId || 'N/A')}</td></tr>
-    <tr><th>Payment Method</th><td class="right">${escapeHtmlText(order.paymentMethodName)}</td></tr>
-    <tr><th>TrxID</th><td class="right">${escapeHtmlText(order.trxId)}</td></tr>
-    <tr><th>Order Status</th><td class="right" style="text-transform:capitalize;">${escapeHtmlText(order.orderStatus)}</td></tr>
-    ${order.flashSaleDiscount ? `<tr><th>Flash Sale Discount</th><td class="right">-${escapeHtmlText(formatCurrency(order.flashSaleDiscount))}</td></tr>` : ''}
-    ${order.tierDiscount ? `<tr><th>${escapeHtmlText((order.appliedTier || 'Member').toUpperCase())} Discount</th><td class="right">-${escapeHtmlText(formatCurrency(order.tierDiscount))}</td></tr>` : ''}
-    ${order.couponDiscount ? `<tr><th>Promo (${escapeHtmlText(order.couponCode || '')})</th><td class="right">-${escapeHtmlText(formatCurrency(order.couponDiscount))}</td></tr>` : ''}
-    <tr><th class="total">Total Paid</th><td class="right total">${escapeHtmlText(formatCurrency(order.totalAmount))}</td></tr>
-  </table>
-  ${order.voucherCode ? `<div class="pin">Voucher PIN: ${escapeHtmlText(order.voucherCode)}</div>` : ''}
-</body>
-</html>`;
-    const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `receipt-${order.orderNumber}.html`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Downloaded receipt-${order.orderNumber}.html`);
   };
 
   const renderStatusBadge = (status: Order['orderStatus']) => {
@@ -395,6 +342,15 @@ export function MyOrdersPage() {
                       <FileText className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" /> {t('invoice.title')}
                     </button>
 
+                    {order.orderStatus === 'completed' && (
+                      <button
+                        type="button"
+                        onClick={() => setReviewOrder(order)}
+                        className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl border-[1.5px] border-amber-300 dark:border-amber-700 bg-amber-50/70 dark:bg-amber-950/40 hover:bg-amber-100/80 text-xs sm:text-sm font-bold text-amber-800 dark:text-amber-300 cursor-pointer transition-colors">
+                        <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" /> Rate &amp; Review
+                      </button>
+                    )}
+
                     {order.voucherCode && (
                       <Link
                         to="/codes"
@@ -526,128 +482,24 @@ export function MyOrdersPage() {
         </div>
       )}
 
-      {/* Printable & Downloadable Invoice Modal */}
+      {/* WhatsApp / Telegram Receipt Modal (PNG, PDF/Print, HTML) */}
       {invoiceOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-[1px] overflow-y-auto">
-          <div className="print-invoice-root bg-white dark:bg-slate-900 rounded-2xl border-[1.5px] border-slate-200 dark:border-slate-700 max-w-lg w-full p-6 space-y-5 shadow-2xl my-auto">
-            <div className="flex items-start justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-              <div>
-                <h2 className="text-lg font-extrabold text-slate-900 dark:text-white font-display">
-                  {siteSettings.brandName || 'MUNAFTOPUP.bd'}
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Official Order Invoice · {invoiceOrder.orderNumber}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setInvoiceOrder(null)}
-                className="no-print p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+        <OrderReceiptModal
+          order={invoiceOrder}
+          brandName={siteSettings.brandName || 'MUNAFTOPUP.bd'}
+          onClose={() => setInvoiceOrder(null)}
+        />
+      )}
 
-            <div className="space-y-2.5 text-xs sm:text-sm">
-              <div className="flex justify-between">
-                <span className="text-slate-500 dark:text-slate-400">Date</span>
-                <span className="text-slate-900 dark:text-white tabular-nums">
-                  {new Date(timestampToMillis(invoiceOrder.createdAt)).toLocaleString()}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500 dark:text-slate-400">Customer</span>
-                <span className="font-semibold text-slate-900 dark:text-white">
-                  {invoiceOrder.customerName}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500 dark:text-slate-400">Item</span>
-                <span className="font-semibold text-slate-900 dark:text-white text-right">
-                  {invoiceOrder.productName} — {invoiceOrder.packageName}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500 dark:text-slate-400">Player UID / Server</span>
-                <span className="font-mono text-slate-900 dark:text-white">
-                  {invoiceOrder.playerUid || '—'} / {invoiceOrder.serverId || 'N/A'}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500 dark:text-slate-400">Payment</span>
-                <span className="font-medium text-slate-900 dark:text-white">
-                  {invoiceOrder.paymentMethodName} ({invoiceOrder.trxId})
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500 dark:text-slate-400">Base Price</span>
-                <span className="tabular-nums text-slate-900 dark:text-white">
-                  {formatCurrency(invoiceOrder.unitPrice)}
-                </span>
-              </div>
-              {Boolean(invoiceOrder.flashSaleDiscount) && (
-                <div className="flex justify-between text-rose-600 dark:text-rose-400">
-                  <span>Flash Sale Discount</span>
-                  <span className="tabular-nums">-{formatCurrency(invoiceOrder.flashSaleDiscount || 0)}</span>
-                </div>
-              )}
-              {Boolean(invoiceOrder.tierDiscount) && (
-                <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
-                  <span className="uppercase">{invoiceOrder.appliedTier || 'Member'} Discount</span>
-                  <span className="tabular-nums">-{formatCurrency(invoiceOrder.tierDiscount || 0)}</span>
-                </div>
-              )}
-              {Boolean(invoiceOrder.couponDiscount) && (
-                <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
-                  <span>Promo ({invoiceOrder.couponCode})</span>
-                  <span className="tabular-nums">-{formatCurrency(invoiceOrder.couponDiscount || 0)}</span>
-                </div>
-              )}
-              <div className="pt-2.5 border-t border-slate-200 dark:border-slate-800 flex justify-between items-baseline">
-                <span className="font-bold text-slate-900 dark:text-white">Total Paid</span>
-                <span className="text-lg font-extrabold text-cyan-600 dark:text-cyan-400 tabular-nums">
-                  {formatCurrency(invoiceOrder.totalAmount)}
-                </span>
-              </div>
-            </div>
-
-            {invoiceOrder.voucherCode && (
-              <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 p-3 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 block">
-                    Voucher PIN
-                  </span>
-                  <span className="font-mono text-xs sm:text-sm font-bold text-slate-900 dark:text-white break-all">
-                    {invoiceOrder.voucherCode}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(invoiceOrder.voucherCode || '');
-                    toast.success('PIN copied');
-                  }}
-                  className="no-print p-2 rounded-lg bg-emerald-600 text-white cursor-pointer shrink-0">
-                  <Copy className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
-
-            <div className="no-print flex flex-wrap gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-cyan-600 text-white text-xs font-bold cursor-pointer">
-                <Printer className="w-4 h-4" /> {t('invoice.print')}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDownloadHtmlReceipt(invoiceOrder)}
-                className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border-[1.5px] border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs font-bold cursor-pointer">
-                <Download className="w-4 h-4" /> {t('invoice.download')}
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Customer Review Modal */}
+      {reviewOrder && (
+        <WriteReviewModal
+          productId={reviewOrder.productId}
+          productName={reviewOrder.productName}
+          packageName={reviewOrder.packageName}
+          orderNumber={reviewOrder.orderNumber}
+          onClose={() => setReviewOrder(null)}
+        />
       )}
     </StoreLayout>
   );

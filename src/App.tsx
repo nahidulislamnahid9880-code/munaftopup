@@ -39,6 +39,7 @@ export default function App() {
                     <Route path="/product/:slug" element={<ProductDetailPage />} />
                     <Route path="/checkout" element={<CheckoutPage />} />
                     <Route path="/add-money" element={<AddMoneyPage />} />
+                    <Route path="/wallet" element={<AddMoneyPage />} />
                     <Route path="/orders" element={<MyOrdersPage />} />
                     <Route path="/codes" element={<MyCodesPage />} />
                     <Route path="/track" element={<OrderTrackingPage />} />

@@ -6,12 +6,15 @@ import {
   CheckCircle2,
   Copy,
   CreditCard,
+  FileText,
   Flame,
   Gift,
   KeyRound,
   Loader2,
+  ShieldAlert,
   ShieldCheck,
   Tag,
+  UserCheck,
   Wallet,
   X,
 } from 'lucide-react';
@@ -25,8 +28,10 @@ import {
   getActiveFlashSaleForProduct,
   validatePlayerUidForProduct,
 } from '../../lib/pricing';
+import type {Order} from '../../types';
 import {PackageVisual} from '../../components/PackageTypeIcon';
 import {PaymentMethodLogo} from '../../components/PaymentMethodLogo';
+import {OrderReceiptModal} from '../../components/store/OrderReceiptModal';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
 interface AppliedCouponState {
@@ -47,7 +52,7 @@ interface ConfirmedOrderResult {
 
 export function CheckoutPage() {
   const [searchParams] = useSearchParams();
-  const {products, paymentMethods, flashSales, programConfig} = useStore();
+  const {products, paymentMethods, flashSales, programConfig, siteSettings} = useStore();
   const {firebaseUser, customerProfile, signInCustomerWithGoogle} = useAuth();
   const {t} = useLanguage();
   const toast = useToast();
@@ -56,6 +61,8 @@ export function CheckoutPage() {
   const packageId = searchParams.get('packageId') || '';
   const initialUid = searchParams.get('uid') || '';
   const initialServer = searchParams.get('server') || '';
+  const initialIgn = searchParams.get('ign') || '';
+  const gatewayReturnStatus = searchParams.get('status') || '';
 
   const product = useMemo(
     () => products.find((p) => p.id === productId || p.slug === productId),
@@ -113,6 +120,14 @@ export function CheckoutPage() {
   const [error, setError] = useState('');
   const [duplicateOrderWarning, setDuplicateOrderWarning] = useState<string | null>(null);
   const [confirmedResult, setConfirmedResult] = useState<ConfirmedOrderResult | null>(null);
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+
+  const [verifiedIgn, setVerifiedIgn] = useState(initialIgn);
+  const [ignRegion, setIgnRegion] = useState('');
+  const [ignStatus, setIgnStatus] = useState<'idle' | 'checking' | 'verified' | 'fallback' | 'invalid'>(
+    initialIgn ? 'verified' : 'idle',
+  );
+  const [ignMessage, setIgnMessage] = useState('');
 
   useEffect(() => {
     if (firebaseUser && !customerName) {
@@ -128,6 +143,81 @@ export function CheckoutPage() {
       setSelectedMethodId(activeMethods[0].id);
     }
   }, [activeMethods, selectedMethodId]);
+
+  useEffect(() => {
+    if (gatewayReturnStatus === 'failed') {
+      toast.error('Payment gateway returned a failed status. You can retry or pay manually.');
+    } else if (gatewayReturnStatus === 'cancelled') {
+      toast.info('Payment gateway session was cancelled.');
+    }
+  }, [gatewayReturnStatus, toast]);
+
+  const runIgnLookup = async (uidValue: string, showToastOnError = false) => {
+    if (!product?.requiresUid) return;
+    const clean = uidValue.trim();
+    if (clean.length < 4) {
+      setVerifiedIgn('');
+      setIgnRegion('');
+      setIgnStatus('idle');
+      setIgnMessage('');
+      return;
+    }
+    setIgnStatus('checking');
+    try {
+      const qs = new URLSearchParams({
+        uid: clean,
+        productName: product.name,
+        ...(serverId ? {serverId: serverId.trim()} : {}),
+      });
+      const res = await fetch(`/api/store/lookup-player?${qs.toString()}`);
+      const data = (await res.json().catch(() => ({}))) as {
+        validFormat?: boolean;
+        verified?: boolean;
+        ign?: string;
+        region?: string;
+        message?: string;
+      };
+      if (!data.validFormat) {
+        setVerifiedIgn('');
+        setIgnRegion('');
+        setIgnStatus('invalid');
+        setIgnMessage(data.message || 'Invalid Player UID format.');
+        if (showToastOnError) toast.error(data.message || 'Invalid Player UID format.');
+        return;
+      }
+      if (data.verified && data.ign) {
+        setVerifiedIgn(data.ign);
+        setIgnRegion(data.region || '');
+        setIgnStatus('verified');
+        setIgnMessage(data.message || `Player IGN: ${data.ign}`);
+      } else {
+        setVerifiedIgn('');
+        setIgnRegion('');
+        setIgnStatus('fallback');
+        setIgnMessage(data.message || 'UID format looks valid.');
+      }
+    } catch {
+      setIgnStatus('idle');
+    }
+  };
+
+  useEffect(() => {
+    if (!product?.requiresUid) return;
+    const clean = playerUid.trim();
+    if (!clean || clean.length < 5) {
+      setVerifiedIgn('');
+      setIgnRegion('');
+      setIgnStatus('idle');
+      setIgnMessage('');
+      return;
+    }
+    if (clean === initialUid && initialIgn && verifiedIgn === initialIgn) return;
+    const timer = window.setTimeout(() => {
+      void runIgnLookup(clean, false);
+    }, 650);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerUid, serverId, product?.id]);
 
   const selectedMethod = activeMethods.find((m) => m.id === selectedMethodId) || activeMethods[0];
 
@@ -265,6 +355,7 @@ export function CheckoutPage() {
           productId: product.id,
           packageId: selectedPackage.id,
           playerUid: playerUid.trim(),
+          ...(verifiedIgn ? {playerIgn: verifiedIgn} : {}),
           serverId: serverId.trim() || 'N/A',
           customerName: customerName.trim(),
           customerPhone: effectivePhone,
@@ -328,12 +419,33 @@ export function CheckoutPage() {
   };
 
   const handleMerchantGatewayPay = async () => {
-    if (!firebaseUser || !product || !selectedPackage) return;
+    if (!firebaseUser) {
+      failValidation('Please sign in with Google first to use instant gateway payment.');
+      return;
+    }
+    if (!product || !selectedPackage) return;
+    if (product.requiresUid) {
+      const uidErr = validatePlayerUidForProduct(product.name, playerUid);
+      if (uidErr) {
+        failValidation(uidErr);
+        return;
+      }
+    }
+    if (product.requiresServerId && !serverId.trim()) {
+      failValidation(`Please enter your ${product.serverLabel || 'Server ID'}.`);
+      return;
+    }
     setGatewayRedirecting(true);
     setError('');
     try {
       const token = await firebaseUser.getIdToken();
-      const tempRef = `GW${Date.now().toString().slice(-6)}`;
+      const effectivePhone = (
+        customerPhone.trim().length >= 5
+          ? customerPhone.trim()
+          : customerProfile?.phone?.trim() && customerProfile.phone.trim().length >= 5
+            ? customerProfile.phone.trim()
+            : 'Not Required'
+      ).slice(0, 30);
       const res = await fetch('/api/payment-gateway/create-session', {
         method: 'POST',
         headers: {
@@ -341,17 +453,23 @@ export function CheckoutPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          orderNumber: tempRef,
+          purpose: 'order',
+          productId: product.id,
+          packageId: selectedPackage.id,
+          playerUid: product.requiresUid ? playerUid.trim() : 'N/A',
+          ...(verifiedIgn ? {playerIgn: verifiedIgn} : {}),
+          serverId: serverId.trim() || 'N/A',
           amount: finalTotal,
-          customerName: customerName.trim() || firebaseUser.displayName || 'Customer',
+          customerName: customerName.trim() || customerProfile?.displayName || firebaseUser.displayName || 'Customer',
           customerEmail: firebaseUser.email || '',
+          customerPhone: effectivePhone,
         }),
       });
       const data = (await res.json()) as {ok?: boolean; paymentUrl?: string; error?: string};
       if (!res.ok || !data.paymentUrl) {
         throw new Error(data.error || 'Automated gateway is not configured yet');
       }
-      window.location.href = data.paymentUrl;
+      window.location.assign(data.paymentUrl);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Unable to launch payment gateway');
     } finally {
@@ -360,6 +478,51 @@ export function CheckoutPage() {
   };
 
   if (confirmedResult) {
+    const receiptOrderObj: Order = {
+      id: confirmedResult.orderNumber,
+      orderNumber: confirmedResult.orderNumber,
+      customerUid: firebaseUser?.uid || '',
+      customerName: customerName.trim() || customerProfile?.displayName || firebaseUser?.displayName || 'Customer',
+      customerEmail: firebaseUser?.email || '',
+      customerPhone: customerPhone.trim() || customerProfile?.phone || 'Not Required',
+      productId: product?.id || '',
+      productName: product?.name || 'Game Top-Up',
+      productImage: product?.images?.[0] || '',
+      packageId: selectedPackage?.id || '',
+      packageName: selectedPackage?.name || 'Package',
+      quantityLabel: selectedPackage?.quantityLabel || '',
+      unitPrice: pricing.basePrice,
+      totalAmount: confirmedResult.totalAmount,
+      couponCode: appliedCoupon?.code,
+      couponDiscount: appliedCoupon?.discountAmount,
+      tierDiscount: pricing.tierDiscount,
+      flashSaleDiscount: pricing.flashSaleDiscount,
+      appliedTier: pricing.appliedTier,
+      playerUid: product?.requiresUid === false ? 'N/A' : playerUid.trim(),
+      playerIgn: verifiedIgn || undefined,
+      serverId: product?.requiresServerId ? serverId.trim() || 'N/A' : 'N/A',
+      paymentType: paymentMode,
+      paymentMethodId: paymentMode === 'wallet' ? 'wallet' : selectedMethod?.id || 'manual',
+      paymentMethodName:
+        paymentMode === 'wallet' ? 'Wallet Balance' : selectedMethod?.name || 'Mobile Banking',
+      senderNumber: paymentMode === 'wallet' ? 'WALLET' : customerPhone.trim() || 'Not Required',
+      trxId: paymentMode === 'wallet' ? `WAL_${confirmedResult.orderNumber}` : trxId.trim().toUpperCase(),
+      trxKey: paymentMode === 'wallet' ? `WAL_${confirmedResult.orderNumber}` : trxId.trim().toUpperCase(),
+      screenshotUrl: '',
+      voucherCode: confirmedResult.voucherCode,
+      paymentStatus: confirmedResult.paymentStatus === 'verified' ? 'verified' : 'pending',
+      orderStatus:
+        confirmedResult.orderStatus === 'completed'
+          ? 'completed'
+          : confirmedResult.orderStatus === 'processing'
+            ? 'processing'
+            : 'pending',
+      adminNote: '',
+      notificationMessage: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
     return (
       <StoreLayout>
         <div className="max-w-xl mx-auto px-4 sm:px-6 py-12">
@@ -413,7 +576,13 @@ export function CheckoutPage() {
               </div>
             )}
 
-            <div className="flex flex-col sm:flex-row gap-3 justify-center pt-1">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-3 justify-center pt-1">
+              <button
+                type="button"
+                onClick={() => setShowReceiptModal(true)}
+                className="inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 text-white text-sm font-semibold cursor-pointer transition-colors">
+                <FileText className="w-4 h-4" /> Download PNG / PDF Receipt
+              </button>
               <Link
                 to="/orders"
                 className="px-5 py-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 border border-slate-800 dark:border-slate-700 text-white text-sm font-semibold transition-colors">
@@ -427,6 +596,13 @@ export function CheckoutPage() {
             </div>
           </div>
         </div>
+        {showReceiptModal && (
+          <OrderReceiptModal
+            order={receiptOrderObj}
+            brandName={siteSettings.brandName || 'MUNAFTOPUP.bd'}
+            onClose={() => setShowReceiptModal(false)}
+          />
+        )}
       </StoreLayout>
     );
   }
@@ -491,13 +667,45 @@ export function CheckoutPage() {
                     <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                       {product.uidLabel || 'Player UID'} *
                     </label>
-                    <input
-                      type="text"
-                      required
-                      value={playerUid}
-                      onChange={(e) => setPlayerUid(e.target.value)}
-                      className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 dark:border-slate-700 hover:border-slate-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
-                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        required
+                        value={playerUid}
+                        onChange={(e) => setPlayerUid(e.target.value)}
+                        className="flex-1 px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 dark:border-slate-700 hover:border-slate-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
+                      />
+                      <button
+                        type="button"
+                        disabled={ignStatus === 'checking' || playerUid.trim().length < 4}
+                        onClick={() => void runIgnLookup(playerUid, true)}
+                        className="px-3 py-2.5 rounded-xl bg-slate-900 dark:bg-cyan-600 hover:bg-slate-800 dark:hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold whitespace-nowrap cursor-pointer inline-flex items-center gap-1 transition-colors">
+                        {ignStatus === 'checking' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <UserCheck className="w-3.5 h-3.5" />
+                        )}
+                        <span>Check</span>
+                      </button>
+                    </div>
+                    {ignStatus === 'checking' && (
+                      <p className="text-[11px] text-cyan-600 dark:text-cyan-400 mt-1 flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" /> Verifying player name...
+                      </p>
+                    )}
+                    {ignStatus === 'verified' && verifiedIgn && (
+                      <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs font-bold text-emerald-700 dark:text-emerald-300 flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5">
+                          <UserCheck className="w-3.5 h-3.5 shrink-0" /> IGN: {verifiedIgn}
+                        </span>
+                        {ignRegion && <span className="font-mono text-[10px]">{ignRegion}</span>}
+                      </div>
+                    )}
+                    {ignStatus === 'invalid' && ignMessage && (
+                      <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1 flex items-center gap-1 font-semibold">
+                        <ShieldAlert className="w-3.5 h-3.5 shrink-0" /> {ignMessage}
+                      </p>
+                    )}
                   </div>
                 )}
                 {product.requiresServerId && (
@@ -790,6 +998,15 @@ export function CheckoutPage() {
                     {playerUid || '—'}
                   </span>
                 </div>
+                {verifiedIgn && (
+                  <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
+                    <span>Verified IGN</span>
+                    <span className="font-bold">
+                      {verifiedIgn}
+                      {ignRegion ? ` (${ignRegion})` : ''}
+                    </span>
+                  </div>
+                )}
                 {product.requiresServerId && (
                   <div className="flex justify-between text-slate-600 dark:text-slate-400">
                     <span>{product.serverLabel || 'Server'}</span>

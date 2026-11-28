@@ -1,8 +1,10 @@
 import React, {useEffect, useMemo, useState} from 'react';
+import {useSearchParams} from 'react-router-dom';
 import {
   AlertCircle,
   CheckCircle2,
   Copy,
+  CreditCard,
   Loader2,
   PlusCircle,
   Wallet,
@@ -32,7 +34,8 @@ import {StoreLayout} from '../../components/store/StoreLayout';
 const PRESET_AMOUNTS = [100, 300, 500, 1000, 2000];
 
 export function AddMoneyPage() {
-  const {paymentMethods} = useStore();
+  const [searchParams] = useSearchParams();
+  const {paymentMethods, programConfig} = useStore();
   const {firebaseUser, authReady, customerProfile, signInCustomerWithGoogle} = useAuth();
   const {t} = useLanguage();
   const toast = useToast();
@@ -48,9 +51,26 @@ export function AddMoneyPage() {
   const [copied, setCopied] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
+  const [gatewayRedirecting, setGatewayRedirecting] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [topups, setTopups] = useState<WalletTopup[]>([]);
+
+  useEffect(() => {
+    const gwStatus = searchParams.get('status');
+    const gwRef = searchParams.get('ref');
+    if (gwStatus === 'paid') {
+      const msg = gwRef
+        ? `Gateway payment confirmed (${gwRef})! Your wallet balance updates automatically.`
+        : 'Gateway payment confirmed! Your wallet balance updates automatically.';
+      setSuccessMsg(msg);
+      toast.success(msg);
+    } else if (gwStatus === 'failed') {
+      setError('Payment gateway reported a failure. Please retry or use manual Send Money.');
+    } else if (gwStatus === 'cancelled') {
+      toast.info('Payment gateway session was cancelled.');
+    }
+  }, [searchParams, toast]);
 
   useEffect(() => {
     if (activeMethods.length > 0 && !activeMethods.some((m) => m.id === selectedMethodId)) {
@@ -170,6 +190,56 @@ export function AddMoneyPage() {
     }
   };
 
+  const handleGatewayDeposit = async () => {
+    setError('');
+    setSuccessMsg('');
+    if (!firebaseUser) {
+      fail('Please sign in with Google to use instant gateway deposit.');
+      return;
+    }
+    if (customerProfile?.suspended) {
+      fail('Suspended accounts cannot submit wallet deposits.');
+      return;
+    }
+    const numAmount = Number(amount);
+    if (!Number.isFinite(numAmount) || numAmount < 10 || numAmount > 500000) {
+      fail('Enter a valid amount between ৳10 and ৳500,000.');
+      return;
+    }
+    setGatewayRedirecting(true);
+    try {
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch('/api/payment-gateway/create-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          purpose: 'wallet_topup',
+          amount: numAmount,
+          customerName: customerProfile?.displayName || firebaseUser.displayName || 'Customer',
+          customerEmail: firebaseUser.email || '',
+          customerPhone: customerProfile?.phone || 'Not Required',
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        paymentUrl?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.paymentUrl) {
+        fail(data.error || 'Automated payment gateway is not configured yet.');
+        return;
+      }
+      window.location.assign(data.paymentUrl);
+    } catch (err) {
+      fail(err instanceof Error ? err.message : 'Unable to launch payment gateway.');
+    } finally {
+      setGatewayRedirecting(false);
+    }
+  };
+
   return (
     <StoreLayout>
       <div className="max-w-3xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5">
@@ -246,6 +316,35 @@ export function AddMoneyPage() {
               ))}
             </div>
           </div>
+
+          {programConfig.gatewayEnabled && programConfig.gatewayProvider !== 'none' && (
+            <div className="rounded-xl bg-indigo-50/80 dark:bg-indigo-950/35 border-[1.5px] border-indigo-200 dark:border-indigo-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <p className="text-xs sm:text-sm font-bold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
+                  <CreditCard className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  1-Click Instant Automated Deposit ({programConfig.gatewayProvider.toUpperCase()})
+                </p>
+                <p className="text-[11px] text-indigo-700 dark:text-indigo-300 mt-0.5">
+                  Pay ৳{Number(amount) || 0} via gateway webhook sync — wallet balance credits automatically in seconds.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={gatewayRedirecting || !firebaseUser}
+                onClick={() => void handleGatewayDeposit()}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold cursor-pointer shrink-0 whitespace-nowrap shadow-xs">
+                {gatewayRedirecting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Redirecting...
+                  </>
+                ) : (
+                  <>
+                    <CreditCard className="w-3.5 h-3.5" /> Pay Instantly
+                  </>
+                )}
+              </button>
+            </div>
+          )}
 
           <div className="space-y-2.5">
             <label className="block text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200">

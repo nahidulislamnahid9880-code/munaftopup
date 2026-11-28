@@ -1,9 +1,16 @@
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import {useSearchParams} from 'react-router-dom';
 import {
+  Bell,
+  CheckCircle2,
+  EyeOff,
   Flame,
   KeyRound,
+  MessageSquare,
   Plus,
   RefreshCw,
+  Sparkles,
+  Star,
   Tag,
   Trash2,
   Upload,
@@ -37,20 +44,44 @@ interface VoucherVaultItem {
   createdAtIso: string;
 }
 
+interface AdminReviewItem {
+  id: string;
+  customerName: string;
+  productId?: string;
+  productName: string;
+  packageName?: string;
+  orderNumber?: string;
+  rating: number;
+  comment: string;
+  approved: boolean;
+  verifiedPurchase?: boolean;
+  source?: string;
+  createdAtMs: number;
+}
+
 export function PromotionsManager() {
   const {adminUser, firebaseUser, adminFetch} = useAuth();
   const {products} = useStore();
   const {showToast} = useToast();
+  const [searchParams] = useSearchParams();
   const canEdit =
     adminUser?.role === 'super_admin' ||
     adminUser?.permissions.products ||
     adminUser?.permissions.customization;
+  const canReviews =
+    adminUser?.role === 'super_admin' || adminUser?.permissions.customization;
   const canVault =
     adminUser?.role === 'super_admin' ||
     adminUser?.permissions.products ||
     adminUser?.permissions.orders;
 
-  const [tab, setTab] = useState<'coupons' | 'flash' | 'vault'>('coupons');
+  const [tab, setTab] = useState<'coupons' | 'flash' | 'vault' | 'reviews'>(() => {
+    const reqTab = searchParams.get('tab');
+    if (reqTab === 'vault' || reqTab === 'flash' || reqTab === 'reviews' || reqTab === 'coupons') {
+      return reqTab;
+    }
+    return 'coupons';
+  });
 
   // Coupons state
   const [coupons, setCoupons] = useState<Coupon[]>([]);
@@ -73,6 +104,7 @@ export function PromotionsManager() {
   const [flashBadgeText, setFlashBadgeText] = useState('FLASH DEAL');
   const [flashStartsAt, setFlashStartsAt] = useState('');
   const [flashEndsAt, setFlashEndsAt] = useState('');
+  const [notifyPushOnFlash, setNotifyPushOnFlash] = useState(true);
   const [savingFlash, setSavingFlash] = useState(false);
 
   // Voucher Vault state
@@ -82,6 +114,12 @@ export function PromotionsManager() {
   const [vaultPackageId, setVaultPackageId] = useState('');
   const [vaultCodesText, setVaultCodesText] = useState('');
   const [vaultUploading, setVaultUploading] = useState(false);
+
+  // Reviews Moderation state
+  const [reviews, setReviews] = useState<AdminReviewItem[]>([]);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [seedingReviews, setSeedingReviews] = useState(false);
+  const [reviewFilter, setReviewFilter] = useState<'all' | 'pending' | 'approved'>('all');
 
   useEffect(() => {
     if (!products.length) return;
@@ -137,11 +175,29 @@ export function PromotionsManager() {
     }
   }, [adminFetch, canVault]);
 
+  const loadReviews = useCallback(async () => {
+    if (!canReviews) return;
+    setReviewsLoading(true);
+    try {
+      const res = await adminFetch('/api/admin/reviews');
+      if (res.ok) {
+        const data = (await res.json()) as {reviews?: AdminReviewItem[]};
+        setReviews(data.reviews || []);
+      }
+    } catch {
+      // ignore initial load error
+    } finally {
+      setReviewsLoading(false);
+    }
+  }, [adminFetch, canReviews]);
+
   useEffect(() => {
     if (tab === 'vault') {
       void loadVault();
+    } else if (tab === 'reviews') {
+      void loadReviews();
     }
-  }, [tab, loadVault]);
+  }, [tab, loadVault, loadReviews]);
 
   const handleCreateCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -223,9 +279,10 @@ export function PromotionsManager() {
     try {
       const id = `fs_${Date.now()}`;
       const now = serverTimestamp();
+      const titleText = (flashTitle.trim() || `${prod.name} Flash Deal`).slice(0, 120);
       await setDoc(doc(db, 'flashSales', id), {
         id,
-        title: (flashTitle.trim() || `${prod.name} Flash Deal`).slice(0, 120),
+        title: titleText,
         productId: prod.id,
         productName: prod.name.slice(0, 120),
         discountPercent: pct,
@@ -236,6 +293,28 @@ export function PromotionsManager() {
         createdAt: now,
         updatedAt: now,
       });
+
+      if (notifyPushOnFlash) {
+        void adminFetch('/api/admin/push/broadcast', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            title: `⚡ ${titleText} (-${pct}% OFF)`,
+            body: `${prod.name} Flash Sale is live now on MUNAFTOPUP.bd! Grab yours before it ends.`,
+            url: `/product/${prod.slug || prod.id}`,
+          }),
+        })
+          .then(async (r) => {
+            if (r.ok) {
+              const out = (await r.json().catch(() => ({}))) as {sent?: number};
+              if (typeof out.sent === 'number' && out.sent > 0) {
+                showToast(`Web Push alert sent to ${out.sent} subscribed device(s).`, 'info');
+              }
+            }
+          })
+          .catch(() => null);
+      }
+
       setFlashTitle('');
       showToast(`Flash sale launched for ${prod.name}.`, 'success');
     } catch (err) {
@@ -327,6 +406,74 @@ export function PromotionsManager() {
     }
   };
 
+  const handleSeed100Reviews = async () => {
+    if (!canReviews) return;
+    setSeedingReviews(true);
+    try {
+      const res = await adminFetch('/api/admin/reviews/seed', {method: 'POST'});
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        seeded?: number;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        showToast(data.error || 'Failed to seed reviews.', 'error');
+        return;
+      }
+      showToast(`Seeded ${data.seeded || 100} authentic customer reviews.`, 'success');
+      void loadReviews();
+    } catch {
+      showToast('Network error seeding reviews.', 'error');
+    } finally {
+      setSeedingReviews(false);
+    }
+  };
+
+  const handleToggleReviewApproval = async (r: AdminReviewItem) => {
+    if (!canReviews) return;
+    const nextApproved = !r.approved;
+    try {
+      const res = await adminFetch(`/api/admin/reviews/${encodeURIComponent(r.id)}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({approved: nextApproved}),
+      });
+      if (!res.ok) {
+        showToast('Failed to update review visibility.', 'error');
+        return;
+      }
+      setReviews((prev) =>
+        prev.map((item) => (item.id === r.id ? {...item, approved: nextApproved} : item)),
+      );
+      showToast(nextApproved ? 'Review approved and published.' : 'Review hidden from storefront.', 'success');
+    } catch {
+      showToast('Network error updating review.', 'error');
+    }
+  };
+
+  const handleDeleteReview = async (reviewId: string) => {
+    if (!canReviews) return;
+    try {
+      const res = await adminFetch(`/api/admin/reviews/${encodeURIComponent(reviewId)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        showToast('Failed to delete review.', 'error');
+        return;
+      }
+      setReviews((prev) => prev.filter((item) => item.id !== reviewId));
+      showToast('Review deleted.', 'info');
+    } catch {
+      showToast('Network error deleting review.', 'error');
+    }
+  };
+
+  const filteredReviews = useMemo(() => {
+    if (reviewFilter === 'pending') return reviews.filter((r) => !r.approved);
+    if (reviewFilter === 'approved') return reviews.filter((r) => r.approved);
+    return reviews;
+  }, [reviews, reviewFilter]);
+
   const unusedVaultByPackage = useMemo(() => {
     const counts = new Map<string, {productName: string; packageName: string; count: number}>();
     for (const item of vaultItems) {
@@ -391,6 +538,18 @@ export function PromotionsManager() {
                   : 'text-slate-600 dark:text-slate-400'
               }`}>
               <KeyRound className="w-3.5 h-3.5" /> Voucher PIN Vault
+            </button>
+          )}
+          {canReviews && (
+            <button
+              type="button"
+              onClick={() => setTab('reviews')}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
+                tab === 'reviews'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}>
+              <Star className="w-3.5 h-3.5" /> Customer Reviews
             </button>
           )}
         </div>
@@ -684,6 +843,15 @@ export function PromotionsManager() {
                   />
                 </div>
               </div>
+              <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyPushOnFlash}
+                  onChange={(e) => setNotifyPushOnFlash(e.target.checked)}
+                />
+                <Bell className="w-3.5 h-3.5 text-orange-500" />
+                Send Web Push notification immediately to all subscribed browsers &amp; PWA users
+              </label>
               <button
                 type="submit"
                 disabled={savingFlash}
@@ -879,6 +1047,181 @@ export function PromotionsManager() {
                       <tr>
                         <td colSpan={5} className="px-4 py-8 text-center text-xs text-slate-500">
                           {vaultLoading ? 'Loading PIN vault...' : 'No voucher PINs uploaded yet.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Customer Reviews Moderation & 100-Review Seeder Tab */}
+        {tab === 'reviews' && canReviews && (
+          <div className="space-y-6">
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-bold font-display flex items-center gap-2">
+                    <MessageSquare className="w-4 h-4 text-amber-500" /> Customer Reviews &amp; Ratings Moderation
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Approve customer ratings for public display on Home &amp; Product pages, or seed 100 verified Bangla/English storefront reviews.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void loadReviews()}
+                    disabled={reviewsLoading}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold cursor-pointer disabled:opacity-50">
+                    <RefreshCw className={`w-3.5 h-3.5 ${reviewsLoading ? 'animate-spin' : ''}`} /> Refresh
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSeed100Reviews()}
+                    disabled={seedingReviews}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold cursor-pointer disabled:opacity-50">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {seedingReviews ? 'Seeding 100 Reviews...' : 'Seed 100 Reviews'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+                <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 dark:text-slate-300 tabular-nums">
+                  <span>
+                    Loaded: <strong>{reviews.length}</strong>
+                  </span>
+                  <span>
+                    Published:{' '}
+                    <strong className="text-emerald-600 dark:text-emerald-400">
+                      {reviews.filter((r) => r.approved).length}
+                    </strong>
+                  </span>
+                  <span>
+                    Pending Approval:{' '}
+                    <strong className="text-amber-600 dark:text-amber-400">
+                      {reviews.filter((r) => !r.approved).length}
+                    </strong>
+                  </span>
+                </div>
+                <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-800">
+                  {(['all', 'pending', 'approved'] as const).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setReviewFilter(f)}
+                      className={`px-3 py-1 rounded-md text-xs font-semibold capitalize cursor-pointer ${
+                        reviewFilter === f
+                          ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                          : 'text-slate-600 dark:text-slate-400'
+                      }`}>
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-xs text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Customer</th>
+                      <th className="px-4 py-3 font-medium">Rating</th>
+                      <th className="px-4 py-3 font-medium">Product / Review</th>
+                      <th className="px-4 py-3 font-medium">Visibility</th>
+                      <th className="px-4 py-3 font-medium text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {filteredReviews.map((r) => (
+                      <tr key={r.id}>
+                        <td className="px-4 py-3 align-top">
+                          <p className="font-semibold text-xs">{r.customerName}</p>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                            {r.verifiedPurchase && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold">
+                                Verified
+                              </span>
+                            )}
+                            {r.orderNumber && (
+                              <span className="text-[10px] font-mono text-slate-400">
+                                {r.orderNumber}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 align-top whitespace-nowrap">
+                          <div className="inline-flex items-center gap-0.5 text-amber-500">
+                            {Array.from({length: 5}).map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`w-3.5 h-3.5 ${
+                                  i < r.rating ? 'fill-amber-400 text-amber-400' : 'text-slate-300 dark:text-slate-700'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 align-top max-w-md">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                            {r.productName}
+                            {r.packageName ? ` · ${r.packageName}` : ''}
+                          </p>
+                          <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                            {r.comment}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold ${
+                              r.approved
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400'
+                                : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400'
+                            }`}>
+                            {r.approved ? 'Approved' : 'Pending'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 align-top text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void handleToggleReviewApproval(r)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold cursor-pointer ${
+                                r.approved
+                                  ? 'border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                                  : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                              }`}>
+                              {r.approved ? (
+                                <>
+                                  <EyeOff className="w-3 h-3" /> Hide
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle2 className="w-3 h-3" /> Approve
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteReview(r.id)}
+                              className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {filteredReviews.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-8 text-center text-xs text-slate-500">
+                          {reviewsLoading
+                            ? 'Loading customer reviews...'
+                            : 'No reviews match this filter. Click "Seed 100 Reviews" to populate authentic reviews.'}
                         </td>
                       </tr>
                     )}

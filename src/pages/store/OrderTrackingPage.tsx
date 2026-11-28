@@ -1,6 +1,6 @@
 import React, {useEffect, useState} from 'react';
 import {useSearchParams} from 'react-router-dom';
-import {CheckCircle2, Clock, PackageCheck, Search, XCircle} from 'lucide-react';
+import {CheckCircle2, Clock, FileText, PackageCheck, Search, XCircle} from 'lucide-react';
 import {
   collection,
   doc,
@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import {useAuth} from '../../contexts/AuthContext';
 import {useLanguage} from '../../contexts/LanguageContext';
+import {useStore} from '../../contexts/StoreContext';
 import {useToast} from '../../contexts/ToastContext';
 import {
   OperationType,
@@ -21,11 +22,13 @@ import {
   timestampToMillis,
 } from '../../lib/firebase';
 import type {Order, OrderTracking} from '../../types';
+import {OrderReceiptModal} from '../../components/store/OrderReceiptModal';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
 export function OrderTrackingPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const {firebaseUser, authReady} = useAuth();
+  const {siteSettings} = useStore();
   const {t} = useLanguage();
   const toast = useToast();
 
@@ -35,6 +38,7 @@ export function OrderTrackingPage() {
   const [searching, setSearching] = useState(false);
 
   const [myOrders, setMyOrders] = useState<Order[]>([]);
+  const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
 
   const performLookup = async (orderNum: string) => {
     const clean = orderNum.trim().toUpperCase();
@@ -288,6 +292,51 @@ export function OrderTrackingPage() {
                 {lookupResult.notificationMessage}
               </div>
             )}
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const matched = myOrders.find((o) => o.orderNumber === lookupResult.orderNumber);
+                  if (matched) {
+                    setReceiptOrder(matched);
+                    return;
+                  }
+                  setReceiptOrder({
+                    id: lookupResult.orderNumber,
+                    orderNumber: lookupResult.orderNumber,
+                    customerUid: firebaseUser?.uid || '',
+                    customerName: firebaseUser?.displayName || 'Customer',
+                    customerEmail: firebaseUser?.email || '',
+                    customerPhone: '',
+                    productId: '',
+                    productName: lookupResult.productName,
+                    packageId: '',
+                    packageName: lookupResult.packageName,
+                    quantityLabel: '',
+                    unitPrice: 0,
+                    totalAmount: 0,
+                    playerUid: lookupResult.playerUidMasked || '—',
+                    serverId: 'N/A',
+                    paymentType: 'manual',
+                    paymentMethodId: 'tracked',
+                    paymentMethodName: 'Verified Payment',
+                    senderNumber: '',
+                    trxId: lookupResult.orderNumber,
+                    trxKey: lookupResult.orderNumber,
+                    screenshotUrl: '',
+                    paymentStatus: lookupResult.paymentStatus,
+                    orderStatus: lookupResult.orderStatus,
+                    adminNote: '',
+                    notificationMessage: lookupResult.notificationMessage || '',
+                    createdAt: lookupResult.createdAt,
+                    updatedAt: lookupResult.updatedAt,
+                  });
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer transition-colors">
+                <FileText className="w-3.5 h-3.5" /> Receipt (PNG / PDF)
+              </button>
+            </div>
           </div>
         )}
 
@@ -313,6 +362,7 @@ export function OrderTrackingPage() {
                         <th className="px-4 py-3 font-medium">Payment</th>
                         <th className="px-4 py-3 font-medium">Status</th>
                         <th className="px-4 py-3 font-medium">Date</th>
+                        <th className="px-4 py-3 font-medium text-right">Receipt</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800">
@@ -340,6 +390,14 @@ export function OrderTrackingPage() {
                           <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                             {new Date(timestampToMillis(order.createdAt)).toLocaleDateString()}
                           </td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => setReceiptOrder(order)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-cyan-400 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer">
+                              <FileText className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" /> Receipt
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -350,6 +408,14 @@ export function OrderTrackingPage() {
           </div>
         )}
       </div>
+
+      {receiptOrder && (
+        <OrderReceiptModal
+          order={receiptOrder}
+          brandName={siteSettings.brandName || 'MUNAFTOPUP.bd'}
+          onClose={() => setReceiptOrder(null)}
+        />
+      )}
     </StoreLayout>
   );
 }

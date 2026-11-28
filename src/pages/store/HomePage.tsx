@@ -28,6 +28,7 @@ import {
 import {resolveTelegramHref, resolveWhatsAppHref} from '../../lib/supportLinks';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
 import {TelegramIcon, WhatsAppIcon} from '../../components/SupportIcons';
+import {ReviewsSection} from '../../components/store/ReviewsSection';
 import {StoreLayout} from '../../components/store/StoreLayout';
 import type {Product} from '../../types';
 
@@ -697,6 +698,7 @@ export function HomePage() {
           </section>
         )}
       </div>
+      <ReviewsSection initialLimit={9} />
     </StoreLayout>
   );
 }

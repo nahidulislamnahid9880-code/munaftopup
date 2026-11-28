@@ -63,8 +63,14 @@ export function CustomerAccountPage() {
     saveCustomerPlayerUid,
     removeCustomerPlayerUid,
   } = useAuth();
-  const {supported: pushSupported, enabled: pushEnabled, requestAndEnable: enablePushAlerts, disableAlerts: disablePushAlerts} =
-    useBrowserPushAlerts(firebaseUser?.uid);
+  const {
+    supported: pushSupported,
+    pushSupported: webPushCapable,
+    permission: pushPermission,
+    isSubscribed: pushActive,
+    enablePushNotifications,
+    disablePushNotifications,
+  } = useBrowserPushAlerts(firebaseUser?.uid);
 
   const whatsappHref = resolveWhatsAppHref(siteSettings.contact);
   const telegramHref = resolveTelegramHref(siteSettings.contact);
@@ -712,7 +718,7 @@ export function CustomerAccountPage() {
         {/* Tab: Notifications */}
         {tab === 'notifications' && (
           <div className="space-y-3">
-            {/* Live Browser Push Alert Toggle */}
+            {/* Live Browser & Web Push Alert Toggle */}
             <div className="rounded-2xl bg-white dark:bg-slate-900 border-[1.5px] border-slate-200/95 dark:border-slate-800 p-4 flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <BellRing className="w-5 h-5 text-cyan-600 dark:text-cyan-400 shrink-0" />
@@ -721,7 +727,9 @@ export function CustomerAccountPage() {
                     {t('alerts.browserTitle')}
                   </p>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Get desktop/mobile alerts immediately when an order updates.
+                    {webPushCapable
+                      ? 'Receive instant Web Push alerts for order completion & Flash Sales even when the tab is closed.'
+                      : 'Get instant browser notifications when your order status changes.'}
                   </p>
                 </div>
               </div>
@@ -731,22 +739,28 @@ export function CustomerAccountPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (pushEnabled) {
-                      disablePushAlerts();
-                      toast.info('Browser alerts paused');
+                    if (pushActive) {
+                      void disablePushNotifications().then(() => {
+                        toast.info('Push & browser alerts paused');
+                      });
                     } else {
-                      void enablePushAlerts().then((ok) => {
-                        if (ok) toast.success('Live browser alerts enabled!');
-                        else toast.error('Notification permission denied in browser settings');
+                      void enablePushNotifications().then((ok) => {
+                        if (ok) toast.success('Web Push & browser alerts enabled!');
+                        else
+                          toast.error(
+                            pushPermission === 'denied'
+                              ? 'Notification permission blocked in browser site settings'
+                              : 'Could not enable push notifications',
+                          );
                       });
                     }
                   }}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                    pushEnabled
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer shrink-0 ${
+                    pushActive
                       ? 'bg-emerald-600 text-white'
                       : 'bg-slate-900 dark:bg-cyan-600 text-white'
                   }`}>
-                  {pushEnabled ? 'Enabled' : 'Enable Alerts'}
+                  {pushActive ? 'Push Enabled' : 'Enable Push'}
                 </button>
               )}
             </div>

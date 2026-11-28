@@ -8,8 +8,11 @@ import {
   Circle,
   Flame,
   Info,
+  Loader2,
+  ShieldAlert,
   ShieldCheck,
   Trash2,
+  UserCheck,
 } from 'lucide-react';
 import {useAuth} from '../../contexts/AuthContext';
 import {useLanguage} from '../../contexts/LanguageContext';
@@ -23,6 +26,7 @@ import {
 } from '../../lib/pricing';
 import {ImageWithFallback} from '../../components/ImageWithFallback';
 import {PackageVisual} from '../../components/PackageTypeIcon';
+import {ReviewsSection} from '../../components/store/ReviewsSection';
 import {StoreLayout} from '../../components/store/StoreLayout';
 
 const LAST_UID_KEY = 'sv_last_player_uid';
@@ -61,6 +65,10 @@ export function ProductDetailPage() {
   const [showSaveUidForm, setShowSaveUidForm] = useState(false);
   const [uidLabel, setUidLabel] = useState('');
   const [savingUid, setSavingUid] = useState(false);
+  const [verifiedIgn, setVerifiedIgn] = useState('');
+  const [ignRegion, setIgnRegion] = useState('');
+  const [ignStatus, setIgnStatus] = useState<'idle' | 'checking' | 'verified' | 'fallback' | 'invalid'>('idle');
+  const [ignMessage, setIgnMessage] = useState('');
 
   useEffect(() => {
     try {
@@ -99,6 +107,72 @@ export function ProductDetailPage() {
     () => (product ? validatePlayerUidForProduct(product.name, '123456') === null && validatePlayerUidForProduct(product.name, 'abcde') !== null : false),
     [product],
   );
+
+  const runIgnLookup = async (uidValue: string, showToastOnError = false) => {
+    if (!product?.requiresUid) return;
+    const cleanUid = uidValue.trim();
+    if (cleanUid.length < 4) {
+      setVerifiedIgn('');
+      setIgnRegion('');
+      setIgnStatus('idle');
+      setIgnMessage('');
+      return;
+    }
+    setIgnStatus('checking');
+    try {
+      const qs = new URLSearchParams({
+        uid: cleanUid,
+        productName: product.name,
+        ...(serverId ? {serverId: serverId.trim()} : {}),
+      });
+      const res = await fetch(`/api/store/lookup-player?${qs.toString()}`);
+      const data = (await res.json().catch(() => ({}))) as {
+        validFormat?: boolean;
+        verified?: boolean;
+        ign?: string;
+        region?: string;
+        message?: string;
+      };
+      if (!data.validFormat) {
+        setVerifiedIgn('');
+        setIgnRegion('');
+        setIgnStatus('invalid');
+        setIgnMessage(data.message || 'Invalid Player UID format.');
+        if (showToastOnError) toast.error(data.message || 'Invalid Player UID format.');
+        return;
+      }
+      if (data.verified && data.ign) {
+        setVerifiedIgn(data.ign);
+        setIgnRegion(data.region || '');
+        setIgnStatus('verified');
+        setIgnMessage(data.message || `Player Name: ${data.ign}`);
+      } else {
+        setVerifiedIgn('');
+        setIgnRegion('');
+        setIgnStatus('fallback');
+        setIgnMessage(data.message || 'UID format looks valid.');
+      }
+    } catch {
+      setIgnStatus('idle');
+    }
+  };
+
+  useEffect(() => {
+    if (!product?.requiresUid) return;
+    const clean = playerUid.trim();
+    if (clean.length < 5) {
+      setVerifiedIgn('');
+      setIgnRegion('');
+      setIgnStatus('idle');
+      setIgnMessage('');
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void runIgnLookup(clean, false);
+    }, 650);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerUid, serverId, product?.id]);
 
   const handleSaveUidProfile = async () => {
     if (!product || !playerUid.trim()) {
@@ -161,6 +235,7 @@ export function ProductDetailPage() {
       packageId: selectedPackage.id,
       uid: trimmedUid,
       server: serverId.trim(),
+      ...(verifiedIgn ? {ign: verifiedIgn} : {}),
     });
     navigate(`/checkout?${params.toString()}`);
   };
@@ -445,15 +520,57 @@ export function ProductDetailPage() {
                         </button>
                       )}
                     </div>
-                    <input
-                      type="text"
-                      inputMode={isNumericUidGame ? 'numeric' : 'text'}
-                      required
-                      value={playerUid}
-                      onChange={(e) => setPlayerUid(e.target.value)}
-                      placeholder={t('product.enterUid')}
-                      className="w-full px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 dark:border-slate-700 hover:border-slate-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
-                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        inputMode={isNumericUidGame ? 'numeric' : 'text'}
+                        required
+                        value={playerUid}
+                        onChange={(e) => setPlayerUid(e.target.value)}
+                        placeholder={t('product.enterUid')}
+                        className="flex-1 px-3.5 py-2.5 text-sm font-mono rounded-xl border-[1.5px] border-slate-300 dark:border-slate-700 hover:border-slate-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/25 focus:border-cyan-500 transition-colors"
+                      />
+                      <button
+                        type="button"
+                        disabled={ignStatus === 'checking' || playerUid.trim().length < 4}
+                        onClick={() => void runIgnLookup(playerUid, true)}
+                        className="px-3.5 py-2.5 rounded-xl bg-slate-900 dark:bg-cyan-600 hover:bg-slate-800 dark:hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5 transition-colors">
+                        {ignStatus === 'checking' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <UserCheck className="w-3.5 h-3.5" />
+                        )}
+                        <span>Check Name</span>
+                      </button>
+                    </div>
+                    {ignStatus === 'checking' && (
+                      <p className="text-[11px] text-cyan-600 dark:text-cyan-400 mt-1.5 flex items-center gap-1.5 font-medium">
+                        <Loader2 className="w-3 h-3 animate-spin" /> Checking in-game player nickname...
+                      </p>
+                    )}
+                    {ignStatus === 'verified' && verifiedIgn && (
+                      <div className="mt-2 px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-2 text-xs">
+                        <span className="inline-flex items-center gap-1.5 font-bold text-emerald-700 dark:text-emerald-300">
+                          <UserCheck className="w-4 h-4 shrink-0" />
+                          Player IGN: {verifiedIgn}
+                        </span>
+                        {ignRegion && (
+                          <span className="font-mono text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                            {ignRegion}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {ignStatus === 'fallback' && ignMessage && (
+                      <p className="text-[11px] text-cyan-700 dark:text-cyan-400 mt-1.5 font-medium">
+                        {ignMessage}
+                      </p>
+                    )}
+                    {ignStatus === 'invalid' && ignMessage && (
+                      <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1.5 flex items-center gap-1 font-semibold">
+                        <ShieldAlert className="w-3.5 h-3.5 shrink-0" /> {ignMessage}
+                      </p>
+                    )}
                     {isNumericUidGame && (
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
                         {t('uid.numericHint')}
@@ -661,6 +778,7 @@ export function ProductDetailPage() {
           </div>
         </div>
       </div>
+      <ReviewsSection productId={product.id} productName={product.name} initialLimit={6} />
     </StoreLayout>
   );
 }

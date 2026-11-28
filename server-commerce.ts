@@ -3,7 +3,7 @@ import type {Express, NextFunction, Request, Response} from 'express';
 import {FieldValue, Timestamp, type Firestore} from 'firebase-admin/firestore';
 
 export type CustomerTier = 'regular' | 'vip' | 'reseller';
-export type GatewayProvider = 'none' | 'uddoktapay' | 'bkash_merchant' | 'nagad_merchant';
+export type GatewayProvider = 'none' | 'uddoktapay' | 'sslcommerz' | 'bkash_merchant' | 'nagad_merchant';
 
 export interface CommerceSettings {
   vipSpendThreshold: number;
@@ -66,6 +66,27 @@ export interface CommerceDeps {
   notifyTelegramAdmins: (text: string, replyMarkup?: any) => Promise<void>;
   makeAdminOrderCallback: (orderId: string) => string;
   websiteUrl: string;
+  onLowVoucherStock?: (params: {
+    productId: string;
+    productName: string;
+    packageId: string;
+    packageName: string;
+    remaining: number;
+  }) => Promise<void> | void;
+  onDistributorFailed?: (params: {
+    orderNumber: string;
+    productName: string;
+    packageName: string;
+    errorText: string;
+    endpoint?: string;
+  }) => Promise<void> | void;
+  onOrderCompletedPush?: (params: {
+    customerUid: string;
+    orderNumber: string;
+    productName: string;
+    packageName: string;
+    voucherCode?: string;
+  }) => Promise<void> | void;
 }
 
 export function normalizeCommerceSettings(raw?: Partial<CommerceSettings> | null): CommerceSettings {
@@ -74,7 +95,7 @@ export function normalizeCommerceSettings(raw?: Partial<CommerceSettings> | null
     if (!Number.isFinite(n)) return fallback;
     return Math.min(max, Math.max(min, n));
   };
-  const validProviders: GatewayProvider[] = ['none', 'uddoktapay', 'bkash_merchant', 'nagad_merchant'];
+  const validProviders: GatewayProvider[] = ['none', 'uddoktapay', 'sslcommerz', 'bkash_merchant', 'nagad_merchant'];
   const prov = validProviders.includes(raw?.gatewayProvider as GatewayProvider)
     ? (raw?.gatewayProvider as GatewayProvider)
     : 'none';
@@ -289,6 +310,16 @@ export async function dispatchDistributorWithLog(
         .catch(() => null);
     }
 
+    if (!res.ok && deps.onDistributorFailed) {
+      void deps.onDistributorFailed({
+        orderNumber: params.orderNumber,
+        productName: params.productName,
+        packageName: params.packageName,
+        errorText: `HTTP ${res.status}: ${bodyText.slice(0, 200)}`,
+        endpoint,
+      });
+    }
+
     return {
       dispatched: res.ok,
       status: res.ok ? 'dispatched' : 'failed',
@@ -314,6 +345,15 @@ export async function dispatchDistributorWithLog(
           updatedAt: FieldValue.serverTimestamp(),
         })
         .catch(() => null);
+    }
+    if (deps.onDistributorFailed) {
+      void deps.onDistributorFailed({
+        orderNumber: params.orderNumber,
+        productName: params.productName,
+        packageName: params.packageName,
+        errorText: msg,
+        endpoint: endpoint || String(s.distributorBaseUrl || ''),
+      });
     }
     return {dispatched: false, status: 'failed', statusText: msg};
   }
@@ -801,6 +841,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
       productId?: string;
       packageId?: string;
       playerUid?: string;
+      playerIgn?: string;
       serverId?: string;
       customerName?: string;
       customerPhone?: string;
@@ -816,6 +857,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
     const productId = String(body.productId || '').trim().slice(0, 128);
     const packageId = String(body.packageId || '').trim().slice(0, 128);
     const playerUid = String(body.playerUid || '').trim().slice(0, 80);
+    const playerIgn = String(body.playerIgn || '').trim().slice(0, 80);
     const serverId = String(body.serverId || 'N/A').trim().slice(0, 80) || 'N/A';
     const rawCustomerName = String(body.customerName || '').trim().slice(0, 100);
     const rawCustomerPhone = String(body.customerPhone || '').trim().slice(0, 30);
@@ -1216,6 +1258,7 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           ...(fraudReasons.length > 0 ? {fraudReasons} : {}),
           distributorStatus: 'none',
           playerUid: product.requiresUid === false ? 'N/A' : playerUid,
+          ...(playerIgn ? {playerIgn} : {}),
           serverId: product.requiresServerId ? serverId : 'N/A',
           paymentType,
           paymentMethodId,
@@ -1310,10 +1353,20 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
           status: 'success',
           message: `Auto-claimed PIN for ${txResult.packageName}. Approx remaining unused in batch: ${remainingStockAfterClaim}.`,
         });
-        if (remainingStockAfterClaim <= 5) {
-          void deps.notifyTelegramAdmins(
-            `⚠️ Low Voucher PIN Stock Alert!\n📦 ${txResult.productName} · ${txResult.packageName}\n🔑 Remaining unused PINs: ${remainingStockAfterClaim}`,
-          );
+        if (remainingStockAfterClaim < 5) {
+          if (deps.onLowVoucherStock) {
+            void deps.onLowVoucherStock({
+              productId: txResult.productId,
+              productName: txResult.productName,
+              packageId: txResult.packageId,
+              packageName: txResult.packageName,
+              remaining: remainingStockAfterClaim,
+            });
+          } else {
+            void deps.notifyTelegramAdmins(
+              `⚠️ Low Voucher PIN Stock Alert!\n📦 ${txResult.productName} · ${txResult.packageName}\n🔑 Remaining unused PINs: ${remainingStockAfterClaim}`,
+            );
+          }
         }
       }
 
@@ -1342,9 +1395,18 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
         });
       }
 
-      // Settle loyalty + tier + referral bonus if already completed via Vault PIN
+      // Settle loyalty + tier + referral bonus & push if already completed via Vault PIN
       if (txResult.orderStatus === 'completed') {
         void settleOrderCompletionEffects(deps, txResult.orderId);
+        if (deps.onOrderCompletedPush && uid) {
+          void deps.onOrderCompletedPush({
+            customerUid: uid,
+            orderNumber: txResult.orderNumber,
+            productName: txResult.productName,
+            packageName: txResult.packageName,
+            voucherCode: txResult.claimedVoucherCode || undefined,
+          });
+        }
       }
 
       // Trigger Admin Email + Customer Email + Telegram Admin Alert
@@ -1813,10 +1875,29 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
         status: 'success',
         message: `Admin ${req.adminSession?.email} claimed Vault PIN. Approx remaining: ${remaining}.`,
       });
-      if (remaining <= 5) {
-        void deps.notifyTelegramAdmins(
-          `⚠️ Low Voucher PIN Stock!\n📦 ${claimed.productName} · ${claimed.packageName}\n🔑 Remaining unused PINs: ${remaining}`,
-        );
+      if (remaining < 5) {
+        if (deps.onLowVoucherStock) {
+          void deps.onLowVoucherStock({
+            productId: String(orderData.productId || ''),
+            productName: claimed.productName,
+            packageId: String(orderData.packageId || ''),
+            packageName: claimed.packageName,
+            remaining,
+          });
+        } else {
+          void deps.notifyTelegramAdmins(
+            `⚠️ Low Voucher PIN Stock!\n📦 ${claimed.productName} · ${claimed.packageName}\n🔑 Remaining unused PINs: ${remaining}`,
+          );
+        }
+      }
+      if (deps.onOrderCompletedPush && claimed.customerUid) {
+        void deps.onOrderCompletedPush({
+          customerUid: claimed.customerUid,
+          orderNumber: claimed.orderNumber,
+          productName: claimed.productName,
+          packageName: claimed.packageName,
+          voucherCode: claimed.code,
+        });
       }
       if (claimed.customerEmail) {
         void deps.sendCustomerOrderEmail({
@@ -2076,7 +2157,271 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
     }
   });
 
-  // Merchant Payment Gateway Session & Verified Webhook (UddoktaPay / bKash Merchant / Nagad Merchant Readiness)
+  // Merchant Payment Gateway Session & Verified Webhook (UddoktaPay / SSLCommerz / bKash Merchant / Nagad Merchant)
+  const completeOrderViaGateway = async (params: {
+    orderNumber: string;
+    provider: string;
+    gatewayTrxId: string;
+    paidAmount: number;
+  }) => {
+    if (!deps.adminDb) return false;
+    const snap = await deps.adminDb
+      .collection('orders')
+      .where('orderNumber', '==', params.orderNumber)
+      .limit(1)
+      .get();
+    if (snap.empty) return false;
+    const orderDoc = snap.docs[0];
+    const preData = orderDoc.data() as Record<string, unknown>;
+    if (preData.paymentStatus === 'verified') return true;
+
+    const productId = String(preData.productId || '');
+    const packageId = String(preData.packageId || '');
+    const unusedPinsSnap =
+      productId && packageId
+        ? await deps.adminDb
+            .collection('voucherStock')
+            .where('productId', '==', productId)
+            .where('packageId', '==', packageId)
+            .where('status', '==', 'unused')
+            .limit(6)
+            .get()
+        : null;
+    const candidatePinRef = unusedPinsSnap && !unusedPinsSnap.empty ? unusedPinsSnap.docs[0].ref : null;
+    const remainingAfterClaim = unusedPinsSnap ? Math.max(0, unusedPinsSnap.size - 1) : 0;
+
+    const outcome = await deps.adminDb.runTransaction(async (tx) => {
+      const freshSnap = await tx.get(orderDoc.ref);
+      if (!freshSnap.exists) return null;
+      const o = freshSnap.data() as Record<string, unknown>;
+      if (o.paymentStatus === 'verified') return null;
+
+      const pinSnap = candidatePinRef ? await tx.get(candidatePinRef) : null;
+      let claimedVoucherCode = '';
+      if (pinSnap?.exists && pinSnap.data()?.status === 'unused') {
+        claimedVoucherCode = String(pinSnap.data()?.code || '').trim();
+      }
+      const nextStatus: 'processing' | 'completed' = claimedVoucherCode ? 'completed' : 'processing';
+      const now = FieldValue.serverTimestamp();
+      const msg = claimedVoucherCode
+        ? `Instant payment verified via ${params.provider} & voucher code delivered (${claimedVoucherCode}).`
+        : `Instant payment verified via ${params.provider}. Processing top-up.`;
+
+      tx.update(orderDoc.ref, {
+        paymentStatus: 'verified',
+        orderStatus: nextStatus,
+        ...(claimedVoucherCode ? {voucherCode: claimedVoucherCode} : {}),
+        ...(params.gatewayTrxId ? {trxId: params.gatewayTrxId} : {}),
+        adminNote: `Verified by ${params.provider} gateway webhook (${params.gatewayTrxId || 'PGW'})`,
+        notificationMessage: msg,
+        updatedAt: now,
+        ...(nextStatus === 'completed' ? {completedAt: now} : {}),
+      });
+
+      if (claimedVoucherCode && candidatePinRef) {
+        tx.update(candidatePinRef, {
+          status: 'claimed',
+          claimedOrderId: freshSnap.id,
+          claimedOrderNumber: params.orderNumber,
+          claimedAt: now,
+        });
+      }
+
+      const trackingRef = deps.adminDb!.collection('orderTracking').doc(params.orderNumber);
+      tx.set(
+        trackingRef,
+        {
+          orderNumber: params.orderNumber,
+          paymentStatus: 'verified',
+          orderStatus: nextStatus,
+          notificationMessage: msg,
+          updatedAt: now,
+        },
+        {merge: true},
+      );
+
+      const customerUid = String(o.customerUid || '');
+      if (customerUid) {
+        const notifId = `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+        tx.set(deps.adminDb!.collection('notifications').doc(notifId), {
+          id: notifId,
+          customerUid,
+          orderId: freshSnap.id,
+          orderNumber: params.orderNumber,
+          title: claimedVoucherCode
+            ? `Order Completed — ${params.orderNumber}`
+            : `Instant Payment Verified — ${params.orderNumber}`,
+          message: msg,
+          read: false,
+          createdAt: now,
+        });
+      }
+
+      return {
+        orderId: freshSnap.id,
+        customerUid,
+        customerName: String(o.customerName || 'Customer'),
+        customerEmail: String(o.customerEmail || ''),
+        productId,
+        productName: String(o.productName || 'Top-up'),
+        packageId,
+        packageName: String(o.packageName || 'Package'),
+        playerUid: String(o.playerUid || 'N/A'),
+        serverId: String(o.serverId || 'N/A'),
+        totalAmount: Number(o.totalAmount || params.paidAmount || 0),
+        nextStatus,
+        claimedVoucherCode,
+        msg,
+      };
+    });
+
+    if (!outcome) return false;
+
+    if (outcome.claimedVoucherCode && remainingAfterClaim < 5 && deps.onLowVoucherStock) {
+      void deps.onLowVoucherStock({
+        productId: outcome.productId,
+        productName: outcome.productName,
+        packageId: outcome.packageId,
+        packageName: outcome.packageName,
+        remaining: remainingAfterClaim,
+      });
+    }
+
+    if (outcome.nextStatus === 'completed') {
+      void settleOrderCompletionEffects(deps, outcome.orderId);
+      if (deps.onOrderCompletedPush && outcome.customerUid) {
+        void deps.onOrderCompletedPush({
+          customerUid: outcome.customerUid,
+          orderNumber: params.orderNumber,
+          productName: outcome.productName,
+          packageName: outcome.packageName,
+          voucherCode: outcome.claimedVoucherCode || undefined,
+        });
+      }
+    } else {
+      void dispatchDistributorWithLog(deps, {
+        orderId: outcome.orderId,
+        orderNumber: params.orderNumber,
+        productId: outcome.productId,
+        productName: outcome.productName,
+        packageId: outcome.packageId,
+        packageName: outcome.packageName,
+        playerUid: outcome.playerUid,
+        serverId: outcome.serverId,
+        amount: outcome.totalAmount,
+      });
+    }
+
+    if (outcome.customerEmail) {
+      void deps.sendCustomerOrderEmail({
+        toEmail: outcome.customerEmail,
+        customerName: outcome.customerName,
+        orderNumber: params.orderNumber,
+        orderStatus: outcome.nextStatus,
+        paymentStatus: 'verified',
+        productName: outcome.productName,
+        packageName: outcome.packageName,
+        playerUid: outcome.playerUid,
+        serverId: outcome.serverId,
+        totalAmount: outcome.totalAmount,
+        paymentMethodName: params.provider.toUpperCase(),
+        trxId: params.gatewayTrxId || params.orderNumber,
+        voucherCode: outcome.claimedVoucherCode || undefined,
+        note: outcome.msg,
+      });
+    }
+
+    void deps.notifyTelegramAdmins(
+      [
+        `⚡ Gateway Payment Verified (${params.provider.toUpperCase()})!`,
+        `🧾 Order: ${params.orderNumber} (${outcome.nextStatus.toUpperCase()})`,
+        `🎮 ${outcome.productName} · ${outcome.packageName}`,
+        `💰 ৳${outcome.totalAmount} | 🔑 ${params.gatewayTrxId || 'PGW'}`,
+      ].join('\n'),
+      {
+        inline_keyboard: [
+          [{text: `🔎 Inspect ${params.orderNumber}`, callback_data: deps.makeAdminOrderCallback(outcome.orderId)}],
+        ],
+      },
+    );
+    return true;
+  };
+
+  const completeWalletTopupViaGateway = async (params: {
+    topupId: string;
+    provider: string;
+    gatewayTrxId: string;
+  }) => {
+    if (!deps.adminDb) return false;
+    const topupRef = deps.adminDb.collection('walletTopups').doc(params.topupId);
+    const outcome = await deps.adminDb.runTransaction(async (tx) => {
+      const topupSnap = await tx.get(topupRef);
+      if (!topupSnap.exists) return null;
+      const t = topupSnap.data() as Record<string, unknown>;
+      if (t.status === 'approved') return null;
+
+      const customerUid = String(t.customerUid || '').trim();
+      if (!customerUid) return null;
+      const custRef = deps.adminDb!.collection('customers').doc(customerUid);
+      const custSnap = await tx.get(custRef);
+      if (!custSnap.exists) return null;
+
+      const amount = Number(t.amount || 0);
+      const nextWalletBalance = Number((Number(custSnap.data()?.walletBalance || 0) + amount).toFixed(2));
+      const now = FieldValue.serverTimestamp();
+
+      tx.update(topupRef, {
+        status: 'approved',
+        ...(params.gatewayTrxId ? {trxId: params.gatewayTrxId} : {}),
+        adminNote: `Auto-approved via ${params.provider} gateway webhook (${params.gatewayTrxId || 'PGW'}).`,
+        updatedAt: now,
+      });
+      tx.update(custRef, {walletBalance: nextWalletBalance, updatedAt: now});
+
+      const notifId = `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+      tx.set(deps.adminDb!.collection('notifications').doc(notifId), {
+        id: notifId,
+        customerUid,
+        orderId: params.topupId,
+        orderNumber: params.topupId,
+        title: `Wallet Deposit Credited — ৳${amount}`,
+        message: `Your instant ${params.provider} deposit of ৳${amount} has been credited to your wallet.`,
+        read: false,
+        createdAt: now,
+      });
+
+      return {
+        customerUid,
+        customerName: String(t.customerName || 'Customer'),
+        customerEmail: String(t.customerEmail || ''),
+        amount,
+        nextWalletBalance,
+      };
+    });
+
+    if (!outcome) return false;
+    if (outcome.customerEmail) {
+      void deps.sendCustomerGenericEmail({
+        toEmail: outcome.customerEmail,
+        customerName: outcome.customerName,
+        subject: `Instant Wallet Deposit Credited — ৳${outcome.amount}`,
+        headline: 'Instant Gateway Deposit Credited!',
+        message: `Your payment via ${params.provider.toUpperCase()} was verified and added to your wallet balance.`,
+        rows: [
+          {label: 'Deposit ID', value: params.topupId},
+          {label: 'Amount Credited', value: `৳${outcome.amount}`},
+          {label: 'Gateway TrxID', value: params.gatewayTrxId || params.topupId},
+          {label: 'New Wallet Balance', value: `৳${outcome.nextWalletBalance}`},
+        ],
+      });
+    }
+    void deps.notifyTelegramAdmins(
+      `⚡ Instant Gateway Deposit Approved (${params.provider.toUpperCase()})\n💰 Credited: ৳${outcome.amount}\n👤 ${outcome.customerName} | Balance: ৳${outcome.nextWalletBalance}`,
+      {inline_keyboard: [[{text: '🛡️ Open Admin Panel', callback_data: 'adm:home'}]]},
+    );
+    return true;
+  };
+
   app.post('/api/payment-gateway/create-session', deps.requireSignedInFirebase, async (req: any, res: Response) => {
     const store = deps.readStore();
     const cfg = normalizeCommerceSettings(store.systemSettings?.commerce);
@@ -2090,50 +2435,296 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
       return;
     }
 
-    const {orderNumber, amount, customerName, customerEmail} = (req.body || {}) as {
-      orderNumber?: string;
-      amount?: number;
-      customerName?: string;
-      customerEmail?: string;
-    };
-    if (!orderNumber || !(Number(amount) > 0)) {
-      res.status(400).json({error: 'Valid orderNumber and positive amount required'});
+    if (!deps.adminDb) {
+      res.status(503).json({error: 'Database unavailable'});
       return;
     }
 
+    const uid = String(req.firebaseAuthUid || '').trim();
+    const purpose: 'order' | 'wallet_topup' = req.body?.purpose === 'wallet_topup' ? 'wallet_topup' : 'order';
+    const customerName = String(req.body?.customerName || req.firebaseAuthName || 'Customer').trim().slice(0, 100);
+    const customerEmail = String(req.body?.customerEmail || req.firebaseAuthEmail || 'customer@munaftopup.bd').trim().slice(0, 160);
+    const customerPhone = String(req.body?.customerPhone || '01700000000').trim().slice(0, 30);
+
+    let referenceId = String(req.body?.orderNumber || '').trim();
+    let finalAmount = Number(req.body?.amount || 0);
+
     try {
-      const endpoint = `${cfg.gatewayBaseUrl.replace(/\/$/, '')}/api/checkout-v2`;
-      const gwRes = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'RT-UDDOKTAPAY-API-KEY': cfg.gatewayApiKey,
-          Authorization: `Bearer ${cfg.gatewayApiKey}`,
-        },
-        body: JSON.stringify({
-          full_name: customerName || 'Customer',
-          email: customerEmail || 'customer@munaftopup.bd',
-          amount: Number(amount),
-          metadata: {order_number: orderNumber},
-          redirect_url: `${deps.websiteUrl.replace(/\/$/, '')}/orders?order=${encodeURIComponent(orderNumber)}`,
-          cancel_url: `${deps.websiteUrl.replace(/\/$/, '')}/checkout`,
-          webhook_url: `${deps.websiteUrl.replace(/\/$/, '')}/api/payment-gateway/webhook/${cfg.gatewayProvider}`,
-        }),
-      });
-      const payload = (await gwRes.json().catch(() => ({}))) as {payment_url?: string; message?: string};
-      await writeApiLog(deps.adminDb, {
-        type: 'payment_gateway',
-        orderNumber,
-        endpoint,
-        status: gwRes.ok ? 'success' : 'failed',
-        httpStatus: gwRes.status,
-        message: gwRes.ok ? 'Gateway session created' : payload.message || `HTTP ${gwRes.status}`,
-      });
-      if (!gwRes.ok || !payload.payment_url) {
-        res.status(502).json({error: payload.message || 'Gateway did not return payment_url'});
+      // Create pending Firestore record automatically when initiating instant gateway checkout or Add Money
+      if (purpose === 'wallet_topup') {
+        if (!(finalAmount >= 10 && finalAmount <= 500000)) {
+          res.status(400).json({error: 'Deposit amount must be between ৳10 and ৳500,000'});
+          return;
+        }
+        const topupId = `gwtop_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+        const now = FieldValue.serverTimestamp();
+        await deps.adminDb.collection('walletTopups').doc(topupId).set({
+          id: topupId,
+          customerUid: uid,
+          customerName,
+          customerEmail,
+          amount: finalAmount,
+          paymentMethodId: cfg.gatewayProvider,
+          paymentMethodName: `${cfg.gatewayProvider.toUpperCase()} Instant`,
+          senderNumber: customerPhone,
+          trxId: `PGW_${topupId}`,
+          trxKey: `PGW_${topupId}`,
+          screenshotUrl: '',
+          status: 'pending',
+          adminNote: `Initiated ${cfg.gatewayProvider} instant deposit session`,
+          createdAt: now,
+          updatedAt: now,
+        });
+        referenceId = topupId;
+      } else if (!referenceId && req.body?.productId && req.body?.packageId) {
+        const productId = String(req.body.productId).trim();
+        const packageId = String(req.body.packageId).trim();
+        const playerUid = String(req.body.playerUid || 'N/A').trim();
+        const playerIgn = String(req.body.playerIgn || '').trim().slice(0, 80);
+        const serverId = String(req.body.serverId || 'N/A').trim();
+        const [prodSnap, custSnap, flashSnap] = await Promise.all([
+          deps.adminDb.collection('products').doc(productId).get(),
+          deps.adminDb.collection('customers').doc(uid).get(),
+          deps.adminDb.collection('flashSales').where('productId', '==', productId).get(),
+        ]);
+        if (!prodSnap.exists) {
+          res.status(404).json({error: 'Product not found'});
+          return;
+        }
+        const prod = prodSnap.data() as any;
+        const pkg = (prod.packages || []).find((k: any) => k.id === packageId && k.active !== false);
+        if (!pkg) {
+          res.status(404).json({error: 'Package not found'});
+          return;
+        }
+        const activeFlash = flashSnap.docs
+          .map((d) => d.data() as Record<string, unknown>)
+          .find((s) => isFlashSaleCurrentlyActive(s, productId));
+        const basePrice = Number(pkg.price || 0);
+        const flashDisc = activeFlash
+          ? Number(((basePrice * Number(activeFlash.discountPercent || 0)) / 100).toFixed(2))
+          : 0;
+        const afterFlash = Math.max(1, Number((basePrice - flashDisc).toFixed(2)));
+        const cust = custSnap.exists ? (custSnap.data() as any) : {};
+        const tier: CustomerTier = cust.tier === 'reseller' ? 'reseller' : cust.tier === 'vip' ? 'vip' : 'regular';
+        const tierPct =
+          tier === 'reseller' ? cfg.resellerDiscountPercent : tier === 'vip' ? cfg.vipDiscountPercent : 0;
+        const tierDisc = tierPct > 0 ? Number(((afterFlash * tierPct) / 100).toFixed(2)) : 0;
+        finalAmount = Math.max(1, Number((afterFlash - tierDisc).toFixed(2)));
+
+        const orderId = `ord_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+        const orderNumber = generateOrderNumber();
+        const now = FieldValue.serverTimestamp();
+        await deps.adminDb.collection('orders').doc(orderId).set({
+          id: orderId,
+          orderNumber,
+          customerUid: uid,
+          customerName,
+          customerEmail,
+          customerPhone,
+          productId: prod.id,
+          productName: prod.name,
+          productImage: prod.images?.[0] || '',
+          packageId: pkg.id,
+          packageName: pkg.name,
+          quantityLabel: pkg.quantityLabel || '',
+          unitPrice: basePrice,
+          flashSaleDiscount: flashDisc,
+          tierDiscount: tierDisc,
+          appliedTier: tier,
+          totalAmount: finalAmount,
+          playerUid,
+          ...(playerIgn ? {playerIgn} : {}),
+          serverId,
+          paymentType: 'manual',
+          paymentMethodId: cfg.gatewayProvider,
+          paymentMethodName: `${cfg.gatewayProvider.toUpperCase()} Instant`,
+          senderNumber: customerPhone,
+          trxId: `PGW_${orderNumber}`,
+          trxKey: `PGW_${orderNumber}`,
+          screenshotUrl: '',
+          voucherCode: '',
+          walletRefunded: false,
+          paymentStatus: 'pending',
+          orderStatus: 'pending',
+          adminNote: `Initiated ${cfg.gatewayProvider} instant checkout`,
+          notificationMessage: 'Awaiting instant payment gateway confirmation.',
+          createdAt: now,
+          updatedAt: now,
+        });
+        await deps.adminDb.collection('orderTracking').doc(orderNumber).set({
+          orderNumber,
+          productName: prod.name,
+          packageName: pkg.name,
+          playerUidMasked: maskPlayerUid(playerUid),
+          paymentStatus: 'pending',
+          orderStatus: 'pending',
+          notificationMessage: 'Awaiting instant payment gateway confirmation.',
+          createdAt: now,
+          updatedAt: now,
+        });
+        referenceId = orderNumber;
+      }
+
+      if (!referenceId || !(finalAmount > 0)) {
+        res.status(400).json({error: 'Valid reference and positive amount required'});
         return;
       }
-      res.json({ok: true, paymentUrl: payload.payment_url});
+
+      const base = cfg.gatewayBaseUrl.replace(/\/$/, '');
+      const siteBase = deps.websiteUrl.replace(/\/$/, '');
+      const redirectOk =
+        purpose === 'wallet_topup'
+          ? `${siteBase}/add-money?status=paid&ref=${encodeURIComponent(referenceId)}`
+          : `${siteBase}/orders?order=${encodeURIComponent(referenceId)}`;
+      const webhookUrl = `${siteBase}/api/payment-gateway/webhook/${cfg.gatewayProvider}`;
+
+      let paymentUrl = '';
+      let endpoint = '';
+      let gwStatus = 200;
+      let errMsg = '';
+
+      if (cfg.gatewayProvider === 'sslcommerz') {
+        endpoint = `${base}/gwprocess/v4/api.php`;
+        const form = new URLSearchParams({
+          store_id: cfg.gatewayApiKey,
+          store_passwd: cfg.gatewayWebhookSecret,
+          total_amount: String(finalAmount),
+          currency: 'BDT',
+          tran_id: referenceId,
+          success_url: redirectOk,
+          fail_url: `${siteBase}/${purpose === 'wallet_topup' ? 'add-money' : 'checkout'}?status=failed`,
+          cancel_url: `${siteBase}/${purpose === 'wallet_topup' ? 'add-money' : 'checkout'}?status=cancelled`,
+          ipn_url: webhookUrl,
+          cus_name: customerName,
+          cus_email: customerEmail,
+          cus_phone: customerPhone,
+          cus_add1: 'Dhaka',
+          cus_city: 'Dhaka',
+          cus_country: 'Bangladesh',
+          shipping_method: 'NO',
+          product_name: purpose === 'wallet_topup' ? 'Wallet Deposit' : `Order ${referenceId}`,
+          product_category: 'Digital Goods',
+          product_profile: 'non-physical-goods',
+          value_a: purpose,
+          value_b: referenceId,
+        });
+        const gwRes = await fetch(endpoint, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: form.toString(),
+          signal: AbortSignal.timeout(12000),
+        });
+        gwStatus = gwRes.status;
+        const payload = (await gwRes.json().catch(() => ({}))) as {
+          GatewayPageURL?: string;
+          failedreason?: string;
+        };
+        paymentUrl = String(payload.GatewayPageURL || '');
+        errMsg = String(payload.failedreason || '');
+      } else if (cfg.gatewayProvider === 'bkash_merchant') {
+        endpoint = `${base}/tokenized/checkout/token/grant`;
+        const tokenRes = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            username: customerName,
+            password: cfg.gatewayWebhookSecret,
+          },
+          body: JSON.stringify({app_key: cfg.gatewayApiKey, app_secret: cfg.gatewayWebhookSecret}),
+          signal: AbortSignal.timeout(10000),
+        });
+        const tokenData = (await tokenRes.json().catch(() => ({}))) as {id_token?: string; statusMessage?: string};
+        if (tokenRes.ok && tokenData.id_token) {
+          const createUrl = `${base}/tokenized/checkout/create`;
+          const createRes = await fetch(createUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: tokenData.id_token,
+              'X-APP-Key': cfg.gatewayApiKey,
+            },
+            body: JSON.stringify({
+              mode: '0011',
+              payerReference: uid,
+              callbackURL: `${webhookUrl}?purpose=${purpose}&ref=${encodeURIComponent(referenceId)}`,
+              amount: String(finalAmount),
+              currency: 'BDT',
+              intent: 'sale',
+              merchantInvoiceNumber: referenceId,
+            }),
+            signal: AbortSignal.timeout(12000),
+          });
+          gwStatus = createRes.status;
+          const createData = (await createRes.json().catch(() => ({}))) as {bkashURL?: string; statusMessage?: string};
+          paymentUrl = String(createData.bkashURL || '');
+          errMsg = String(createData.statusMessage || '');
+        } else {
+          gwStatus = tokenRes.status;
+          errMsg = String(tokenData.statusMessage || 'bKash token grant failed');
+        }
+      } else if (cfg.gatewayProvider === 'nagad_merchant') {
+        endpoint = `${base}/api/dfs/check-out/initialize`;
+        const gwRes = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-KM-Api-Version': 'v-0.2.0',
+            Authorization: `Bearer ${cfg.gatewayApiKey}`,
+          },
+          body: JSON.stringify({
+            orderId: referenceId,
+            amount: String(finalAmount),
+            purpose,
+            callbackUrl: webhookUrl,
+            redirectUrl: redirectOk,
+          }),
+          signal: AbortSignal.timeout(12000),
+        });
+        gwStatus = gwRes.status;
+        const payload = (await gwRes.json().catch(() => ({}))) as {callBackUrl?: string; payment_url?: string; message?: string};
+        paymentUrl = String(payload.callBackUrl || payload.payment_url || '');
+        errMsg = String(payload.message || '');
+      } else {
+        // UddoktaPay
+        endpoint = `${base}/api/checkout-v2`;
+        const gwRes = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'RT-UDDOKTAPAY-API-KEY': cfg.gatewayApiKey,
+            Authorization: `Bearer ${cfg.gatewayApiKey}`,
+          },
+          body: JSON.stringify({
+            full_name: customerName,
+            email: customerEmail,
+            amount: finalAmount,
+            metadata: {order_number: referenceId, purpose, reference_id: referenceId},
+            redirect_url: redirectOk,
+            cancel_url: `${siteBase}/${purpose === 'wallet_topup' ? 'add-money' : 'checkout'}?status=cancelled`,
+            webhook_url: webhookUrl,
+          }),
+          signal: AbortSignal.timeout(12000),
+        });
+        gwStatus = gwRes.status;
+        const payload = (await gwRes.json().catch(() => ({}))) as {payment_url?: string; message?: string};
+        paymentUrl = String(payload.payment_url || '');
+        errMsg = String(payload.message || '');
+      }
+
+      await writeApiLog(deps.adminDb, {
+        type: 'payment_gateway',
+        orderNumber: referenceId,
+        endpoint,
+        status: paymentUrl ? 'success' : 'failed',
+        httpStatus: gwStatus,
+        message: paymentUrl ? `Gateway session created (${cfg.gatewayProvider})` : errMsg || `HTTP ${gwStatus}`,
+      });
+      if (!paymentUrl) {
+        res.status(502).json({error: errMsg || 'Gateway did not return payment URL'});
+        return;
+      }
+      res.json({ok: true, paymentUrl, referenceId});
     } catch (err) {
       res.status(502).json({error: err instanceof Error ? err.message : 'Payment gateway error'});
     }
@@ -2148,66 +2739,66 @@ export function registerCommerceRoutes(app: Express, deps: CommerceDeps): void {
       return;
     }
 
+    const body = (req.body || {}) as Record<string, any>;
     const expectedSecret = cfg.gatewayWebhookSecret || cfg.gatewayApiKey;
-    const provided = String(
-      req.headers['rt-uddoktapay-api-key'] || req.headers['x-webhook-secret'] || '',
-    ).trim();
-    if (!provided || !deps.timingSafeEqualsText(provided, expectedSecret)) {
-      res.status(401).json({error: 'Invalid gateway webhook signature'});
+
+    // Verify webhook signature/authenticity
+    let verifiedWebhook = false;
+    if (provider === 'sslcommerz') {
+      // Verify SSLCommerz IPN via store_id match + optional val_id server validation
+      const storeIdMatch = body.store_id && deps.timingSafeEqualsText(String(body.store_id), cfg.gatewayApiKey);
+      if (storeIdMatch && body.val_id && cfg.gatewayBaseUrl) {
+        try {
+          const valUrl = `${cfg.gatewayBaseUrl.replace(/\/$/, '')}/validator/api/validationserverAPI.php?val_id=${encodeURIComponent(String(body.val_id))}&store_id=${encodeURIComponent(cfg.gatewayApiKey)}&store_passwd=${encodeURIComponent(cfg.gatewayWebhookSecret)}&format=json`;
+          const valRes = await fetch(valUrl, {signal: AbortSignal.timeout(8000)});
+          const valData = (await valRes.json().catch(() => ({}))) as {status?: string};
+          verifiedWebhook = valRes.ok && (valData.status === 'VALID' || valData.status === 'VALIDATED');
+        } catch {
+          verifiedWebhook = false;
+        }
+      } else if (storeIdMatch && (body.status === 'VALID' || body.status === 'VALIDATED')) {
+        verifiedWebhook = true;
+      }
+    } else {
+      const provided = String(
+        req.headers['rt-uddoktapay-api-key'] || req.headers['x-webhook-secret'] || '',
+      ).trim();
+      verifiedWebhook = Boolean(provided && deps.timingSafeEqualsText(provided, expectedSecret));
+    }
+
+    if (!verifiedWebhook) {
+      res.status(401).json({error: 'Invalid gateway webhook signature or validation failed'});
       return;
     }
 
-    const body = (req.body || {}) as {
-      status?: string;
-      metadata?: {order_number?: string};
-      orderNumber?: string;
-      transaction_id?: string;
-      amount?: number;
-    };
-    const orderNumber = String(body.metadata?.order_number || body.orderNumber || '').trim();
+    const meta = (body.metadata || {}) as Record<string, any>;
+    const purpose = String(meta.purpose || body.value_a || req.query.purpose || 'order');
+    const referenceId = String(
+      meta.reference_id || meta.order_number || body.value_b || body.tran_id || body.orderNumber || req.query.ref || '',
+    ).trim();
     const gwStatus = String(body.status || '').toUpperCase();
-    if (!orderNumber || !deps.adminDb) {
-      res.status(400).json({error: 'Missing order reference'});
+    const isCompleted = ['COMPLETED', 'VALID', 'VALIDATED', 'SUCCESS', 'PAID'].includes(gwStatus);
+    const gatewayTrxId = String(body.transaction_id || body.bank_tran_id || body.trxID || '').trim();
+    const paidAmount = Number(body.amount || 0);
+
+    if (!referenceId || !deps.adminDb) {
+      res.status(400).json({error: 'Missing order/deposit reference'});
       return;
     }
 
     await writeApiLog(deps.adminDb, {
       type: 'payment_gateway',
-      orderNumber,
+      orderNumber: referenceId,
       endpoint: `/api/payment-gateway/webhook/${provider}`,
-      status: gwStatus === 'COMPLETED' ? 'success' : 'pending',
-      message: `Webhook received: status=${gwStatus || 'UNKNOWN'} trx=${body.transaction_id || '—'}`,
+      status: isCompleted ? 'success' : 'pending',
+      message: `Webhook (${purpose}): status=${gwStatus || 'UNKNOWN'} trx=${gatewayTrxId || '—'}`,
     });
 
-    if (gwStatus === 'COMPLETED') {
-      const snap = await deps.adminDb
-        .collection('orders')
-        .where('orderNumber', '==', orderNumber)
-        .limit(1)
-        .get();
-      if (!snap.empty) {
-        const orderDoc = snap.docs[0];
-        const o = orderDoc.data() as Record<string, unknown>;
-        if (o.paymentStatus !== 'verified') {
-          await orderDoc.ref.update({
-            paymentStatus: 'verified',
-            orderStatus: o.orderStatus === 'pending' ? 'processing' : o.orderStatus,
-            trxId: String(body.transaction_id || o.trxId || ''),
-            adminNote: `Verified by ${provider} merchant webhook`,
-            notificationMessage: 'Merchant gateway payment verified! Processing order.',
-            updatedAt: FieldValue.serverTimestamp(),
-          });
-          await deps.adminDb
-            .collection('orderTracking')
-            .doc(orderNumber)
-            .update({
-              paymentStatus: 'verified',
-              orderStatus: o.orderStatus === 'pending' ? 'processing' : o.orderStatus,
-              notificationMessage: 'Merchant gateway payment verified! Processing order.',
-              updatedAt: FieldValue.serverTimestamp(),
-            })
-            .catch(() => null);
-        }
+    if (isCompleted) {
+      if (purpose === 'wallet_topup' || referenceId.startsWith('gwtop_')) {
+        await completeWalletTopupViaGateway({topupId: referenceId, provider, gatewayTrxId});
+      } else {
+        await completeOrderViaGateway({orderNumber: referenceId, provider, gatewayTrxId, paidAmount});
       }
     }
 
@@ -2431,10 +3022,20 @@ export async function reconcilePendingTransactionsForSms(
             status: 'success',
             message: `Auto-claimed PIN after incoming SMS verification. Remaining unused in batch: ${remainingStockAfterClaim}.`,
           });
-          if (remainingStockAfterClaim <= 5) {
-            void deps.notifyTelegramAdmins(
-              `⚠️ Low Voucher PIN Stock Alert!\n📦 ${orderTxOutcome.productName} · ${orderTxOutcome.packageName}\n🔑 Remaining unused PINs: ${remainingStockAfterClaim}`,
-            );
+          if (remainingStockAfterClaim < 5) {
+            if (deps.onLowVoucherStock) {
+              void deps.onLowVoucherStock({
+                productId: orderTxOutcome.productId,
+                productName: orderTxOutcome.productName,
+                packageId: orderTxOutcome.packageId,
+                packageName: orderTxOutcome.packageName,
+                remaining: remainingStockAfterClaim,
+              });
+            } else {
+              void deps.notifyTelegramAdmins(
+                `⚠️ Low Voucher PIN Stock Alert!\n📦 ${orderTxOutcome.productName} · ${orderTxOutcome.packageName}\n🔑 Remaining unused PINs: ${remainingStockAfterClaim}`,
+              );
+            }
           }
         }
 
@@ -2452,6 +3053,15 @@ export async function reconcilePendingTransactionsForSms(
           });
         } else {
           void settleOrderCompletionEffects(deps, orderTxOutcome.orderId);
+          if (deps.onOrderCompletedPush && orderTxOutcome.customerUid) {
+            void deps.onOrderCompletedPush({
+              customerUid: orderTxOutcome.customerUid,
+              orderNumber: orderTxOutcome.orderNumber,
+              productName: orderTxOutcome.productName,
+              packageName: orderTxOutcome.packageName,
+              voucherCode: orderTxOutcome.claimedVoucherCode || undefined,
+            });
+          }
         }
 
         if (orderTxOutcome.customerEmail) {

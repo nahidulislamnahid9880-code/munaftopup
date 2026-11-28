@@ -1,6 +1,8 @@
 import React, {useState} from 'react';
 import {Link, useLocation} from 'react-router-dom';
 import {
+  Bell,
+  BellOff,
   Gem,
   HelpCircle,
   Home,
@@ -40,7 +42,8 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();
 
-  useBrowserPushAlerts(firebaseUser?.uid);
+  const {supported: pushUiSupported, isSubscribed, enablePushNotifications, disablePushNotifications} =
+    useBrowserPushAlerts(firebaseUser?.uid);
 
   const walletBalance = customerProfile?.walletBalance ?? 0;
   const avatarUrl = customerProfile?.photoURL || firebaseUser?.photoURL || '';
@@ -157,9 +160,31 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
             ))}
           </nav>
 
-          {/* Right: Language + Theme + PWA Install + Orders Bag + Wallet + Profile Avatar */}
+          {/* Right: Language + Theme + Push Bell + PWA Install + Orders Bag + Wallet + Profile Avatar */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <PWAInstallButton variant="compact" />
+            {pushUiSupported && (
+              <button
+                type="button"
+                onClick={() => (isSubscribed ? void disablePushNotifications() : void enablePushNotifications())}
+                title={
+                  isSubscribed
+                    ? lang === 'bn'
+                      ? 'পুশ অ্যালার্ট চালু আছে (বন্ধ করতে ট্যাপ করুন)'
+                      : 'Push alerts enabled (click to disable)'
+                    : lang === 'bn'
+                      ? 'অর্ডার ও ফ্ল্যাশ সেল পুশ নোটিফিকেশন চালু করুন'
+                      : 'Enable Push Alerts for orders & flash sales'
+                }
+                aria-label="Toggle browser push notifications"
+                className={`hidden sm:flex w-9 h-9 rounded-lg border-[1.5px] items-center justify-center shrink-0 cursor-pointer transition-colors ${
+                  isSubscribed
+                    ? 'border-emerald-400/60 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:border-cyan-500'
+                }`}>
+                {isSubscribed ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+              </button>
+            )}
             <button
               type="button"
               onClick={toggleLang}
@@ -281,6 +306,27 @@ export function StoreLayout({children}: {children: React.ReactNode}) {
               </div>
 
               <PWAInstallButton variant="drawer" />
+
+              {pushUiSupported && (
+                <button
+                  type="button"
+                  onClick={() => (isSubscribed ? void disablePushNotifications() : void enablePushNotifications())}
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border-[1.5px] text-xs font-semibold cursor-pointer transition-colors ${
+                    isSubscribed
+                      ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200'
+                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-cyan-500'
+                  }`}>
+                  <span className="flex items-center gap-2">
+                    {isSubscribed ? <Bell className="w-4 h-4 text-emerald-600" /> : <BellOff className="w-4 h-4 text-slate-400" />}
+                    <span>
+                      {lang === 'bn' ? 'লাইভ পুশ নোটিফিকেশন' : 'Live Push Alerts'}
+                    </span>
+                  </span>
+                  <span className="font-bold">
+                    {isSubscribed ? (lang === 'bn' ? 'চালু' : 'ON') : (lang === 'bn' ? 'চালু করুন' : 'Enable')}
+                  </span>
+                </button>
+              )}
 
               {/* Drawer Navigation Links */}
               <nav className="space-y-1">

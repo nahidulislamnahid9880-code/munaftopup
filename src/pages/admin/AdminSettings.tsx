@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Award,
   Bot,
+  Code2,
   Copy,
   CreditCard,
   KeyRound,
@@ -13,6 +14,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Search,
   Send,
   Server,
   ShieldAlert,
@@ -117,6 +119,23 @@ interface SystemSettingsForm {
   telegramQuickReplies: TelegramQuickReplyPreset[];
   telegramAdminChatIdsInput: string;
   telegramAdminOrderAlerts: boolean;
+  playerLookupBaseUrl: string;
+  playerLookupApiKey: string;
+  hasPlayerLookupApiKey: boolean;
+  autoApproveReviews: boolean;
+}
+
+interface ResellerApiKeyItem {
+  id: string;
+  label: string;
+  customerUid: string;
+  customerEmail: string;
+  keyPrefix: string;
+  active: boolean;
+  totalRequests: number;
+  totalSpent: number;
+  createdAtMs: number;
+  lastUsedAtMs: number;
 }
 
 const DEFAULT_PERMS: StaffPermissions = {
@@ -171,6 +190,10 @@ export function AdminSettings() {
     telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
     telegramAdminChatIdsInput: '',
     telegramAdminOrderAlerts: true,
+    playerLookupBaseUrl: '',
+    playerLookupApiKey: '',
+    hasPlayerLookupApiKey: false,
+    autoApproveReviews: false,
   });
   const [newQuickLabel, setNewQuickLabel] = useState('');
   const [newQuickAction, setNewQuickAction] = useState<TelegramQuickReplyAction>('reply');
@@ -193,7 +216,12 @@ export function AdminSettings() {
     fraudMaxFailedTrxPerHour: 5,
     fraudMaxOrdersPer10Min: 4,
     gatewayEnabled: false,
-    gatewayProvider: 'none' as 'none' | 'uddoktapay' | 'bkash_merchant' | 'nagad_merchant',
+    gatewayProvider: 'none' as
+      | 'none'
+      | 'uddoktapay'
+      | 'sslcommerz'
+      | 'bkash_merchant'
+      | 'nagad_merchant',
     gatewayBaseUrl: '',
     gatewayApiKey: '',
     hasGatewayApiKey: false,
@@ -203,6 +231,19 @@ export function AdminSettings() {
   const [savingCommerce, setSavingCommerce] = useState(false);
   const [commerceMsg, setCommerceMsg] = useState('');
   const [commerceErr, setCommerceErr] = useState('');
+
+  // Public Reseller / Developer API v1 Keys
+  const [resellerKeys, setResellerKeys] = useState<ResellerApiKeyItem[]>([]);
+  const [newKeyEmail, setNewKeyEmail] = useState('');
+  const [newKeyLabel, setNewKeyLabel] = useState('');
+  const [issuingKey, setIssuingKey] = useState(false);
+  const [revealedKey, setRevealedKey] = useState<{
+    rawKey: string;
+    label: string;
+    customerEmail: string;
+  } | null>(null);
+  const [resellerMsg, setResellerMsg] = useState('');
+  const [resellerErr, setResellerErr] = useState('');
 
   // Audit & API logs
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
@@ -247,13 +288,14 @@ export function AdminSettings() {
   const loadServerData = useCallback(async () => {
     if (!canSettings) return;
     try {
-      const [staffRes, sysRes, logsRes, autoRes, commerceRes, apiLogsRes] = await Promise.all([
+      const [staffRes, sysRes, logsRes, autoRes, commerceRes, apiLogsRes, resellerKeysRes] = await Promise.all([
         adminFetch('/api/admin/staff'),
         adminFetch('/api/admin/system-settings'),
         adminFetch('/api/admin/server-logs'),
         adminFetch('/api/admin/automation-status'),
         adminFetch('/api/admin/commerce-settings'),
         adminFetch('/api/admin/api-logs'),
+        adminFetch('/api/admin/reseller-keys'),
       ]);
       if (staffRes.ok) {
         const d = (await staffRes.json()) as {staff: ServerStaffItem[]};
@@ -268,6 +310,8 @@ export function AdminSettings() {
           ...d.settings,
           smtpPassword: '',
           distributorApiKey: '',
+          playerLookupApiKey: '',
+          autoApproveReviews: d.settings.autoApproveReviews === true,
           customerEmailNotificationsEnabled: d.settings.customerEmailNotificationsEnabled !== false,
           telegramQuickRepliesEnabled: d.settings.telegramQuickRepliesEnabled !== false,
           telegramQuickReplies: Array.isArray(d.settings.telegramQuickReplies)
@@ -305,6 +349,10 @@ export function AdminSettings() {
       if (apiLogsRes.ok) {
         const d = (await apiLogsRes.json()) as {logs?: typeof apiLogs};
         setApiLogs(d.logs || []);
+      }
+      if (resellerKeysRes.ok) {
+        const d = (await resellerKeysRes.json()) as {keys?: ResellerApiKeyItem[]};
+        setResellerKeys(d.keys || []);
       }
     } catch {
       // ignore initial load error
@@ -590,6 +638,88 @@ export function AdminSettings() {
       setCommerceErr('Network error saving commerce settings.');
     } finally {
       setSavingCommerce(false);
+    }
+  };
+
+  const handleIssueResellerKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResellerErr('');
+    setResellerMsg('');
+    setRevealedKey(null);
+    if (!newKeyEmail.trim()) {
+      setResellerErr('Please enter a registered customer email.');
+      return;
+    }
+    setIssuingKey(true);
+    try {
+      const res = await adminFetch('/api/admin/reseller-keys', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          customerEmail: newKeyEmail.trim().toLowerCase(),
+          label: newKeyLabel.trim() || 'Reseller API Key',
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        rawKey?: string;
+        key?: {label?: string; customerEmail?: string};
+        error?: string;
+      };
+      if (!res.ok || !data.ok || !data.rawKey) {
+        setResellerErr(data.error || 'Failed to issue reseller API key.');
+        return;
+      }
+      setRevealedKey({
+        rawKey: data.rawKey,
+        label: data.key?.label || newKeyLabel.trim() || 'Reseller API Key',
+        customerEmail: data.key?.customerEmail || newKeyEmail.trim().toLowerCase(),
+      });
+      setNewKeyEmail('');
+      setNewKeyLabel('');
+      setResellerMsg('Reseller API key created. Copy the secret key below now — it will not be shown again.');
+      void loadServerData();
+    } catch {
+      setResellerErr('Network error creating reseller key.');
+    } finally {
+      setIssuingKey(false);
+    }
+  };
+
+  const handleToggleResellerKey = async (item: ResellerApiKeyItem) => {
+    setResellerErr('');
+    try {
+      const res = await adminFetch(`/api/admin/reseller-keys/${encodeURIComponent(item.id)}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({active: !item.active}),
+      });
+      if (res.ok) {
+        setResellerKeys((prev) =>
+          prev.map((k) => (k.id === item.id ? {...k, active: !item.active} : k)),
+        );
+      } else {
+        setResellerErr('Could not toggle API key status.');
+      }
+    } catch {
+      setResellerErr('Network error toggling API key.');
+    }
+  };
+
+  const handleDeleteResellerKey = async (keyId: string) => {
+    setResellerErr('');
+    try {
+      const res = await adminFetch(`/api/admin/reseller-keys/${encodeURIComponent(keyId)}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setResellerKeys((prev) => prev.filter((k) => k.id !== keyId));
+        setResellerMsg('Reseller API key revoked and deleted.');
+      } else {
+        setResellerErr('Failed to delete API key.');
+      }
+    } catch {
+      setResellerErr('Network error deleting API key.');
     }
   };
 
@@ -1222,6 +1352,59 @@ export function AdminSettings() {
               </div>
             </div>
 
+            <div className="pt-5 border-t border-slate-200 dark:border-slate-800 space-y-4">
+              <div>
+                <h2 className="text-base font-bold font-display flex items-center gap-2">
+                  <Search className="w-4 h-4 text-emerald-600" /> Player IGN Live Checker &amp; Customer Reviews
+                </h2>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                  Built-in Free Fire Shop2Game IGN checker &amp; Firestore UID cache run automatically. Optionally configure an external HTTPS player lookup endpoint (supports <code className="font-mono">{'{uid}'}</code>, <code className="font-mono">{'{game}'}</code>, <code className="font-mono">{'{server}'}</code> placeholders).
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    Custom Player IGN Lookup API URL (Optional HTTPS)
+                  </label>
+                  <input
+                    type="url"
+                    value={sysForm.playerLookupBaseUrl}
+                    onChange={(e) =>
+                      setSysForm({...sysForm, playerLookupBaseUrl: e.target.value})
+                    }
+                    placeholder="https://ign-api.example.com/check?game={game}&uid={uid}"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    Custom Player Lookup API Key (Optional)
+                  </label>
+                  <input
+                    type="password"
+                    value={sysForm.playerLookupApiKey}
+                    onChange={(e) =>
+                      setSysForm({...sysForm, playerLookupApiKey: e.target.value})
+                    }
+                    placeholder={
+                      sysForm.hasPlayerLookupApiKey ? '•••••••• (Saved on server)' : 'Bearer / X-API-Key token'
+                    }
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sysForm.autoApproveReviews}
+                  onChange={(e) =>
+                    setSysForm({...sysForm, autoApproveReviews: e.target.checked})
+                  }
+                />
+                Auto-Approve New Customer Reviews Immediately (when unchecked, reviews require Web Admin or Telegram approval)
+              </label>
+            </div>
+
             {sysErr && <p className="text-xs text-red-600 font-medium">{sysErr}</p>}
             {sysMsg && <p className="text-xs text-emerald-600 font-medium">{sysMsg}</p>}
 
@@ -1539,6 +1722,7 @@ export function AdminSettings() {
                           gatewayProvider: e.target.value as
                             | 'none'
                             | 'uddoktapay'
+                            | 'sslcommerz'
                             | 'bkash_merchant'
                             | 'nagad_merchant',
                         })
@@ -1546,6 +1730,7 @@ export function AdminSettings() {
                       className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950">
                       <option value="none">Disabled</option>
                       <option value="uddoktapay">UddoktaPay</option>
+                      <option value="sslcommerz">SSLCommerz PGW</option>
                       <option value="bkash_merchant">bKash Merchant Checkout</option>
                       <option value="nagad_merchant">Nagad Merchant PGW</option>
                     </select>
@@ -1600,6 +1785,12 @@ export function AdminSettings() {
                   </div>
                 </div>
 
+                {commerceForm.gatewayProvider === 'sslcommerz' && (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    SSLCommerz Tip: Put your <strong>Store ID</strong> in Merchant API Key and your <strong>Store Password</strong> in Webhook Verification Secret. Leave Base URL blank for live (<code className="font-mono">securepay.sslcommerz.com</code>) or enter <code className="font-mono">https://sandbox.sslcommerz.com</code> for sandbox testing.
+                  </p>
+                )}
+
                 {commerceForm.gatewayProvider !== 'none' && typeof window !== 'undefined' && (
                   <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs">
                     <span className="font-mono text-slate-600 dark:text-slate-300 truncate">
@@ -1631,6 +1822,150 @@ export function AdminSettings() {
                 <Save className="w-3.5 h-3.5" /> {savingCommerce ? 'Saving...' : 'Save Commerce & Gateway Rules'}
               </button>
           </form>
+
+          {/* Public Reseller / Developer API v1 Keys */}
+          <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 space-y-5">
+            <div>
+              <h2 className="text-base font-bold font-display flex items-center gap-2">
+                <Code2 className="w-4 h-4 text-blue-600" /> Public Reseller / Developer API Keys (<code className="font-mono text-sm">/api/v1/*</code>)
+              </h2>
+              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                Issue wallet-backed API keys (<code className="font-mono">mk_live_...</code>) so trusted resellers and partner bots can check catalog stock and place instant automated orders using their MUNAFTOPUP.bd wallet balance.
+              </p>
+            </div>
+
+            <form onSubmit={handleIssueResellerKey} className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Registered Customer Email *
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={newKeyEmail}
+                  onChange={(e) => setNewKeyEmail(e.target.value)}
+                  placeholder="reseller@example.com"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Integration Label
+                </label>
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={newKeyLabel}
+                  onChange={(e) => setNewKeyLabel(e.target.value)}
+                  placeholder="e.g. Partner TopUp Site"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={issuingKey}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50">
+                <Plus className="w-3.5 h-3.5" /> {issuingKey ? 'Issuing Key...' : 'Generate API Key'}
+              </button>
+            </form>
+
+            {revealedKey && (
+              <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-emerald-900 dark:text-emerald-200">
+                    New API Key Created ({revealedKey.label} · {revealedKey.customerEmail}) — Copy Now!
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(revealedKey.rawKey);
+                      setResellerMsg('Secret API key copied to clipboard.');
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer">
+                    <Copy className="w-3 h-3" /> Copy Key
+                  </button>
+                </div>
+                <p className="font-mono text-xs break-all p-2.5 rounded bg-white dark:bg-slate-950 border border-emerald-200 dark:border-emerald-800 text-slate-900 dark:text-emerald-300 select-all">
+                  {revealedKey.rawKey}
+                </p>
+              </div>
+            )}
+
+            {resellerErr && <p className="text-xs text-red-600 font-medium">{resellerErr}</p>}
+            {resellerMsg && <p className="text-xs text-emerald-600 font-medium">{resellerMsg}</p>}
+
+            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500">
+                  <tr>
+                    <th className="px-3.5 py-2.5 font-medium">Label / Reseller</th>
+                    <th className="px-3.5 py-2.5 font-medium">Key Prefix</th>
+                    <th className="px-3.5 py-2.5 font-medium">Requests</th>
+                    <th className="px-3.5 py-2.5 font-medium">Total Spent</th>
+                    <th className="px-3.5 py-2.5 font-medium">Status</th>
+                    <th className="px-3.5 py-2.5 font-medium text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {resellerKeys.map((k) => (
+                    <tr key={k.id}>
+                      <td className="px-3.5 py-2.5">
+                        <p className="font-semibold text-slate-900 dark:text-white">{k.label}</p>
+                        <p className="text-[11px] text-slate-500">{k.customerEmail}</p>
+                      </td>
+                      <td className="px-3.5 py-2.5 font-mono text-slate-600 dark:text-slate-300">
+                        {k.keyPrefix}
+                      </td>
+                      <td className="px-3.5 py-2.5 font-mono tabular-nums">
+                        {k.totalRequests.toLocaleString()}
+                      </td>
+                      <td className="px-3.5 py-2.5 font-mono tabular-nums font-semibold">
+                        ৳{k.totalSpent.toLocaleString()}
+                      </td>
+                      <td className="px-3.5 py-2.5">
+                        <button
+                          type="button"
+                          onClick={() => void handleToggleResellerKey(k)}
+                          className={`px-2 py-0.5 rounded font-semibold cursor-pointer ${
+                            k.active
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400'
+                              : 'bg-slate-100 text-slate-500 dark:bg-slate-800'
+                          }`}>
+                          {k.active ? 'Active' : 'Paused'}
+                        </button>
+                      </td>
+                      <td className="px-3.5 py-2.5 text-right">
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteResellerKey(k.id)}
+                          className="p-1 rounded text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                          title="Revoke key">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {resellerKeys.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-3.5 py-6 text-center text-slate-500">
+                        No reseller API keys issued yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-[11px] space-y-1.5 text-slate-600 dark:text-slate-300">
+              <p className="font-bold text-slate-800 dark:text-slate-200">
+                Developer API v1 Endpoints (Header: <code className="font-mono">Authorization: Bearer mk_live_...</code>)
+              </p>
+              <p className="font-mono">GET /api/v1/products — Live catalog, packages &amp; instant PIN stock</p>
+              <p className="font-mono">GET /api/v1/balance — Reseller tier, wallet balance &amp; points</p>
+              <p className="font-mono">POST /api/v1/order — Body: {'{ productId, packageId, playerUid, serverId }'}</p>
+              <p className="font-mono">GET /api/v1/order/:orderNumber — Order delivery status &amp; voucher code</p>
+            </div>
+          </div>
           </div>
         )}
 

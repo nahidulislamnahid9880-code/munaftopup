@@ -27,6 +27,20 @@ import {
   type CommerceSettings,
   type SmsReconcileOutcome,
 } from './server-commerce.ts';
+import {
+  alertFailedDistributorApi,
+  alertLowVoucherStock,
+  broadcastFlashSalePush,
+  generateCsvReport,
+  lookupPlayerIgn,
+  registerFeatureRoutes,
+  seed100ReviewsIfEmpty,
+  sendDailyMidnightSummaryReport,
+  sendPushToCustomer,
+  startDailyMidnightReportCron,
+  validateSafeExternalUrl,
+  type FeatureDeps,
+} from './server-features.ts';
 
 dotenv.config();
 
@@ -130,6 +144,11 @@ interface SystemSettingsStore {
   telegramQuickReplies: TelegramQuickReplyPreset[];
   telegramAdminChatIds: string[];
   telegramAdminOrderAlerts: boolean;
+  playerLookupBaseUrl?: string;
+  playerLookupApiKey?: string;
+  autoApproveReviews?: boolean;
+  vapidPublicKey?: string;
+  vapidPrivateKey?: string;
   commerce?: CommerceSettings;
   updatedAt: string;
 }
@@ -301,6 +320,9 @@ function defaultStore(): AdminStoreData {
       telegramQuickReplies: DEFAULT_TELEGRAM_QUICK_REPLIES.map((p) => ({...p})),
       telegramAdminChatIds: [],
       telegramAdminOrderAlerts: true,
+      playerLookupBaseUrl: '',
+      playerLookupApiKey: '',
+      autoApproveReviews: false,
       commerce: {...DEFAULT_COMMERCE_SETTINGS},
       updatedAt: now,
     },
@@ -391,8 +413,147 @@ function readStore(): AdminStoreData {
   }
 }
 
+let lastSyncedStoreFingerprint = '';
+let storeSyncSuppressed = false;
+
+function buildAdminStoreFirestoreBackup(data: AdminStoreData): Record<string, unknown> {
+  return {
+    primaryAdminName: data.primaryAdminName || 'Primary Administrator',
+    primaryPasswordHash: data.primaryPasswordHash || null,
+    ...(data.sessionSecret ? {sessionSecret: data.sessionSecret} : {}),
+    staff: data.staff || {},
+    systemSettings: data.systemSettings || defaultStore().systemSettings,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+}
+
+function computeStoreConfigFingerprint(data: AdminStoreData): string {
+  return JSON.stringify({
+    n: data.primaryAdminName,
+    p: data.primaryPasswordHash,
+    s: data.sessionSecret,
+    st: data.staff,
+    sys: data.systemSettings,
+  });
+}
+
+async function hydrateAdminStoreFromFirestore(): Promise<void> {
+  if (!adminDb) return;
+  try {
+    const snap = await adminDb.collection('serverConfig').doc('adminStore').get();
+    const local = readStore();
+    if (!snap.exists) {
+      // Seed Firestore backup if local store already has credentials/settings configured
+      if (
+        local.primaryPasswordHash ||
+        Object.keys(local.staff || {}).length > 1 ||
+        (local.systemSettings?.telegramAdminChatIds || []).length > 0
+      ) {
+        const fp = computeStoreConfigFingerprint(local);
+        await adminDb.collection('serverConfig').doc('adminStore').set(buildAdminStoreFirestoreBackup(local));
+        lastSyncedStoreFingerprint = fp;
+      }
+      return;
+    }
+
+    const remote = snap.data() as Partial<AdminStoreData> | undefined;
+    if (!remote || typeof remote !== 'object') return;
+
+    let changed = false;
+    if (!local.primaryPasswordHash && remote.primaryPasswordHash) {
+      local.primaryPasswordHash = remote.primaryPasswordHash;
+      changed = true;
+    }
+    if (remote.primaryAdminName && (!local.primaryAdminName || local.primaryAdminName === 'Primary Administrator')) {
+      local.primaryAdminName = remote.primaryAdminName;
+      changed = true;
+    }
+    if (!local.sessionSecret && typeof remote.sessionSecret === 'string' && remote.sessionSecret.length >= 32) {
+      local.sessionSecret = remote.sessionSecret;
+      cachedSessionSecret = remote.sessionSecret;
+      changed = true;
+    }
+    if (remote.staff && typeof remote.staff === 'object') {
+      for (const [k, v] of Object.entries(remote.staff)) {
+        if (!local.staff[k] && v) {
+          local.staff[k] = v;
+          changed = true;
+        } else if (local.staff[k] && v && !local.staff[k].passwordHash && v.passwordHash) {
+          local.staff[k] = {...local.staff[k], ...v};
+          changed = true;
+        }
+      }
+    }
+    if (remote.systemSettings && typeof remote.systemSettings === 'object') {
+      const rSys = remote.systemSettings;
+      const mergedChatIds = Array.from(
+        new Set([
+          ...(Array.isArray(local.systemSettings.telegramAdminChatIds)
+            ? local.systemSettings.telegramAdminChatIds
+            : []),
+          ...(Array.isArray(rSys.telegramAdminChatIds) ? rSys.telegramAdminChatIds : []),
+        ]),
+      );
+      if (mergedChatIds.length !== (local.systemSettings.telegramAdminChatIds || []).length) {
+        local.systemSettings.telegramAdminChatIds = mergedChatIds;
+        changed = true;
+      }
+      const localUpdatedMs = Date.parse(local.systemSettings.updatedAt || '') || 0;
+      const remoteUpdatedMs = Date.parse(String(rSys.updatedAt || '')) || 0;
+      if (!local.systemSettings.smtpUser && rSys.smtpUser) {
+        local.systemSettings = {
+          ...local.systemSettings,
+          ...rSys,
+          telegramAdminChatIds: mergedChatIds,
+          commerce: normalizeCommerceSettings(rSys.commerce || local.systemSettings.commerce),
+        };
+        changed = true;
+      } else if (remoteUpdatedMs > localUpdatedMs && rSys.updatedAt) {
+        local.systemSettings = {
+          ...local.systemSettings,
+          ...rSys,
+          telegramAdminChatIds: mergedChatIds,
+          commerce: normalizeCommerceSettings(rSys.commerce || local.systemSettings.commerce),
+        };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      storeSyncSuppressed = true;
+      try {
+        fs.writeFileSync(STORE_PATH, JSON.stringify(local, null, 2), 'utf8');
+      } finally {
+        storeSyncSuppressed = false;
+      }
+      lastSyncedStoreFingerprint = computeStoreConfigFingerprint(local);
+      console.log('[AdminStore] Hydrated persistent admin credentials & settings from Firestore.');
+    } else {
+      lastSyncedStoreFingerprint = computeStoreConfigFingerprint(local);
+    }
+  } catch (err) {
+    console.warn('[AdminStore] Firestore hydration skipped:', err instanceof Error ? err.message : err);
+  }
+}
+
 function writeStore(data: AdminStoreData): void {
   fs.writeFileSync(STORE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  if (storeSyncSuppressed || !adminDb) return;
+  try {
+    const fp = computeStoreConfigFingerprint(data);
+    if (fp === lastSyncedStoreFingerprint) return;
+    lastSyncedStoreFingerprint = fp;
+    void adminDb
+      .collection('serverConfig')
+      .doc('adminStore')
+      .set(buildAdminStoreFirestoreBackup(data), {merge: true})
+      .catch(() => {
+        // reset fingerprint so next write retries if transient error
+        lastSyncedStoreFingerprint = '';
+      });
+  } catch {
+    // ignore sync error
+  }
 }
 
 function appendServerLog(store: AdminStoreData, actorEmail: string, action: string, details: string): void {
@@ -782,7 +943,7 @@ async function dispatchEmailTransport(
 async function sendAdminNotificationEmail(
   subject: string,
   rows: Array<{label: string; value: string}>,
-  actorEmail: string,
+  actorEmail = 'system',
 ): Promise<{sent: boolean; reason?: string; toEmail?: string; transport?: 'brevo' | 'smtp'}> {
   const store = readStore();
   const cfg = resolveSmtpConfig(store);
@@ -1251,7 +1412,7 @@ async function recordSmsPaymentInFirestore(params: {
   rawText: string;
   hintSender?: string;
   hintMethod?: string;
-  source?: 'sms_webhook' | 'telegram_forwarder';
+  source?: 'sms_webhook' | 'telegram_forwarder' | 'telegram_admin';
 }): Promise<
   | {
       ok: true;
@@ -1697,6 +1858,35 @@ async function sendTelegramReply(
   }
 }
 
+async function sendTelegramDocument(
+  token: string,
+  chatId: number,
+  filename: string,
+  content: string,
+  caption?: string,
+): Promise<void> {
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) form.append('caption', caption.slice(0, 1020));
+  form.append('document', new Blob([content], {type: 'text/csv;charset=utf-8'}), filename);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+    const json = (await res.json().catch(() => ({}))) as {ok?: boolean; description?: string};
+    if (!res.ok || !json.ok) {
+      throw new Error(json.description || `Telegram sendDocument HTTP ${res.status}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const telegramChatRoutes = new Map<string, {chatId: number; businessConnectionId?: string}>();
 
 async function saveTelegramChatRoute(
@@ -1981,11 +2171,16 @@ async function getBotSharedStoreSnapshot(forceRefresh = false): Promise<BotShare
       return snapCache;
     }
 
-    const [productsRes, paymentMethodsRes, settingsRes] = await Promise.allSettled([
+    const [productsRes, paymentMethodsRes, siteSettingsRes, legacyStorefrontRes] = await Promise.allSettled([
       adminDb.collection('products').where('active', '==', true).get(),
       adminDb.collection('paymentMethods').where('active', '==', true).get(),
+      adminDb.collection('settings').doc('site').get(),
       adminDb.collection('settings').doc('storefront').get(),
     ]);
+    const settingsRes =
+      siteSettingsRes.status === 'fulfilled' && siteSettingsRes.value.exists
+        ? siteSettingsRes
+        : legacyStorefrontRes;
 
     if (productsRes.status === 'fulfilled') {
       const products = productsRes.value.docs
@@ -2350,6 +2545,7 @@ function formatPaymentSummaryPrompt(
   playerUid: string,
   bkashNumber: string,
   nagadNumber: string,
+  ignInfo?: {ign?: string; region?: string},
 ): string {
   const paymentLines: string[] = [];
   if (bkashNumber) paymentLines.push(`• bKash (Send Money): ${bkashNumber}`);
@@ -2363,6 +2559,9 @@ function formatPaymentSummaryPrompt(
     `🎮 প্রোডাক্ট: ${selected.productName}`,
     `💎 প্যাকেজ: ${selected.packageName}`,
     `🆔 ${selected.uidLabel || 'Player UID'}: ${playerUid}`,
+    ...(ignInfo?.ign
+      ? [`✅ প্লেয়ারের নাম (IGN): ${ignInfo.ign}${ignInfo.region ? ` (${ignInfo.region})` : ''}`]
+      : []),
     `💰 মোট মূল্য: ৳${selected.price}`,
     '',
     '💳 নিচের যেকোনো নম্বরে Send Money করুন:',
@@ -3002,6 +3201,34 @@ function getTelegramAdminDeps(): TelegramAdminDeps {
       botSharedStoreCache = null;
     },
     runOrderExpiryNow: () => expireStalePendingOrders(true),
+    getCommerceDeps,
+    recordManualSmsPayment: async (rawText: string, hintMethod?: string) => {
+      const r = await recordSmsPaymentInFirestore({
+        rawText,
+        hintMethod,
+        source: 'telegram_admin',
+      });
+      return r.ok
+        ? {
+            ok: true as const,
+            trxId: r.parsed.trxId,
+            amount: r.parsed.amount,
+            method: r.parsed.method,
+            duplicate: r.duplicate,
+            reconciled: r.reconciled,
+          }
+        : {ok: false as const, error: r.error};
+    },
+    resolveMailStatus: () => {
+      const cfg = resolveSmtpConfig(readStore());
+      return {
+        transport: cfg.mailTransport,
+        enabled: cfg.enabled,
+        customerEnabled: cfg.customerEnabled,
+        sender: cfg.useBrevo ? cfg.brevoSenderEmail : cfg.fromEmail || cfg.user,
+        toEmail: cfg.toEmail,
+      };
+    },
     getBotRuntimeStats: () => ({
       running: telegramBotState.running,
       username: telegramBotState.username,
@@ -3013,6 +3240,29 @@ function getTelegramAdminDeps(): TelegramAdminDeps {
       expiryTotalExpired: orderExpiryCronState.totalExpired,
       expiryLastError: orderExpiryCronState.lastError,
     }),
+    sendTelegramDocument,
+    generateCsvReport: (type, days) =>
+      generateCsvReport({adminDb, parseTimestampMillis: parseFirestoreTimestampMillis}, {type, days}),
+    sendDailySummaryReport: (manual = true) =>
+      sendDailyMidnightSummaryReport(getFeatureDeps(), manual),
+    seed100Reviews: (forceSeed = true) => seed100ReviewsIfEmpty({adminDb}, forceSeed),
+    onOrderCompletedPush: (params) => {
+      if (!params.customerUid) return;
+      return sendPushToCustomer(
+        {adminDb, readStore, writeStore},
+        params.customerUid,
+        {
+          title: `Order Completed — ${params.orderNumber}`,
+          body: params.voucherCode
+            ? `${params.productName} (${params.packageName}) ready! Code: ${params.voucherCode}`
+            : `${params.productName} (${params.packageName}) has been fulfilled!`,
+          url: '/orders',
+          tag: `order-${params.orderNumber}`,
+        },
+      );
+    },
+    broadcastFlashSalePush: (payload) =>
+      broadcastFlashSalePush({adminDb, readStore, writeStore}, payload),
   };
 }
 
@@ -3037,6 +3287,47 @@ function getCommerceDeps(): CommerceDeps {
     },
     makeAdminOrderCallback,
     websiteUrl: WEBSITE_URL,
+    onLowVoucherStock: (params) => alertLowVoucherStock(getFeatureDeps(), params),
+    onDistributorFailed: (params) => alertFailedDistributorApi(getFeatureDeps(), params),
+    onOrderCompletedPush: async (params) => {
+      if (!params.customerUid) return;
+      await sendPushToCustomer(
+        {adminDb, readStore, writeStore},
+        params.customerUid,
+        {
+          title: `Order Completed — ${params.orderNumber}`,
+          body: params.voucherCode
+            ? `${params.productName} (${params.packageName}) fulfilled! Code: ${params.voucherCode}`
+            : `${params.productName} (${params.packageName}) fulfilled to your UID.`,
+          url: '/orders',
+          tag: `order-${params.orderNumber}`,
+        },
+      );
+    },
+  };
+}
+
+function getFeatureDeps(): FeatureDeps {
+  return {
+    adminDb,
+    readStore,
+    writeStore,
+    appendServerLog,
+    requireSignedInFirebase,
+    requireAdmin,
+    sendAdminNotificationEmail,
+    sendCustomerOrderEmail,
+    sendCustomerGenericEmail,
+    sendTelegramOrderStatusUpdate,
+    notifyTelegramAdmins: (text, replyMarkup) => {
+      const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+      if (!botToken) return Promise.resolve();
+      return notifyTelegramAdmins(getTelegramAdminDeps(), botToken, text, replyMarkup);
+    },
+    makeAdminOrderCallback,
+    parseTimestampMillis: parseFirestoreTimestampMillis,
+    websiteUrl: WEBSITE_URL,
+    getCommerceDeps,
   };
 }
 
@@ -3190,12 +3481,18 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
       session.playerUid = uidClean;
       session.step = 'AWAITING_TRXID';
       botSessions.set(sessionKey, session);
-      const {bkashNumber, nagadNumber} = await resolveBotPaymentNumbers();
+      const [{bkashNumber, nagadNumber}, ignCheck] = await Promise.all([
+        resolveBotPaymentNumbers(),
+        lookupPlayerIgn({adminDb, readStore}, {uid: uidClean, productName: session.selected.productName}).catch(
+          () => null,
+        ),
+      ]);
       const summaryReply = formatPaymentSummaryPrompt(
         session.selected,
         uidClean,
         bkashNumber,
         nagadNumber,
+        ignCheck?.verified ? {ign: ignCheck.ign, region: ignCheck.region} : undefined,
       );
       pushSessionHistory(session, 'model', summaryReply);
       await sendTelegramReply(token, chatId, summaryReply, businessConnectionId);
@@ -3341,11 +3638,16 @@ async function handleTelegramCustomerMessage(token: string, msg: TelegramMessage
           session.playerUid = maybeUid;
           session.step = 'AWAITING_TRXID';
           botSessions.set(sessionKey, session);
+          const ignCheck = await lookupPlayerIgn(
+            {adminDb, readStore},
+            {uid: maybeUid, productName: selected.productName},
+          ).catch(() => null);
           const summaryReply = formatPaymentSummaryPrompt(
             selected,
             maybeUid,
             liveCtx.bkashNumber,
             liveCtx.nagadNumber,
+            ignCheck?.verified ? {ign: ignCheck.ign, region: ignCheck.region} : undefined,
           );
           pushSessionHistory(session, 'model', summaryReply);
           await sendTelegramReply(token, chatId, summaryReply, businessConnectionId);
@@ -3610,6 +3912,7 @@ function startTelegramBusinessBot(): void {
             {command: 'menu', description: 'সকল প্যাকেজ দেখুন'},
             {command: 'cancel', description: 'চলমান অর্ডার বাতিল করুন'},
             {command: 'admin', description: 'Telegram Admin Panel খুলুন'},
+            {command: 'panel', description: 'ফুল এডমিন ড্যাশবোর্ড'},
             {command: 'myid', description: 'আপনার Telegram Chat ID দেখুন'},
           ],
         },
@@ -3699,6 +4002,7 @@ function startTelegramBusinessBot(): void {
 }
 
 async function startServer(): Promise<void> {
+  await hydrateAdminStoreFromFirestore();
   const app = express();
   app.set('trust proxy', 1);
   app.use(express.json({limit: '2mb'}));
@@ -4296,6 +4600,9 @@ async function startServer(): Promise<void> {
           : DEFAULT_TELEGRAM_QUICK_REPLIES,
         telegramAdminChatIds: Array.isArray(s.telegramAdminChatIds) ? s.telegramAdminChatIds : [],
         telegramAdminOrderAlerts: s.telegramAdminOrderAlerts !== false,
+        playerLookupBaseUrl: s.playerLookupBaseUrl || '',
+        hasPlayerLookupApiKey: Boolean(s.playerLookupApiKey || process.env.PLAYER_LOOKUP_API_KEY),
+        autoApproveReviews: Boolean(s.autoApproveReviews),
         updatedAt: s.updatedAt,
       },
     });
@@ -4320,6 +4627,16 @@ async function startServer(): Promise<void> {
         res.status(400).json({error: 'Invalid Distributor API Base URL'});
         return;
       }
+    }
+
+    let cleanLookupUrl = String(body.playerLookupBaseUrl ?? prev.playerLookupBaseUrl ?? '').trim();
+    if (cleanLookupUrl) {
+      const safeLookup = validateSafeExternalUrl(cleanLookupUrl);
+      if (!safeLookup) {
+        res.status(400).json({error: 'Player IGN Lookup API URL must be a valid public https:// URL'});
+        return;
+      }
+      cleanLookupUrl = cleanLookupUrl.slice(0, 300);
     }
 
     const cleanNotifEmail = String(
@@ -4382,6 +4699,14 @@ async function startServer(): Promise<void> {
         body.telegramAdminOrderAlerts !== undefined
           ? Boolean(body.telegramAdminOrderAlerts)
           : prev.telegramAdminOrderAlerts !== false,
+      playerLookupBaseUrl: cleanLookupUrl,
+      playerLookupApiKey: body.playerLookupApiKey
+        ? String(body.playerLookupApiKey).trim().slice(0, 240)
+        : prev.playerLookupApiKey || '',
+      autoApproveReviews:
+        body.autoApproveReviews !== undefined ? Boolean(body.autoApproveReviews) : Boolean(prev.autoApproveReviews),
+      vapidPublicKey: prev.vapidPublicKey,
+      vapidPrivateKey: prev.vapidPrivateKey,
       commerce: normalizeCommerceSettings(prev.commerce),
       updatedAt: new Date().toISOString(),
     };
@@ -4400,6 +4725,8 @@ async function startServer(): Promise<void> {
       telegramAdminChatIds: store.systemSettings.telegramAdminChatIds,
       telegramAdminOrderAlerts: store.systemSettings.telegramAdminOrderAlerts,
       customerEmailNotificationsEnabled: store.systemSettings.customerEmailNotificationsEnabled,
+      playerLookupBaseUrl: store.systemSettings.playerLookupBaseUrl,
+      autoApproveReviews: store.systemSettings.autoApproveReviews,
     });
   });
 
@@ -4731,6 +5058,22 @@ async function startServer(): Promise<void> {
         voucherCode: cleanVoucher,
         note: cleanNote,
       }),
+      ...(orderStatus === 'completed' && cleanCustomerUid
+        ? [
+            sendPushToCustomer(
+              {adminDb, readStore, writeStore},
+              cleanCustomerUid,
+              {
+                title: `Order Completed — ${orderNumber}`,
+                body: cleanVoucher
+                  ? `${productName} (${packageName}) delivered! Code: ${cleanVoucher}`
+                  : `${productName} (${packageName}) has been fulfilled!`,
+                url: '/orders',
+                tag: `order-${orderNumber}`,
+              },
+            ),
+          ]
+        : []),
     ]);
 
     res.json({
@@ -4789,6 +5132,8 @@ async function startServer(): Promise<void> {
 
   // Advanced Commerce Routes (Coupons, Flash Sales, VIP Tiers, Vault PINs, Fraud Guard, Loyalty/Referrals, Gateway, Auto-Verified Orders & Deposits)
   registerCommerceRoutes(app, getCommerceDeps());
+  // Advanced Features Routes (IGN Checker, Customer Reviews & 100-Review Seeder, Web Push, Reseller API v1, Reports & CSV)
+  registerFeatureRoutes(app, getFeatureDeps());
 
   // Multer & API error handler
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
@@ -4835,6 +5180,10 @@ async function startServer(): Promise<void> {
     startTelegramBusinessBot();
     startPendingOrderExpiryCron();
     startFirestoreAdminEmailWatcher();
+    startDailyMidnightReportCron(getFeatureDeps());
+    setTimeout(() => {
+      void seed100ReviewsIfEmpty({adminDb}).catch(() => null);
+    }, 8_000).unref();
   });
 }
 

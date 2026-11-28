@@ -434,6 +434,62 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "referrerUid", "referredUid", "eventType", "walletDelta", "pointsDelta", "createdAt"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Customer service and product star ratings and reviews with admin moderation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "customerUid": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 120 },
+        "packageName": { "type": "string", "maxLength": 120 },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "rating": { "type": "number" },
+        "comment": { "type": "string", "minLength": 2, "maxLength": 1000 },
+        "approved": { "type": "boolean" },
+        "verifiedPurchase": { "type": "boolean" },
+        "source": { "type": "string", "enum": ["customer", "seeded"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "customerName", "rating", "comment", "approved", "createdAt"]
+    },
+    "ResellerKey": {
+      "title": "ResellerKey",
+      "description": "SHA-256 hashed public developer/reseller API keys managed by Admin.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "label": { "type": "string", "maxLength": 100 },
+        "customerUid": { "type": "string", "maxLength": 128 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
+        "keyPrefix": { "type": "string", "maxLength": 24 },
+        "keyHash": { "type": "string", "maxLength": 128 },
+        "active": { "type": "boolean" },
+        "totalRequests": { "type": "number" },
+        "totalSpent": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastUsedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "customerUid", "keyPrefix", "keyHash", "active", "createdAt"]
+    },
+    "PushSubscription": {
+      "title": "PushSubscription",
+      "description": "Web Push notification endpoint subscriptions per customer/browser.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerUid": { "type": "string", "maxLength": 128 },
+        "endpoint": { "type": "string", "maxLength": 1000 },
+        "keys": { "type": "object" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "endpoint", "keys", "active", "createdAt"]
     }
   },
   "firestore": {
@@ -520,6 +576,18 @@
     "/referralEvents/{eventId}": {
       "schema": { "$ref": "#/entities/ReferralEvent" },
       "description": "Referral and loyalty transaction ledger."
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/Review" },
+      "description": "Customer ratings and reviews; approved reviews are publicly readable, moderation is staff-only."
+    },
+    "/resellerKeys/{keyId}": {
+      "schema": { "$ref": "#/entities/ResellerKey" },
+      "description": "Server-managed reseller developer API keys."
+    },
+    "/pushSubscriptions/{subId}": {
+      "schema": { "$ref": "#/entities/PushSubscription" },
+      "description": "Server-managed Web Push subscriptions."
     }
   }
 }

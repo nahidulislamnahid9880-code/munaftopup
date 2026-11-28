@@ -881,5 +881,38 @@ service cloud.firestore {
       allow update: if false;
       allow delete: if false;
     }
+
+    // Customer Reviews & Ratings (Approved public; owner sees own; moderation via server API)
+    match /reviews/{reviewId} {
+      allow get: if isValidId(reviewId) && (
+        existing().approved == true ||
+        isStaff() ||
+        (isSignedIn() && existing().customerUid == request.auth.uid)
+      );
+      allow list: if resource.data.approved == true ||
+        isStaff() ||
+        (isSignedIn() && resource.data.customerUid == request.auth.uid);
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Reseller Developer API Keys (Server-managed; SHA-256 hashed)
+    match /resellerKeys/{keyId} {
+      allow get: if isValidId(keyId) && isSignedIn() && (existing().customerUid == request.auth.uid || isStaff());
+      allow list: if isSignedIn() && (resource.data.customerUid == request.auth.uid || isStaff());
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Web Push Subscriptions (Server-managed; owner or staff readable)
+    match /pushSubscriptions/{subId} {
+      allow get: if isValidId(subId) && isSignedIn() && (existing().customerUid == request.auth.uid || isStaff());
+      allow list: if isSignedIn() && (resource.data.customerUid == request.auth.uid || isStaff());
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
   }
 }

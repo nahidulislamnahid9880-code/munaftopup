@@ -15,7 +15,7 @@ export default defineConfig(() => {
         includeAssets: ['icon.svg', 'apple-touch-icon.png'],
         manifest: {
           name: 'MUNAFTOPUP.bd — Instant Diamond Top-Up & Vouchers',
-          short_name: 'MUNAFTOPUP.bd',
+          short_name: 'MUNAFTOPUP',
           description:
             'Fast & secure Free Fire Diamonds, Weekly/Monthly Memberships, Level Up Pass, and digital voucher top-ups with live tracking.',
           theme_color: '#0f172a',
@@ -44,6 +44,7 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          importScripts: ['/sw-push.js'],
           maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
           navigateFallback: '/index.html',
@@ -70,7 +71,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: false,
+          enabled: true,
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like
